@@ -1,8 +1,5 @@
 name: Native file drop preview
 on:
-  push:
-    branches: [prototype/native-file-drop]
-    paths: ['tools/native-drop-probe/**', '.github/workflows/native-drop-probe.yml']
   pull_request:
     paths: ['tools/native-drop-probe/**', '.github/workflows/native-drop-probe.yml']
   workflow_dispatch:
@@ -10,9 +7,13 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: native-drop-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   macos:
-    runs-on: macos-15-arm64
+    runs-on: macos-15
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4

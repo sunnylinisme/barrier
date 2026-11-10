@@ -180,8 +180,13 @@ static int selfTest()
         std::printf("stream %d: hr=%lx read=%lu expected=%zu equal=%d\n", i,
                     static_cast<unsigned long>(result), read, sampleContent().size(),
                     std::string(bytes.data(), read) == sampleContent());
-        passed = passed && result == S_FALSE && read == sampleContent().size() &&
+        // SHCreateMemStream can return S_OK for a successful short read.
+        // Check the bytes and a subsequent EOF read, not only the HRESULT.
+        passed = passed && SUCCEEDED(result) && read == sampleContent().size() &&
             std::string(bytes.data(), read) == sampleContent();
+        ULONG eofRead = 1;
+        HRESULT eofResult = data.pstm->Read(bytes.data(), 1, &eofRead);
+        passed = passed && SUCCEEDED(eofResult) && eofRead == 0;
         ReleaseStgMedium(&data);
     }
     FORMATETC bad = formats[1];
