@@ -21,7 +21,6 @@ static void CALLBACK dragTick(HWND, UINT, UINT_PTR, DWORD)
 {
     if (timerState) {
         timerState->capture = reinterpret_cast<std::uintptr_t>(GetCapture());
-        LOG((CLOG_DEBUG2 "native drop: tick capture=%p left=%d async=%d", GetCapture(), int(GetKeyState(VK_LBUTTON)), int(GetAsyncKeyState(VK_LBUTTON))));
         wakeDrag(timerState);
     }
 }
@@ -48,7 +47,7 @@ public:
         // A release queued before the worker starts cancels instead of creating a late drop.
         return armed_ ? DRAGDROP_S_DROP : DRAGDROP_S_CANCEL;
     }
-    HRESULT STDMETHODCALLTYPE GiveFeedback(DWORD effect) override { LOG((CLOG_DEBUG2 "native drop: feedback %lu", effect)); return DRAGDROP_S_USEDEFAULTCURSORS; }
+    HRESULT STDMETHODCALLTYPE GiveFeedback(DWORD) override { return DRAGDROP_S_USEDEFAULTCURSORS; }
 private:
     LONG refs_ = 1;
     std::shared_ptr<NativeDragState> state_;
