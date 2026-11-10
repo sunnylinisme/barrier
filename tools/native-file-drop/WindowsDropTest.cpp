@@ -7,6 +7,7 @@
 #include <iostream>
 #include <stdexcept>
 #include <cstring>
+#include <shellapi.h>
 
 static bool received = false;
 static const std::string payload("network snapshot\n\x00\x01\xff", 20);

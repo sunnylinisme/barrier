@@ -67,7 +67,7 @@ jobs:
       - name: Build
         run: cmake --build build --config Release --parallel 3
       - name: Protocol and actual OLE tests
-        run: ctest --test-dir build -C Release --output-on-failure
+        run: ctest --test-dir build -C Release --verbose
       - name: Windows client TLS-to-native-drop integration
         run: python tools/native-file-drop/windows-cli-network-test.py build/bin/Release
       - name: Package
