@@ -85,6 +85,8 @@ void MSWindowsNativeDrag::start(std::shared_ptr<const barrier::NativeFile> file)
         auto source = new RemoteDragSource(state);
         // Timer also lets a disconnected/idle drag observe cancellation and its timeout.
         UINT_PTR timer = SetTimer(nullptr, 0, 100, dragTick);
+        // OLE waits for mouse input before processing the drag; remote drags have no local down event.
+        if (timer) wakeDrag(state.get());
         DWORD effect = DROPEFFECT_NONE;
         HRESULT result = timer ? DoDragDrop(offer, source, DROPEFFECT_COPY, &effect) : E_FAIL;
         if (timer) KillTimer(nullptr, timer);
