@@ -8,6 +8,7 @@
 #include <stdexcept>
 #include <cstring>
 #include <shellapi.h>
+#include <vector>
 
 static bool received = false;
 static const std::string payload("network snapshot\n\x00\x01\xff", 20);
@@ -136,7 +137,11 @@ static bool explorerDrop(std::shared_ptr<const barrier::NativeFile> file, bool l
         POINT point{area.right * 2 / 3, area.bottom * 2 / 3}; ClientToScreen(search.window, &point);
         SetCursorPos(point.x, point.y); pump(200);
         if (localButton) { mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0); pump(50); }
-        MSWindowsNativeDrag drag; drag.start(file); pump(1500);
+        MSWindowsNativeDrag drag; drag.start(file); pump(300);
+        mouse_event(MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE,
+                    static_cast<DWORD>((point.x + 15) * 65535.0 / (GetSystemMetrics(SM_CXSCREEN) - 1)),
+                    static_cast<DWORD>((point.y + 15) * 65535.0 / (GetSystemMetrics(SM_CYSCREEN) - 1)), 0, 0);
+        pump(1200);
         if (localButton) mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0);
         drag.release();
         deadline = GetTickCount64() + 8000;
