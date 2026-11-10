@@ -16,6 +16,9 @@
         _writerQueue = [NSOperationQueue new];
         _writerQueue.maxConcurrentOperationCount = 1;
         _status = @"Drag the file below into a Finder folder.";
+        [self setAccessibilityElement:YES];
+        [self setAccessibilityRole:NSAccessibilityImageRole];
+        [self setAccessibilityLabel:@"Barrier-拖放測試.txt — drag into a Finder folder. Local preview only."];
     }
     return self;
 }
@@ -167,6 +170,13 @@ int main(int argc, const char* argv[])
         if (argc == 2 && strcmp(argv[1], "--self-test") == 0) return selfTest();
         [NSApplication sharedApplication];
         [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
+        NSMenu* menu = [NSMenu new];
+        NSMenuItem* appItem = [NSMenuItem new];
+        [menu addItem:appItem];
+        NSMenu* appMenu = [NSMenu new];
+        [appMenu addItemWithTitle:@"Quit Barrier Drop Probe" action:@selector(terminate:) keyEquivalent:@"q"];
+        appItem.submenu = appMenu;
+        NSApp.mainMenu = menu;
         ProbeApp* delegate = [ProbeApp new];
         NSApp.delegate = delegate;
         [NSApp run];

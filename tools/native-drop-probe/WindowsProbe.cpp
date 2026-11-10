@@ -57,7 +57,7 @@ public:
             if (!group) { GlobalFree(handle); return E_OUTOFMEMORY; }
             group->cItems = 1;
             auto& file = group->fgd[0];
-            file.dwFlags = FD_ATTRIBUTES | FD_FILESIZE | FD_UNICODE;
+            file.dwFlags = static_cast<DWORD>(FD_ATTRIBUTES | FD_FILESIZE | FD_UNICODE);
             file.dwFileAttributes = FILE_ATTRIBUTE_NORMAL;
             file.nFileSizeLow = static_cast<DWORD>(sampleContent().size());
             if (!MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, sampleName(), -1,
@@ -156,6 +156,8 @@ static int selfTest()
     FORMATETC formats[2] = {};
     ULONG count = 0;
     passed = passed && enumerator->Next(2, formats, &count) == S_OK && count == 2;
+    std::printf("enumeration: ok=%d count=%lu indices=%ld,%ld\n", passed, count,
+                formats[0].lindex, formats[1].lindex);
     if (enumerator) enumerator->Release();
     STGMEDIUM descriptor = {};
     passed = passed && SUCCEEDED(offer->GetData(&formats[0], &descriptor));
@@ -167,6 +169,7 @@ static int selfTest()
         if (group) GlobalUnlock(descriptor.hGlobal);
         ReleaseStgMedium(&descriptor);
     }
+    std::printf("descriptor: ok=%d requests=%u\n", passed, offer->contentRequests);
     passed = passed && offer->contentRequests == 0;
     for (int i = 0; i < 2; ++i) {
         STGMEDIUM data = {};
@@ -174,6 +177,9 @@ static int selfTest()
         std::vector<char> bytes(sampleContent().size() + 1);
         ULONG read = 0;
         HRESULT result = data.pstm->Read(bytes.data(), static_cast<ULONG>(bytes.size()), &read);
+        std::printf("stream %d: hr=%lx read=%lu expected=%zu equal=%d\n", i,
+                    static_cast<unsigned long>(result), read, sampleContent().size(),
+                    std::string(bytes.data(), read) == sampleContent());
         passed = passed && result == S_FALSE && read == sampleContent().size() &&
             std::string(bytes.data(), read) == sampleContent();
         ReleaseStgMedium(&data);
@@ -190,6 +196,7 @@ static int selfTest()
     bad.dwAspect = DVASPECT_ICON;
     passed = passed && offer->QueryGetData(&bad) == DV_E_DVASPECT;
     passed = passed && offer->GetData(nullptr, &invalid) == E_POINTER;
+    std::printf("data contract: ok=%d requests=%u\n", passed, offer->contentRequests);
     offer->Release();
     DragSource* source = new DragSource;
     passed = passed && source->QueryContinueDrag(TRUE, MK_LBUTTON) == DRAGDROP_S_CANCEL &&
