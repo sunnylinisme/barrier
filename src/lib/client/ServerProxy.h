@@ -19,6 +19,7 @@
 #pragma once
 
 #include "barrier/clipboard_types.h"
+#include "barrier/NativeFileTransfer.h"
 #include "barrier/key_types.h"
 #include "base/Event.h"
 #include "base/Stopwatch.h"
@@ -110,6 +111,8 @@ private:
 private:
     typedef EResult (ServerProxy::*MessageParser)(const UInt8*);
 
+    barrier::NativeFileReceiver m_nativeReceiver;
+    bool m_nativeAllowed = false;
     Client*            m_client;
     barrier::IStream*    m_stream;
 

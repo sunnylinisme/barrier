@@ -828,3 +828,8 @@ Client::sendDragInfo(UInt32 fileCount, std::string& info, size_t size)
 {
     m_server->sendDragInfo(fileCount, info.c_str(), size);
 }
+
+void Client::startNativeFile(std::shared_ptr<const barrier::NativeFile> file)
+{
+    if (m_active) m_screen->startNativeFile(file);
+}

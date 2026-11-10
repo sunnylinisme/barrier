@@ -89,6 +89,10 @@ ServerApp::parseArgs(int argc, const char* const* argv)
     ArgParser argParser(this);
     bool result = argParser.parseServerArgs(args(), argc, argv);
 
+    if (args().m_nativeFileDrop && !args().m_enableCrypto) {
+        LOG((CLOG_PRINT "--native-file-drop requires authenticated encryption"));
+        m_bye(kExitArgs);
+    }
     if (!result || args().m_shouldExit) {
         m_bye(kExitArgs);
     }

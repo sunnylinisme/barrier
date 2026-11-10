@@ -44,6 +44,10 @@
 #include <AvailabilityMacros.h>
 #include <IOKit/hidsystem/event_status_driver.h>
 #include <AppKit/NSEvent.h>
+#include <AppKit/NSPasteboard.h>
+#include "barrier/XScreen.h"
+
+static constexpr int64_t nativeCancelEventTag = 0x4241524E4446;
 
 // This isn't in any Apple SDK that I know of as of yet.
 enum {
@@ -777,7 +781,8 @@ OSXScreen::enable()
 	}
 
 	if (!m_eventTapPort) {
-		LOG((CLOG_ERR "failed to create quartz event tap"));
+		LOG((CLOG_ERR "failed to create quartz event tap; enable Accessibility and Input Monitoring"));
+        throw XScreenOpenFailure();
 	}
 
 	m_eventTapRLSR = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, m_eventTapPort, 0);
@@ -1139,6 +1144,11 @@ OSXScreen::onMouseMove(CGFloat mx, CGFloat my)
 bool
 OSXScreen::onMouseButton(bool pressed, UInt16 macButton)
 {
+    if (pressed && macButton == kButtonLeft && m_isOnScreen) {
+        @autoreleasepool {
+            m_nativePasteboardGeneration = [[NSPasteboard pasteboardWithName:NSPasteboardNameDrag] changeCount];
+        }
+    }
 	// Buttons 2 and 3 are inverted on the mac
 	ButtonID button = mapMacButtonToBarrier(macButton);
 
@@ -1915,6 +1925,8 @@ OSXScreen::handleCGInputEvent(CGEventTapProxy proxy,
 							   CGEventRef event,
 							   void* refcon)
 {
+    // These events cancel Finder locally and must never become remote mouse-up/escape.
+    if (event && CGEventGetIntegerValueField(event, kCGEventSourceUserData) == nativeCancelEventTag) return event;
 	OSXScreen* screen = (OSXScreen*)refcon;
 	CGPoint pos;
 
@@ -2156,3 +2168,34 @@ avoidHesitatingCursor()
 }
 
 #pragma GCC diagnostic error "-Wdeprecated-declarations"
+
+std::string OSXScreen::nativeDraggingPath()
+{
+    @autoreleasepool {
+        NSPasteboard* pasteboard = [NSPasteboard pasteboardWithName:NSPasteboardNameDrag];
+        if (!m_draggingStarted || pasteboard.changeCount == m_nativePasteboardGeneration.load()) return {};
+        NSArray* urls = [pasteboard readObjectsForClasses:@[[NSURL class]]
+                      options:@{NSPasteboardURLReadingFileURLsOnlyKey: @YES}];
+        if (urls.count != 1) return {};
+        NSURL* url = urls[0];
+        return url.fileURL && url.path.UTF8String ? std::string(url.path.UTF8String) : std::string();
+    }
+}
+
+void OSXScreen::cancelNativeSourceDrag()
+{
+    CGEventRef position = CGEventCreate(nullptr);
+    CGPoint point = CGEventGetLocation(position);
+    CFRelease(position);
+    CGEventRef events[] = {CGEventCreateKeyboardEvent(nullptr, 53, true),
+                          CGEventCreateKeyboardEvent(nullptr, 53, false),
+                          CGEventCreateMouseEvent(nullptr, kCGEventLeftMouseUp, point, kCGMouseButtonLeft)};
+    for (CGEventRef event : events) {
+        if (event) {
+            CGEventSetIntegerValueField(event, kCGEventSourceUserData, nativeCancelEventTag);
+            CGEventPost(kCGHIDEventTap, event);
+            CFRelease(event);
+        }
+    }
+    m_draggingStarted = false;
+}

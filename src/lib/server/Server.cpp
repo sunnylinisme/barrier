@@ -17,6 +17,8 @@
  */
 
 #include "server/Server.h"
+#include "barrier/NativeFileProtocol.h"
+#include "barrier/ProtocolUtil.h"
 
 #include "server/ClientProxy.h"
 #include "server/ClientProxyUnknown.h"
@@ -1715,6 +1717,8 @@ Server::onMouseUp(ButtonID id)
 	// relay
 	m_active->mouseUp(id);
 
+	if (m_args.m_nativeFileDrop) return;
+
 	if (m_ignoreFileTransfer) {
 		m_ignoreFileTransfer = false;
 		return;
@@ -1818,7 +1822,22 @@ Server::onMouseMovePrimary(SInt32 x, SInt32 y)
 
 		// should we switch or not?
 		if (isSwitchOkay(newScreen, dir, x, y, xc, yc)) {
-			if (m_args.m_enableDragDrop
+            if (m_args.m_nativeFileDrop && m_screen->isDraggingStarted() && m_active != newScreen) {
+                if (!m_args.m_enableCrypto || !newScreen->nativeFileDrop) return false;
+                std::shared_ptr<const barrier::NativeFile> file;
+                try { file = barrier::readNativeFile(m_screen->nativeDraggingPath()); }
+                catch (const std::exception& e) {
+                    LOG((CLOG_WARN "native drop: %s", e.what()));
+                    return false;
+                }
+                m_screen->cancelNativeSourceDrag();
+                switchScreen(newScreen, x, y, false);
+                if (m_active != newScreen) return false;
+                barrier::sendNativeFile(newScreen->getStream(), m_seqNum, *file);
+                LOG((CLOG_INFO "native drop: sent %u bytes to %s", static_cast<UInt32>(file->bytes.size()), newScreen->getName().c_str()));
+                return true;
+            }
+			if (m_args.m_enableDragDrop && !m_args.m_nativeFileDrop
 				&& m_screen->isDraggingStarted()
 				&& m_active != newScreen
 				&& m_waitDragInfoThread) {

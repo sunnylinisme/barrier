@@ -18,6 +18,8 @@
 
 #pragma once
 
+
+#include "barrier/NativeFileTransfer.h"
 #include "barrier/IClient.h"
 
 #include "barrier/Clipboard.h"
@@ -44,6 +46,7 @@ This class implements the top-level client algorithms for barrier.
 */
 class Client : public IClient, public INode {
 public:
+    void startNativeFile(std::shared_ptr<const barrier::NativeFile> file);
     class FailInfo {
     public:
         FailInfo(const char* what) : m_retry(false), m_what(what) { }

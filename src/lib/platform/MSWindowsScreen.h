@@ -18,6 +18,7 @@
  */
 
 #pragma once
+#include "platform/MSWindowsNativeDrag.h"
 
 #include "platform/MSWindowsHook.h"
 #include "barrier/PlatformScreen.h"
@@ -119,6 +120,7 @@ public:
     virtual bool        isPrimary() const;
     virtual void        fakeDraggingFiles(DragFileList fileList);
     virtual std::string& getDraggingFilename();
+    void startNativeFile(std::shared_ptr<const barrier::NativeFile> file) override;
     virtual const std::string& getDropTarget() const;
     virtual void        setDropTarget(const std::string&);
 
@@ -132,6 +134,7 @@ protected:
     void                fakeLocalKey(KeyButton button, bool press) const;
 
 private:
+    MSWindowsNativeDrag m_nativeDrag;
     // initialization and shutdown operations
     HCURSOR                createBlankCursor() const;
     void                destroyCursor(HCURSOR cursor) const;

@@ -563,3 +563,7 @@ Screen::leaveSecondary()
 }
 
 }
+
+std::string barrier::Screen::nativeDraggingPath() { return m_screen->nativeDraggingPath(); }
+void barrier::Screen::cancelNativeSourceDrag() { m_screen->cancelNativeSourceDrag(); }
+void barrier::Screen::startNativeFile(std::shared_ptr<const NativeFile> file) { m_screen->startNativeFile(file); }

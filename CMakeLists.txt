@@ -16,7 +16,13 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 cmake_minimum_required (VERSION 3.4)
+if(POLICY CMP0091)
+    cmake_policy(SET CMP0091 NEW)
+endif()
 project (barrier C CXX)
+
+option (BARRIER_USE_SYSTEM_OPENSSL "Use OpenSSL discovered by CMake" OFF)
+option (BARRIER_NATIVE_DROP_TESTS "Build native transfer tests" OFF)
 
 option (BARRIER_BUILD_GUI "Build the GUI" ON)
 option (BARRIER_BUILD_INSTALLER "Build the installer" ON)
@@ -286,7 +292,7 @@ if (UNIX)
 
 elseif (${CMAKE_SYSTEM_NAME} MATCHES "Windows")
     set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /MP /D _BIND_TO_CURRENT_VCLIBS_VERSION=1")
-    set (CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} /MD /O2 /Ob2")
+    set (CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} /O2 /Ob2")
 
     list (APPEND libs Wtsapi32 Userenv Wininet comsuppw Shlwapi)
 
@@ -299,6 +305,7 @@ elseif (${CMAKE_SYSTEM_NAME} MATCHES "Windows")
         /D_CRT_SECURE_NO_WARNINGS
         /DBARRIER_VERSION=\"${BARRIER_VERSION}\"
         /D_XKEYCHECK_H
+        /DNOMINMAX
     )
 endif()
 
@@ -307,7 +314,12 @@ include_directories("${CMAKE_SOURCE_DIR}/ext/gulrak-filesystem/include")
 #
 # OpenSSL
 #
-if (${CMAKE_SYSTEM_NAME} MATCHES "Windows")
+if (BARRIER_USE_SYSTEM_OPENSSL)
+    set(OPENSSL_USE_STATIC_LIBS TRUE)
+    find_package(OpenSSL REQUIRED)
+    set(OPENSSL_LIBS OpenSSL::SSL OpenSSL::Crypto)
+    include_directories(SYSTEM ${OPENSSL_INCLUDE_DIR})
+elseif (${CMAKE_SYSTEM_NAME} MATCHES "Windows")
     set (OPENSSL_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/ext/openssl/windows)
     if (CMAKE_SIZEOF_VOID_P EQUAL 8)
         set (OPENSSL_ROOT "${OPENSSL_ROOT}/x64")
@@ -459,3 +471,8 @@ endif()
 enable_testing()
 
 add_subdirectory (src)
+
+if(BARRIER_NATIVE_DROP_TESTS)
+    enable_testing()
+endif()
+add_subdirectory(tools/native-file-drop)

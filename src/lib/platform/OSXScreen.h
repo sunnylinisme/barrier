@@ -17,6 +17,7 @@
  */
 
 #pragma once
+#include <atomic>
 
 #include "platform/OSXClipboard.h"
 #include "barrier/PlatformScreen.h"
@@ -98,6 +99,8 @@ public:
     virtual bool        isPrimary() const;
     virtual void        fakeDraggingFiles(DragFileList fileList);
     virtual std::string& getDraggingFilename();
+    std::string nativeDraggingPath() override;
+    void cancelNativeSourceDrag() override;
 
     const std::string& getDropTarget() const { return m_dropTarget; }
     void                waitForCarbonLoop() const;
@@ -274,6 +277,7 @@ private:
     std::vector<MouseButtonEventMapType> MouseButtonEventMap;
 
     bool                m_cursorHidden;
+    std::atomic<long> m_nativePasteboardGeneration{-1};
     SInt32                m_dragNumButtonsDown;
     Point                m_dragLastPoint;
     EventQueueTimer*    m_dragTimer;

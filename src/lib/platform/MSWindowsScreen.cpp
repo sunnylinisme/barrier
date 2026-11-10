@@ -238,6 +238,7 @@ MSWindowsScreen::enable()
 void
 MSWindowsScreen::disable()
 {
+    m_nativeDrag.cancel();
     // stop tracking the active desk
     m_desks->disable();
 
@@ -308,6 +309,7 @@ MSWindowsScreen::enter()
 bool
 MSWindowsScreen::leave()
 {
+    m_nativeDrag.cancel();
     // get keyboard layout of foreground window.  we'll use this
     // keyboard layout for translating keys sent to clients.
     HWND window  = GetForegroundWindow();
@@ -351,7 +353,7 @@ MSWindowsScreen::leave()
     m_isOnScreen = false;
     forceShowCursor();
 
-    if (isDraggingStarted() && !m_isPrimary) {
+    if (isDraggingStarted() && !m_isPrimary && !App::instance().argsBase().m_nativeFileDrop) {
         m_sendDragThread = new Thread([this](){ send_drag_thread(); });
     }
 
@@ -715,6 +717,7 @@ MSWindowsScreen::getCursorCenter(SInt32& x, SInt32& y) const
 void
 MSWindowsScreen::fakeMouseButton(ButtonID id, bool press)
 {
+    if (id == kButtonLeft && !press && m_nativeDrag.release()) return;
     m_desks->fakeMouseButton(id, press);
 
     if (id == kButtonLeft) {
@@ -760,6 +763,7 @@ void
 MSWindowsScreen::fakeKeyDown(KeyID id, KeyModifierMask mask,
                 KeyButton button)
 {
+    if (id == kKeyEscape) m_nativeDrag.cancel();
     PlatformScreen::fakeKeyDown(id, mask, button);
     updateForceShowCursor();
 }
@@ -1954,4 +1958,10 @@ MSWindowsScreen::isModifierRepeat(KeyModifierMask oldState, KeyModifierMask stat
     }
 
     return result;
+}
+
+void MSWindowsScreen::startNativeFile(std::shared_ptr<const barrier::NativeFile> file)
+{
+    m_draggingStarted = false;
+    m_nativeDrag.start(file);
 }

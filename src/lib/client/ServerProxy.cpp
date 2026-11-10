@@ -19,6 +19,9 @@
 #include "client/ServerProxy.h"
 
 #include "client/Client.h"
+#include "barrier/App.h"
+#include "barrier/NativeFileProtocol.h"
+#include "barrier/ArgsBase.h"
 #include "barrier/FileChunk.h"
 #include "barrier/ClipboardChunk.h"
 #include "barrier/StreamChunker.h"
@@ -34,6 +37,7 @@
 #include "base/XBase.h"
 
 #include <memory>
+#include <stdexcept>
 
 //
 // ServerProxy
@@ -172,6 +176,10 @@ ServerProxy::parseHandshakeMessage(const UInt8* code)
         // handshake is complete
         m_parser = &ServerProxy::parseMessage;
         m_client->handshakeComplete();
+#if WINAPI_MSWINDOWS
+        m_nativeAllowed = App::instance().argsBase().m_nativeFileDrop && App::instance().argsBase().m_enableCrypto;
+        if (m_nativeAllowed) ProtocolUtil::writef(m_stream, barrier::nativeCapability, 1);
+#endif
     }
 
     else if (memcmp(code, kMsgCResetOptions, 4) == 0) {
@@ -231,7 +239,22 @@ ServerProxy::parseHandshakeMessage(const UInt8* code)
 ServerProxy::EResult
 ServerProxy::parseMessage(const UInt8* code)
 {
-    if (memcmp(code, kMsgDMouseMove, 4) == 0) {
+    if (memcmp(code, "NDF", 3) == 0) {
+        if (!m_nativeAllowed) return kUnknown;
+        try {
+            auto file = barrier::receiveNativeFile(m_stream, code, m_seqNum, m_nativeReceiver);
+            if (file) {
+                flushCompressedMouse();
+                m_client->startNativeFile(file);
+                LOG((CLOG_INFO "native drop: received and verified %u bytes", static_cast<UInt32>(file->bytes.size())));
+            }
+        } catch (const std::exception& e) {
+            LOG((CLOG_ERR "native drop rejected: %s", e.what()));
+            m_nativeReceiver.reset();
+            return kUnknown;
+        }
+    }
+    else if (memcmp(code, kMsgDMouseMove, 4) == 0) {
         mouseMove();
     }
 
@@ -539,6 +562,7 @@ ServerProxy::enter()
     m_dxMouse               = 0;
     m_dyMouse               = 0;
     m_seqNum                = seqNum;
+    m_nativeReceiver.reset();
 
     // forward
     m_client->enter(x, y, seqNum, static_cast<KeyModifierMask>(mask), false);
@@ -547,6 +571,7 @@ ServerProxy::enter()
 void
 ServerProxy::leave()
 {
+    m_nativeReceiver.reset();
     // parse
     LOG((CLOG_DEBUG1 "recv leave"));
 
