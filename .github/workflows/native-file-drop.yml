@@ -67,6 +67,13 @@ jobs:
         run: cmake --build build --config Release --parallel 3
       - name: Protocol and actual OLE tests
         run: ctest --test-dir build -C Release --verbose
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: explorer-failure-screens
+          path: build/tools/native-file-drop/explorer-*.bmp
+          if-no-files-found: ignore
+          retention-days: 7
       - name: Windows client TLS-to-native-drop integration
         run: python tools/native-file-drop/windows-cli-network-test.py build/bin/Release
       - name: Package

@@ -91,6 +91,32 @@ static bool shellFolderDrop(HWND window, std::shared_ptr<const barrier::NativeFi
     std::cout << (passed ? "PASS" : "FAIL") << ": actual filesystem Shell drop creates matching file\n";
     return passed;
 }
+static void saveScreen(const wchar_t* path) {
+    int width = GetSystemMetrics(SM_CXSCREEN), height = GetSystemMetrics(SM_CYSCREEN);
+    HDC screen = GetDC(nullptr), memory = CreateCompatibleDC(screen);
+    HBITMAP bitmap = CreateCompatibleBitmap(screen, width, height);
+    auto old = SelectObject(memory, bitmap);
+    BitBlt(memory, 0, 0, width, height, screen, 0, 0, SRCCOPY);
+    SelectObject(memory, old);
+    BITMAPINFO info = {}; info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    info.bmiHeader.biWidth = width; info.bmiHeader.biHeight = -height;
+    info.bmiHeader.biPlanes = 1; info.bmiHeader.biBitCount = 32; info.bmiHeader.biCompression = BI_RGB;
+    std::vector<BYTE> pixels(width * height * 4);
+    if (GetDIBits(memory, bitmap, 0, height, pixels.data(), &info, DIB_RGB_COLORS)) {
+        BITMAPFILEHEADER header = {}; header.bfType = 0x4d42;
+        header.bfOffBits = sizeof(header) + sizeof(info.bmiHeader);
+        header.bfSize = header.bfOffBits + static_cast<DWORD>(pixels.size());
+        HANDLE file = CreateFileW(path, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, 0, nullptr);
+        if (file != INVALID_HANDLE_VALUE) {
+            DWORD written;
+            WriteFile(file, &header, sizeof(header), &written, nullptr);
+            WriteFile(file, &info.bmiHeader, sizeof(info.bmiHeader), &written, nullptr);
+            WriteFile(file, pixels.data(), static_cast<DWORD>(pixels.size()), &written, nullptr);
+            CloseHandle(file);
+        }
+    }
+    DeleteObject(bitmap); DeleteDC(memory); ReleaseDC(nullptr, screen);
+}
 struct ExplorerSearch { const wchar_t* title; HWND window = nullptr; };
 static BOOL CALLBACK findExplorer(HWND window, LPARAM value) {
     auto search = reinterpret_cast<ExplorerSearch*>(value);
@@ -158,6 +184,7 @@ static bool explorerDrop(std::shared_ptr<const barrier::NativeFile> file, bool l
             }
             pump(50);
         } while (GetTickCount64() < deadline);
+        if (!passed) saveScreen(localButton ? L"explorer-local.bmp" : L"explorer-remote.bmp");
         PostMessageW(search.window, WM_CLOSE, 0, 0); pump(300);
     } else std::cerr << "FAIL: Explorer window not found, ShellExecute=" << opened << "\n";
     DeleteFileW(output.c_str()); RemoveDirectoryW(folder);
