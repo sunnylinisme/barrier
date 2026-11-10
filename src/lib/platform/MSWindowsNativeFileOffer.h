@@ -7,13 +7,15 @@
 #include <ole2.h>
 #include <shlobj.h>
 #include <shlwapi.h>
+#include <cstdio>
 #include "barrier/NativeFileTransfer.h"
 
 // Explorer chooses the destination. It requests index 0's bytes only when needed.
 class FileOffer final : public IDataObject {
 public:
     explicit FileOffer(std::shared_ptr<const barrier::NativeFile> file) : file_(std::move(file)), descriptor_(static_cast<CLIPFORMAT>(RegisterClipboardFormat(CFSTR_FILEDESCRIPTORW))),
-                  contents_(static_cast<CLIPFORMAT>(RegisterClipboardFormat(CFSTR_FILECONTENTS))) {}
+                  contents_(static_cast<CLIPFORMAT>(RegisterClipboardFormat(CFSTR_FILECONTENTS))),
+                  preferred_(static_cast<CLIPFORMAT>(RegisterClipboardFormat(CFSTR_PREFERREDDROPEFFECT))) {}
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** out) override
     {
         if (!out) return E_POINTER;
@@ -33,8 +35,10 @@ public:
     HRESULT STDMETHODCALLTYPE QueryGetData(FORMATETC* format) override
     {
         if (!format) return E_POINTER;
+        char name[128] = {}; GetClipboardFormatNameA(format->cfFormat, name, sizeof(name));
+        std::fprintf(stderr, "native format: query %s (%u), index=%ld tymed=%lu\n", name, format->cfFormat, format->lindex, format->tymed);
         if (format->dwAspect != DVASPECT_CONTENT) return DV_E_DVASPECT;
-        if (format->cfFormat == descriptor_) {
+        if (format->cfFormat == descriptor_ || format->cfFormat == preferred_) {
             if (format->lindex != -1) return DV_E_LINDEX;
             return (format->tymed & TYMED_HGLOBAL) ? S_OK : DV_E_TYMED;
         }
@@ -50,6 +54,16 @@ public:
         ZeroMemory(medium, sizeof(*medium));
         HRESULT result = QueryGetData(format);
         if (FAILED(result)) return result;
+        if (format->cfFormat == preferred_) {
+            HGLOBAL handle = GlobalAlloc(GMEM_MOVEABLE, sizeof(DWORD));
+            if (!handle) return E_OUTOFMEMORY;
+            auto effect = static_cast<DWORD*>(GlobalLock(handle));
+            if (!effect) { GlobalFree(handle); return E_OUTOFMEMORY; }
+            *effect = DROPEFFECT_COPY;
+            GlobalUnlock(handle);
+            medium->tymed = TYMED_HGLOBAL; medium->hGlobal = handle;
+            return S_OK;
+        }
         if (format->cfFormat == descriptor_) {
             HGLOBAL handle = GlobalAlloc(GMEM_MOVEABLE | GMEM_ZEROINIT, sizeof(FILEGROUPDESCRIPTORW));
             if (!handle) return E_OUTOFMEMORY;
@@ -105,8 +119,9 @@ public:
         *out = nullptr;
         if (direction != DATADIR_GET) return E_NOTIMPL;
         FORMATETC formats[] = {{descriptor_, nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL},
-                               {contents_, nullptr, DVASPECT_CONTENT, 0, TYMED_ISTREAM}};
-        return SHCreateStdEnumFmtEtc(2, formats, out);
+                               {contents_, nullptr, DVASPECT_CONTENT, 0, TYMED_ISTREAM},
+                               {preferred_, nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL}};
+        return SHCreateStdEnumFmtEtc(3, formats, out);
     }
     HRESULT STDMETHODCALLTYPE DAdvise(FORMATETC*, DWORD, IAdviseSink*, DWORD*) override
         { return OLE_E_ADVISENOTSUPPORTED; }
@@ -119,5 +134,6 @@ private:
     LONG refs_ = 1;
     CLIPFORMAT descriptor_;
     CLIPFORMAT contents_;
+    CLIPFORMAT preferred_;
 };
 
