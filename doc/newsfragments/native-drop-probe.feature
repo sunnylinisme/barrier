@@ -1,0 +1,1 @@
+Add standalone macOS and Windows native file-drop probes for developing cross-computer file transfer. This development preview exercises local promised/virtual files only; it does not enable cross-computer dragging in Barrier.
