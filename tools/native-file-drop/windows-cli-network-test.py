@@ -11,6 +11,7 @@ import time
 
 binary = pathlib.Path(sys.argv[1]).resolve()
 processes = []
+client_log = None
 with tempfile.TemporaryDirectory(prefix="barrier-network-") as temporary:
     root = pathlib.Path(temporary)
     log_path = root / "client.log"
@@ -89,6 +90,8 @@ with tempfile.TemporaryDirectory(prefix="barrier-network-") as temporary:
             if process.poll() is None:
                 process.terminate()
             process.wait(timeout=10)
+        if client_log is not None:
+            client_log.close()
         if log_path.exists():
             print(log_path.read_text(errors="replace"))
         console = root / "console.log"
