@@ -43,6 +43,51 @@ static void pump(unsigned milliseconds) {
         Sleep(5);
     } while (GetTickCount64() < until);
 }
+// Exercise the filesystem Shell drop target, not just our permissive test target.
+static bool shellFolderDrop(HWND window, std::shared_ptr<const barrier::NativeFile> file)
+{
+    wchar_t temp[MAX_PATH], folder[MAX_PATH];
+    if (!GetTempPathW(MAX_PATH, temp) || !GetTempFileNameW(temp, L"bnd", 0, folder)) return false;
+    DeleteFileW(folder);
+    if (!CreateDirectoryW(folder, nullptr)) return false;
+    const std::wstring output = std::wstring(folder) + L"\\跨機測試.txt";
+    IShellItem* item = nullptr;
+    IDropTarget* target = nullptr;
+    HRESULT result = SHCreateItemFromParsingName(folder, nullptr, IID_PPV_ARGS(&item));
+    if (SUCCEEDED(result)) result = item->BindToHandler(nullptr, BHID_SFUIObject, IID_PPV_ARGS(&target));
+    if (item) item->Release();
+    bool passed = false;
+    bool registered = false;
+    if (SUCCEEDED(result)) {
+        result = RegisterDragDrop(window, target);
+        registered = SUCCEEDED(result);
+    }
+    std::cout << "test: filesystem Shell target HRESULT=" << std::hex << result << std::dec << "\n";
+    if (registered) {
+        SetForegroundWindow(window); SetCursorPos(200, 200); pump(100);
+        MSWindowsNativeDrag drag;
+        drag.start(file); pump(700); drag.release();
+        auto deadline = GetTickCount64() + 8000;
+        while (drag.active() && GetTickCount64() < deadline) pump(50);
+        if (drag.active()) { std::cerr << "FAIL: Shell drag did not finish\n"; ExitProcess(1); }
+        deadline = GetTickCount64() + 3000;
+        do {
+            HANDLE stream = CreateFileW(output.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);
+            if (stream != INVALID_HANDLE_VALUE) {
+                char bytes[128]; DWORD count = 0;
+                passed = ReadFile(stream, bytes, sizeof(bytes), &count, nullptr) && std::string(bytes, count) == payload;
+                CloseHandle(stream);
+                if (passed) break;
+            }
+            pump(50);
+        } while (GetTickCount64() < deadline);
+        RevokeDragDrop(window);
+    }
+    if (target) target->Release();
+    DeleteFileW(output.c_str()); RemoveDirectoryW(folder);
+    std::cout << (passed ? "PASS" : "FAIL") << ": actual filesystem Shell drop creates matching file\n";
+    return passed;
+}
 int main(int argc, char**)
 {
     ArchMiscWindows::setInstanceWin32(GetModuleHandle(nullptr));
@@ -77,7 +122,9 @@ int main(int argc, char**)
         }
         if (received == cancel) passed = false;
     }
-    RevokeDragDrop(window); target->Release(); DestroyWindow(window); OleUninitialize();
+    RevokeDragDrop(window); target->Release();
+    if (argc == 1) passed = shellFolderDrop(window, file) && passed;
+    DestroyWindow(window); OleUninitialize();
     std::cout << (passed ? "PASS" : "FAIL") << ": actual OLE drag/drop using remote release and cancel\n";
     return passed ? 0 : 1;
 }
