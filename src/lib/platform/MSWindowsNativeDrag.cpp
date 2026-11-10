@@ -26,7 +26,9 @@ static void CALLBACK dragTick(HWND, UINT, UINT_PTR, DWORD)
 }
 class RemoteDragSource final : public IDropSource {
 public:
-    explicit RemoteDragSource(std::shared_ptr<NativeDragState> state) : state_(std::move(state)), began_(GetTickCount64()) {}
+    explicit RemoteDragSource(std::shared_ptr<NativeDragState> state) : state_(std::move(state)), began_(GetTickCount64()) {
+        armed_ = state_->pressed && !state_->cancelled;
+    }
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** out) override {
         if (!out) return E_POINTER;
         *out = nullptr;
@@ -42,7 +44,7 @@ public:
         if (escape || state_->cancelled || (keys & MK_RBUTTON) || GetTickCount64() - began_ > 60000)
             return DRAGDROP_S_CANCEL;
         if (state_->pressed) { armed_ = true; return S_OK; }
-        // Releasing before the OLE loop starts must not drop into an unseen destination.
+        // A release queued before the worker starts cancels instead of creating a late drop.
         return armed_ ? DRAGDROP_S_DROP : DRAGDROP_S_CANCEL;
     }
     HRESULT STDMETHODCALLTYPE GiveFeedback(DWORD) override { return DRAGDROP_S_USEDEFAULTCURSORS; }
