@@ -865,7 +865,7 @@ OSXScreen::leave()
 {
     hideCursor();
 
-	if (isDraggingStarted()) {
+	if (isDraggingStarted() && !App::instance().argsBase().m_nativeFileDrop) {
 		String& fileList = getDraggingFilename();
 
 		if (!m_isPrimary) {
@@ -1144,7 +1144,7 @@ OSXScreen::onMouseMove(CGFloat mx, CGFloat my)
 bool
 OSXScreen::onMouseButton(bool pressed, UInt16 macButton)
 {
-    if (pressed && macButton == kButtonLeft && m_isOnScreen) {
+    if (pressed && macButton == kButtonLeft && m_isOnScreen && App::instance().argsBase().m_nativeFileDrop) {
         @autoreleasepool {
             m_nativePasteboardGeneration = [[NSPasteboard pasteboardWithName:NSPasteboardNameDrag] changeCount];
         }

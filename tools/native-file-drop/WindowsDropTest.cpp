@@ -22,7 +22,7 @@ public:
     HRESULT STDMETHODCALLTYPE DragOver(DWORD, POINTL, DWORD* effect) override { *effect = DROPEFFECT_COPY; return S_OK; }
     HRESULT STDMETHODCALLTYPE DragLeave() override { return S_OK; }
     HRESULT STDMETHODCALLTYPE Drop(IDataObject* offer, DWORD, POINTL, DWORD* effect) override {
-        FORMATETC format = {static_cast<CLIPFORMAT>(RegisterClipboardFormatW(CFSTR_FILECONTENTS)), nullptr, DVASPECT_CONTENT, 0, TYMED_ISTREAM};
+        FORMATETC format = {static_cast<CLIPFORMAT>(RegisterClipboardFormat(CFSTR_FILECONTENTS)), nullptr, DVASPECT_CONTENT, 0, TYMED_ISTREAM};
         STGMEDIUM data = {};
         *effect = DROPEFFECT_NONE;
         if (FAILED(offer->GetData(&format, &data))) return E_FAIL;
@@ -43,7 +43,7 @@ static void pump(unsigned milliseconds) {
         Sleep(5);
     } while (GetTickCount64() < until);
 }
-int main()
+int main(int argc, char**)
 {
     ArchMiscWindows::setInstanceWin32(GetModuleHandle(nullptr));
     Arch arch; arch.init(); Log log;
@@ -56,7 +56,12 @@ int main()
     if (!window || FAILED(RegisterDragDrop(window, target))) return 1;
     auto file = std::make_shared<barrier::NativeFile>(); file->name = "跨機測試.txt"; file->bytes = payload;
     bool passed = true;
-    for (bool cancel : {false, true}) {
+    if (argc > 1) {
+        SetForegroundWindow(window);
+        auto deadline = GetTickCount64() + 20000;
+        while (!received && GetTickCount64() < deadline) pump(50);
+        passed = received;
+    } else for (bool cancel : {false, true}) {
         received = false;
         SetForegroundWindow(window); SetCursorPos(200, 200); pump(100);
         {

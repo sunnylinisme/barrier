@@ -8,6 +8,9 @@
 #include <cstring>
 #include <functional>
 #include <iostream>
+#include <fstream>
+#include <chrono>
+#include "io/filesystem.h"
 #include <stdexcept>
 #include <vector>
 #if SYSAPI_WIN32
@@ -42,13 +45,46 @@ static std::shared_ptr<const barrier::NativeFile> receive(MemoryStream& stream, 
     auto file = barrier::receiveNativeFile(&stream, reinterpret_cast<const unsigned char*>(packet.data()), id, receiver);
     check(stream.input.empty(), "unconsumed bytes"); return file;
 }
-int main()
+int main(int argc, char** argv)
 {
 #if SYSAPI_WIN32
     ArchMiscWindows::setInstanceWin32(GetModuleHandle(nullptr));
 #endif
     Arch arch; arch.init(); Log log; log.setFilter(kWARNING);
     try {
+        if (argc == 3 && std::string(argv[1]) == "--wire-output") {
+            barrier::NativeFile file{"跨機測試.txt", std::string("network snapshot\n\x00\x01\xff", 20)};
+            MemoryStream stream; barrier::sendNativeFile(&stream, 42, file);
+            std::ofstream out(argv[2], std::ios::binary);
+            for (auto& packet : stream.packets) {
+                auto n = static_cast<uint32_t>(packet.size());
+                char length[] = {char(n >> 24), char(n >> 16), char(n >> 8), char(n)};
+                out.write(length, 4); out.write(packet.data(), packet.size());
+            }
+            return out.good() ? 0 : 1;
+        }
+        auto directory = barrier::fs::temp_directory_path() / ("barrier-transfer-" +
+            std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+        barrier::fs::create_directories(directory);
+        try {
+            auto path = directory / barrier::fs::u8path("真實來源.txt");
+            { std::ofstream out; barrier::open_utf8_path(out, path, std::ios::binary); out << "actual file"; }
+            auto snapshot = barrier::readNativeFile(path.u8string());
+            check(snapshot->name == "真實來源.txt" && snapshot->bytes == "actual file", "real source snapshot");
+            rejects([&] { barrier::readNativeFile(directory.u8string()); });
+            rejects([&] { barrier::readNativeFile((directory / "missing").u8string()); });
+            { std::ofstream out; barrier::open_utf8_path(out, path, std::ios::binary); }
+            check(barrier::readNativeFile(path.u8string())->bytes.empty(), "empty source file");
+            { std::ofstream out; barrier::open_utf8_path(out, path, std::ios::binary);
+              out.seekp(barrier::nativeFileLimit); out.put('x'); }
+            rejects([&] { barrier::readNativeFile(path.u8string()); });
+#if !SYSAPI_WIN32
+            auto link = directory / "link";
+            barrier::fs::create_symlink(path, link);
+            rejects([&] { barrier::readNativeFile(link.u8string()); });
+#endif
+        } catch (...) { barrier::fs::remove_all(directory); throw; }
+        barrier::fs::remove_all(directory);
         for (auto name : {"../bad", "a/b", "a\\b", "x:stream", "CON", "LPT1.txt", "COM².txt", "NUL .txt", "trailing.", "trailing ", "..", "", "bad?"})
             check(!barrier::nativeFilenameValid(name), "invalid filename accepted");
         check(!barrier::nativeFilenameValid(std::string("nul\0name", 8)), "NUL filename");

@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #pragma once
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
 #include <windows.h>
 #include <ole2.h>
 #include <shlobj.h>
@@ -9,8 +12,8 @@
 // Explorer chooses the destination. It requests index 0's bytes only when needed.
 class FileOffer final : public IDataObject {
 public:
-    explicit FileOffer(std::shared_ptr<const barrier::NativeFile> file) : file_(std::move(file)), descriptor_(static_cast<CLIPFORMAT>(RegisterClipboardFormatW(CFSTR_FILEDESCRIPTORW))),
-                  contents_(static_cast<CLIPFORMAT>(RegisterClipboardFormatW(CFSTR_FILECONTENTS))) {}
+    explicit FileOffer(std::shared_ptr<const barrier::NativeFile> file) : file_(std::move(file)), descriptor_(static_cast<CLIPFORMAT>(RegisterClipboardFormat(CFSTR_FILEDESCRIPTORW))),
+                  contents_(static_cast<CLIPFORMAT>(RegisterClipboardFormat(CFSTR_FILECONTENTS))) {}
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** out) override
     {
         if (!out) return E_POINTER;
@@ -87,8 +90,8 @@ public:
     HRESULT STDMETHODCALLTYPE SetData(FORMATETC* format, STGMEDIUM* medium, BOOL release) override
     {
         if (!format || !medium) return E_POINTER;
-        const UINT performed = RegisterClipboardFormatW(CFSTR_PERFORMEDDROPEFFECT);
-        const UINT pasted = RegisterClipboardFormatW(CFSTR_PASTESUCCEEDED);
+        const UINT performed = RegisterClipboardFormat(CFSTR_PERFORMEDDROPEFFECT);
+        const UINT pasted = RegisterClipboardFormat(CFSTR_PASTESUCCEEDED);
         if ((format->cfFormat != performed && format->cfFormat != pasted) ||
             format->dwAspect != DVASPECT_CONTENT || medium->tymed != TYMED_HGLOBAL ||
             !medium->hGlobal || GlobalSize(medium->hGlobal) < sizeof(DWORD)) return DV_E_FORMATETC;

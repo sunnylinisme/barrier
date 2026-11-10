@@ -1830,6 +1830,7 @@ Server::onMouseMovePrimary(SInt32 x, SInt32 y)
                     LOG((CLOG_WARN "native drop: %s", e.what()));
                     return false;
                 }
+                if (!m_screen->isDraggingStarted()) return false;
                 m_screen->cancelNativeSourceDrag();
                 switchScreen(newScreen, x, y, false);
                 if (m_active != newScreen) return false;

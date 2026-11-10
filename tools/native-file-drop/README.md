@@ -2,7 +2,7 @@
 
 這是修改過的 Barrier 主程式。以 Mac 的鍵盤滑鼠操作兩台電腦，在 Finder 按住檔案拖過 Mac 右邊界，繼續拖到 Windows 檔案總管的目的資料夾並放開。目的地由檔案總管決定，沒有固定收件資料夾。
 
-目前範圍：Apple Silicon Mac 當 server、Windows 10／11 x64 當 client，同一區域網路，單個一般檔案最多 16 MiB，只複製、不刪除 Mac 原檔。資料夾、多檔、符號連結、Windows → Mac 及 Windows → Windows 尚未實作。這是待雙機實測的開發版本，並非已證實在所有桌面環境正常運作的正式版。
+目前範圍：Apple Silicon Mac 當 server、Windows 10（1903 以上）／11 x64 當 client，同一區域網路，單個一般檔案最多 16 MiB，只複製、不刪除 Mac 原檔。資料夾、多檔、符號連結、Windows → Mac 及 Windows → Windows 尚未實作。這是待雙機實測的開發版本，並非已證實在所有桌面環境正常運作的正式版。
 
 ## 兩端準備
 

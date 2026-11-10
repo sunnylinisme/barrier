@@ -559,6 +559,7 @@ Client::cleanupConnection()
 void
 Client::cleanupScreen()
 {
+    m_active = false;
     if (m_server != NULL) {
         if (m_ready) {
             m_screen->disable();

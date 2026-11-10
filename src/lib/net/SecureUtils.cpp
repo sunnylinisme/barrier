@@ -60,7 +60,9 @@
 #if SYSAPI_WIN32
 // Windows builds require a shim that makes it possible to link to different
 // versions of the Win32 C runtime. See OpenSSL FAQ.
+#if !defined(BARRIER_OPENSSL_STATIC)
 #include <openssl/applink.c>
+#endif
 #endif
 
 namespace barrier {
