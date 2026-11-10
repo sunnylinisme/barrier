@@ -6,6 +6,7 @@
 #include "base/Log.h"
 #include <iostream>
 #include <stdexcept>
+#include <cstring>
 
 static bool received = false;
 static const std::string payload("network snapshot\n\x00\x01\xff", 20);
@@ -88,13 +89,66 @@ static bool shellFolderDrop(HWND window, std::shared_ptr<const barrier::NativeFi
     std::cout << (passed ? "PASS" : "FAIL") << ": actual filesystem Shell drop creates matching file\n";
     return passed;
 }
-int main(int argc, char**)
+struct ExplorerSearch { const wchar_t* title; HWND window = nullptr; };
+static BOOL CALLBACK findExplorer(HWND window, LPARAM value) {
+    auto search = reinterpret_cast<ExplorerSearch*>(value);
+    wchar_t name[256], title[MAX_PATH];
+    GetClassNameW(window, name, 256); GetWindowTextW(window, title, MAX_PATH);
+    if (wcscmp(name, L"CabinetWClass") == 0 && wcscmp(title, search->title) == 0) search->window = window;
+    return TRUE;
+}
+static bool explorerDrop(std::shared_ptr<const barrier::NativeFile> file) {
+    wchar_t temp[MAX_PATH], folder[MAX_PATH];
+    if (!GetTempPathW(MAX_PATH, temp) || !GetTempFileNameW(temp, L"bex", 0, folder)) return false;
+    DeleteFileW(folder);
+    if (!CreateDirectoryW(folder, nullptr)) return false;
+    auto opened = reinterpret_cast<INT_PTR>(ShellExecuteW(nullptr, L"open", folder, nullptr, nullptr, SW_SHOWNORMAL));
+    ExplorerSearch search{PathFindFileNameW(folder)};
+    auto deadline = GetTickCount64() + 15000;
+    while (opened > 32 && !search.window && GetTickCount64() < deadline) {
+        EnumWindows(findExplorer, reinterpret_cast<LPARAM>(&search)); pump(100);
+    }
+    bool passed = false;
+    const std::wstring output = std::wstring(folder) + L"\\跨機測試.txt";
+    if (search.window) {
+        ShowWindow(search.window, SW_RESTORE);
+        SetWindowPos(search.window, HWND_TOPMOST, 20, 20, 900, 650, SWP_SHOWWINDOW);
+        SetForegroundWindow(search.window); pump(1000);
+        RECT area; GetClientRect(search.window, &area);
+        POINT point{area.right * 2 / 3, area.bottom * 2 / 3}; ClientToScreen(search.window, &point);
+        SetCursorPos(point.x, point.y); pump(200);
+        MSWindowsNativeDrag drag; drag.start(file); pump(1500); drag.release();
+        deadline = GetTickCount64() + 8000;
+        while (drag.active() && GetTickCount64() < deadline) pump(50);
+        if (drag.active()) { std::cerr << "FAIL: Explorer drag did not finish\n"; ExitProcess(1); }
+        deadline = GetTickCount64() + 5000;
+        do {
+            HANDLE stream = CreateFileW(output.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);
+            if (stream != INVALID_HANDLE_VALUE) {
+                char bytes[128]; DWORD count = 0;
+                passed = ReadFile(stream, bytes, sizeof(bytes), &count, nullptr) && std::string(bytes, count) == payload;
+                CloseHandle(stream);
+                if (passed) break;
+            }
+            pump(50);
+        } while (GetTickCount64() < deadline);
+        PostMessageW(search.window, WM_CLOSE, 0, 0); pump(300);
+    } else std::cerr << "FAIL: Explorer window not found, ShellExecute=" << opened << "\n";
+    DeleteFileW(output.c_str()); RemoveDirectoryW(folder);
+    std::cout << (passed ? "PASS" : "FAIL") << ": real Explorer window creates matching file\n";
+    return passed;
+}
+int main(int argc, char** argv)
 {
     ArchMiscWindows::setInstanceWin32(GetModuleHandle(nullptr));
     std::cout << std::unitbuf;
     Arch arch; arch.init(); Log log; log.setFilter(kDEBUG2);
     std::cout << "test: initialized architecture\n";
     if (FAILED(OleInitialize(nullptr))) return 1;
+    if (argc > 1 && std::strcmp(argv[1], "--explorer") == 0) {
+        auto file = std::make_shared<barrier::NativeFile>(); file->name = "跨機測試.txt"; file->bytes = payload;
+        bool passed = explorerDrop(file); OleUninitialize(); return passed ? 0 : 1;
+    }
     WNDCLASSW wc = {}; wc.hInstance = GetModuleHandle(nullptr); wc.lpfnWndProc = DefWindowProcW; wc.lpszClassName = L"BarrierDropContract";
     RegisterClassW(&wc);
     HWND window = CreateWindowW(wc.lpszClassName, L"Native drop integration test", WS_OVERLAPPEDWINDOW | WS_VISIBLE,

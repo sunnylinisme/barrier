@@ -60,6 +60,12 @@ void MSWindowsNativeDrag::cancel() {
 }
 bool MSWindowsNativeDrag::release() {
     if (!state_ || state_->done) return false;
+    POINT point = {}; GetCursorPos(&point);
+    HWND window = WindowFromPoint(point);
+    char child[128] = {}, root[128] = {};
+    GetClassNameA(window, child, sizeof(child));
+    GetClassNameA(GetAncestor(window, GA_ROOT), root, sizeof(root));
+    LOG((CLOG_INFO "native drop: release target=%s/%s", root, child));
     state_->pressed = false; wakeDrag(state_.get()); return true;
 }
 void MSWindowsNativeDrag::start(std::shared_ptr<const barrier::NativeFile> file)
@@ -82,9 +88,10 @@ void MSWindowsNativeDrag::start(std::shared_ptr<const barrier::NativeFile> file)
         HRESULT result = timer ? DoDragDrop(offer, source, DROPEFFECT_COPY, &effect) : E_FAIL;
         if (timer) KillTimer(nullptr, timer);
         timerState = nullptr;
+        unsigned requests = offer->contentRequests;
         source->Release(); offer->Release();
         OleUninitialize(); state->done = true;
-        LOG((CLOG_INFO "native drop: %s (HRESULT %lx)",
-             result == DRAGDROP_S_DROP && (effect & DROPEFFECT_COPY) ? "copy accepted" : "cancelled or rejected", static_cast<unsigned long>(result)));
+        LOG((CLOG_INFO "native drop: %s (HRESULT %lx, effect %lu, content requests %u)",
+             result == DRAGDROP_S_DROP && (effect & DROPEFFECT_COPY) ? "copy accepted" : "cancelled or rejected", static_cast<unsigned long>(result), static_cast<unsigned long>(effect), requests));
     });
 }
