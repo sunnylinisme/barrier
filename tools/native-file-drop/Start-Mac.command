@@ -40,6 +40,9 @@ section: links
     windows:
         left = mac
 end
+section: options
+    clipboardSharing = false
+end
 CONFIG
 printf '\n步驟 3／3：請在 Windows 輸入這台 Mac 的區網 IP：\n'
 /usr/sbin/ipconfig getifaddr en0 || true
@@ -48,6 +51,7 @@ printf '\n現在啟動 Mac 主程式，等待 Windows 連入。請保持兩邊�
 printf '看到 client "windows" has connected 才代表連線成功，之後游標可移出 Mac 右邊界。\n'
 printf '若出現 event tap 錯誤，請在系統設定允許輔助使用／輸入監控，再重新啟動。\n'
 printf '權限清單可能顯示 barriers 或終端機（Terminal）。記錄檔：profile/mac.log\n'
+printf '本驗證版暫停跨機剪貼簿同步，鍵盤滑鼠與原生拖檔仍啟用。\n'
 printf '按 Ctrl+C 停止。\n\n'
 ./barriers -f --no-tray --name mac --native-file-drop --profile-dir "$PROFILE" -c "$PROFILE/mac-windows.conf" --log "$PROFILE/mac.log"
 STATUS=$?

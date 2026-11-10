@@ -4,6 +4,8 @@
 
 目前範圍：Apple Silicon Mac 當 server、Windows 10（1903 以上）／11 x64 當 client，同一區域網路，單個一般檔案最多 16 MiB，只複製、不刪除 Mac 原檔。資料夾、多檔、符號連結、Windows → Mac 及 Windows → Windows 尚未實作。這是待雙機實測的開發版本，並非已證實在所有桌面環境正常運作的正式版。
 
+此驗證版的啟動設定暫停跨機剪貼簿同步（`clipboardSharing = false`），避免大量剪貼簿資料與鍵鼠共用連線而造成輸入延遲或逾時。兩台之間的複製貼上暫不可用；每台電腦內的複製貼上、鍵盤滑鼠轉送及獨立的原生拖檔功能仍保留。
+
 ## 兩端準備
 
 1. 停止兩台原有的 Barrier。分別解壓縮 `barrier-cross-drop-macos-arm64.zip` 和 `barrier-cross-drop-windows-x64.zip`；不要在 ZIP 內執行。
