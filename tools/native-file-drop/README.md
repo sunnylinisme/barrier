@@ -28,6 +28,6 @@
 
 新增選項 `--native-file-drop`，兩端都需開啟；禁用 TLS 時拒絕啟動。Windows 握手後宣告接收能力。檔案分成最多 64 KiB 的訊息，走既有互驗憑證的 TLS 連線，綁定本次切換序號。接收端檢查大小、檔名、序號、完整長度和 SHA-256，通過後才交給 Windows OLE 的 `FILEDESCRIPTORW`／`FILECONTENTS`。檔案總管在放下的位置取資料；不把遠端路徑當成本機寫入路徑。
 
-`native-transfer-test` 使用主程式同一份送收程式測試空檔、二進位、中文／emoji、16 MiB、拒收損毀與越界封包、過期序號與取消狀態。Windows 的 `native-windows-drop-test` 實際執行 OLE 拖放，測試遠端放開與取消；它用測試接收視窗，仍需要兩台實機驗證 Finder → Explorer 的完整操作。
+`native-transfer-test` 使用主程式同一份送收程式測試空檔、二進位、中文／emoji、16 MiB、拒收損毀與越界封包、過期序號與取消狀態。`windows-cli-network-test.py` 啟動真正的 Windows client，經雙向驗證憑證的 TLS 接收主程式送出格式，再將資料拖放到原生測試接收視窗。Windows 的 `native-windows-drop-test` 實際執行 OLE 拖放，測試遠端放開與取消；它用測試接收視窗，仍需要兩台實機驗證 Finder → Explorer 的完整操作。
 
 建置：CMake，關閉 GUI／installer／舊測試，開啟 `BARRIER_USE_SYSTEM_OPENSSL` 和 `BARRIER_NATIVE_DROP_TESTS`。Windows 使用 vcpkg `openssl:x64-windows-static` 和 `CMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded`；Mac 使用 arm64 OpenSSL 靜態函式庫。完整建置參數見 `.github/workflows/native-file-drop.yml`。

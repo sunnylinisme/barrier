@@ -3,14 +3,27 @@
 #include "MSWindowsNativeFileOffer.h"
 #include "base/Log.h"
 
-static void wakeDrag()
+static thread_local NativeDragState* timerState = nullptr;
+static void wakeDrag(NativeDragState* state)
 {
-    INPUT input = {};
-    input.type = INPUT_MOUSE;
-    input.mi.dwFlags = MOUSEEVENTF_MOVE;
-    SendInput(1, &input, sizeof(input));
+    HWND capture = reinterpret_cast<HWND>(state->capture.load());
+    POINT point = {}; GetCursorPos(&point);
+    UINT message = state->pressed && !state->cancelled ? WM_MOUSEMOVE : WM_LBUTTONUP;
+    WPARAM buttons = message == WM_MOUSEMOVE ? MK_LBUTTON : 0;
+    if (capture) {
+        ScreenToClient(capture, &point);
+        PostMessageW(capture, message, buttons, MAKELPARAM(point.x, point.y));
+    } else if (state->threadID) {
+        PostThreadMessageW(state->threadID, message, buttons, MAKELPARAM(point.x, point.y));
+    }
 }
-static void CALLBACK dragTick(HWND, UINT, UINT_PTR, DWORD) { wakeDrag(); }
+static void CALLBACK dragTick(HWND, UINT, UINT_PTR, DWORD)
+{
+    if (timerState) {
+        timerState->capture = reinterpret_cast<std::uintptr_t>(GetCapture());
+        wakeDrag(timerState);
+    }
+}
 class RemoteDragSource final : public IDropSource {
 public:
     explicit RemoteDragSource(std::shared_ptr<NativeDragState> state) : state_(std::move(state)), began_(GetTickCount64()) {}
@@ -25,6 +38,7 @@ public:
         LONG refs = InterlockedDecrement(&refs_); if (!refs) delete this; return refs;
     }
     HRESULT STDMETHODCALLTYPE QueryContinueDrag(BOOL escape, DWORD keys) override {
+        LOG((CLOG_DEBUG2 "native drop: continue pressed=%d cancel=%d keys=%lu", int(state_->pressed.load()), int(state_->cancelled.load()), keys));
         if (escape || state_->cancelled || (keys & MK_RBUTTON) || GetTickCount64() - began_ > 60000)
             return DRAGDROP_S_CANCEL;
         if (state_->pressed) { armed_ = true; return S_OK; }
@@ -40,11 +54,11 @@ private:
 };
 MSWindowsNativeDrag::~MSWindowsNativeDrag() { cancel(); if (worker_.joinable()) worker_.join(); }
 void MSWindowsNativeDrag::cancel() {
-    if (state_) { state_->cancelled = true; wakeDrag(); }
+    if (state_) { state_->cancelled = true; wakeDrag(state_.get()); }
 }
 bool MSWindowsNativeDrag::release() {
     if (!state_ || state_->done) return false;
-    state_->pressed = false; wakeDrag(); return true;
+    state_->pressed = false; wakeDrag(state_.get()); return true;
 }
 void MSWindowsNativeDrag::start(std::shared_ptr<const barrier::NativeFile> file)
 {
@@ -55,6 +69,9 @@ void MSWindowsNativeDrag::start(std::shared_ptr<const barrier::NativeFile> file)
     worker_ = std::thread([state, file]() {
         HRESULT init = OleInitialize(nullptr);
         if (FAILED(init)) { state->done = true; LOG((CLOG_ERR "native drop: OLE initialization failed")); return; }
+        state->threadID = GetCurrentThreadId();
+        timerState = state.get();
+        LOG((CLOG_DEBUG "native drop: starting OLE loop"));
         auto offer = new FileOffer(file);
         auto source = new RemoteDragSource(state);
         // Timer also lets a disconnected/idle drag observe cancellation and its timeout.
@@ -62,6 +79,7 @@ void MSWindowsNativeDrag::start(std::shared_ptr<const barrier::NativeFile> file)
         DWORD effect = DROPEFFECT_NONE;
         HRESULT result = timer ? DoDragDrop(offer, source, DROPEFFECT_COPY, &effect) : E_FAIL;
         if (timer) KillTimer(nullptr, timer);
+        timerState = nullptr;
         source->Release(); offer->Release();
         OleUninitialize(); state->done = true;
         LOG((CLOG_INFO "native drop: %s (HRESULT %lx)",

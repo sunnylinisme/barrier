@@ -46,7 +46,9 @@ static void pump(unsigned milliseconds) {
 int main(int argc, char**)
 {
     ArchMiscWindows::setInstanceWin32(GetModuleHandle(nullptr));
-    Arch arch; arch.init(); Log log;
+    std::cout << std::unitbuf;
+    Arch arch; arch.init(); Log log; log.setFilter(kDEBUG2);
+    std::cout << "test: initialized architecture\n";
     if (FAILED(OleInitialize(nullptr))) return 1;
     WNDCLASSW wc = {}; wc.hInstance = GetModuleHandle(nullptr); wc.lpfnWndProc = DefWindowProcW; wc.lpszClassName = L"BarrierDropContract";
     RegisterClassW(&wc);
@@ -54,6 +56,7 @@ int main(int argc, char**)
                                 30, 30, 640, 480, nullptr, nullptr, wc.hInstance, nullptr);
     Target* target = new Target;
     if (!window || FAILED(RegisterDragDrop(window, target))) return 1;
+    std::cout << "test: native drop target registered\n";
     auto file = std::make_shared<barrier::NativeFile>(); file->name = "跨機測試.txt"; file->bytes = payload;
     bool passed = true;
     if (argc > 1) {
@@ -68,7 +71,9 @@ int main(int argc, char**)
             MSWindowsNativeDrag drag;
             drag.start(file); pump(700);
             if (cancel) drag.cancel(); else drag.release();
-            pump(700);
+            auto deadline = GetTickCount64() + 8000;
+            while (drag.active() && GetTickCount64() < deadline) pump(50);
+            if (drag.active()) { std::cerr << "FAIL: OLE did not end after release/cancel\n"; ExitProcess(1); }
         }
         if (received == cancel) passed = false;
     }
