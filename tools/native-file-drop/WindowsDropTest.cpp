@@ -98,7 +98,22 @@ static BOOL CALLBACK findExplorer(HWND window, LPARAM value) {
     if (wcscmp(name, L"CabinetWClass") == 0 && wcscmp(title, search->title) == 0) search->window = window;
     return TRUE;
 }
-static bool explorerDrop(std::shared_ptr<const barrier::NativeFile> file) {
+static DWORD integrity(DWORD pid) {
+    DWORD level = 0, needed = 0;
+    HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid), token = nullptr;
+    if (process && OpenProcessToken(process, TOKEN_QUERY, &token)) {
+        GetTokenInformation(token, TokenIntegrityLevel, nullptr, 0, &needed);
+        std::vector<BYTE> data(needed);
+        if (needed && GetTokenInformation(token, TokenIntegrityLevel, data.data(), needed, &needed)) {
+            auto label = reinterpret_cast<TOKEN_MANDATORY_LABEL*>(data.data());
+            level = *GetSidSubAuthority(label->Label.Sid, *GetSidSubAuthorityCount(label->Label.Sid) - 1);
+        }
+        CloseHandle(token);
+    }
+    if (process) CloseHandle(process);
+    return level;
+}
+static bool explorerDrop(std::shared_ptr<const barrier::NativeFile> file, bool localButton = false) {
     wchar_t temp[MAX_PATH], folder[MAX_PATH];
     if (!GetTempPathW(MAX_PATH, temp) || !GetTempFileNameW(temp, L"bex", 0, folder)) return false;
     DeleteFileW(folder);
@@ -112,13 +127,18 @@ static bool explorerDrop(std::shared_ptr<const barrier::NativeFile> file) {
     bool passed = false;
     const std::wstring output = std::wstring(folder) + L"\\跨機測試.txt";
     if (search.window) {
+        DWORD pid = 0; GetWindowThreadProcessId(search.window, &pid);
+        std::cout << "test: source integrity=" << integrity(GetCurrentProcessId()) << " Explorer integrity=" << integrity(pid) << " local button=" << localButton << "\n";
         ShowWindow(search.window, SW_RESTORE);
         SetWindowPos(search.window, HWND_TOPMOST, 20, 20, 900, 650, SWP_SHOWWINDOW);
         SetForegroundWindow(search.window); pump(1000);
         RECT area; GetClientRect(search.window, &area);
         POINT point{area.right * 2 / 3, area.bottom * 2 / 3}; ClientToScreen(search.window, &point);
         SetCursorPos(point.x, point.y); pump(200);
-        MSWindowsNativeDrag drag; drag.start(file); pump(1500); drag.release();
+        if (localButton) { mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0); pump(50); }
+        MSWindowsNativeDrag drag; drag.start(file); pump(1500);
+        if (localButton) mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0);
+        drag.release();
         deadline = GetTickCount64() + 8000;
         while (drag.active() && GetTickCount64() < deadline) pump(50);
         if (drag.active()) { std::cerr << "FAIL: Explorer drag did not finish\n"; ExitProcess(1); }
@@ -148,7 +168,9 @@ int main(int argc, char** argv)
     if (FAILED(OleInitialize(nullptr))) return 1;
     if (argc > 1 && std::strcmp(argv[1], "--explorer") == 0) {
         auto file = std::make_shared<barrier::NativeFile>(); file->name = "跨機測試.txt"; file->bytes = payload;
-        bool passed = explorerDrop(file); OleUninitialize(); return passed ? 0 : 1;
+        bool passed = explorerDrop(file);
+        if (!passed) { std::cout << "test: repeat with local left-button state as a diagnostic control\n"; explorerDrop(file, true); }
+        OleUninitialize(); return passed ? 0 : 1;
     }
     WNDCLASSW wc = {}; wc.hInstance = GetModuleHandle(nullptr); wc.lpfnWndProc = DefWindowProcW; wc.lpszClassName = L"BarrierDropContract";
     RegisterClassW(&wc);

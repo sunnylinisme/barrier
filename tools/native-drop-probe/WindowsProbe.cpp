@@ -50,12 +50,20 @@ static int selfTest()
     FileOffer* offer = sampleOffer();
     IEnumFORMATETC* enumerator = nullptr;
     bool passed = SUCCEEDED(offer->EnumFormatEtc(DATADIR_GET, &enumerator));
-    FORMATETC formats[2] = {};
+    FORMATETC formats[3] = {};
     ULONG count = 0;
-    passed = passed && enumerator->Next(2, formats, &count) == S_OK && count == 2;
+    passed = passed && enumerator->Next(3, formats, &count) == S_OK && count == 3;
     std::printf("enumeration: ok=%d count=%lu indices=%ld,%ld\n", passed, count,
                 formats[0].lindex, formats[1].lindex);
     if (enumerator) enumerator->Release();
+    STGMEDIUM preference = {};
+    passed = passed && SUCCEEDED(offer->GetData(&formats[2], &preference));
+    if (preference.tymed == TYMED_HGLOBAL) {
+        auto effect = static_cast<DWORD*>(GlobalLock(preference.hGlobal));
+        passed = passed && effect && *effect == DROPEFFECT_COPY;
+        if (effect) GlobalUnlock(preference.hGlobal);
+        ReleaseStgMedium(&preference);
+    } else passed = false;
     STGMEDIUM descriptor = {};
     passed = passed && SUCCEEDED(offer->GetData(&formats[0], &descriptor));
     if (descriptor.tymed == TYMED_HGLOBAL) {
