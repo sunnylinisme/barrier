@@ -1836,6 +1836,15 @@ Server::onMouseMovePrimary(SInt32 x, SInt32 y)
                 }
                 if (!m_screen->isDraggingStarted()) return false;
                 if (!m_screen->cancelNativeSourceDrag()) return false;
+                // Leave room for small hand movements while the receiving drag starts.
+                SInt32 nx, ny, nw, nh;
+                newScreen->getShape(nx, ny, nw, nh);
+                const SInt32 insetX = std::min(SInt32(16), (nw - 1) / 2);
+                const SInt32 insetY = std::min(SInt32(16), (nh - 1) / 2);
+                if (dir == kRight) x = std::max(x, nx + insetX);
+                else if (dir == kLeft) x = std::min(x, nx + nw - 1 - insetX);
+                else if (dir == kBottom) y = std::max(y, ny + insetY);
+                else if (dir == kTop) y = std::min(y, ny + nh - 1 - insetY);
                 switchScreen(newScreen, x, y, false);
                 if (m_active != newScreen) return false;
                 barrier::sendNativeFile(newScreen->getStream(), m_seqNum, *file);

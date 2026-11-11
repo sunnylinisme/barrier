@@ -82,6 +82,7 @@ end
             driver = subprocess.Popen([str(binary / "native-windows-drop-test.exe"), "--server-source", str(source)])
             processes.append(driver)
             expected_id = None; expected_size = None; expected_digest = None; received = bytearray(); completed = False
+            released = False
             deadline = time.monotonic() + 25
             while time.monotonic() < deadline:
                 message = receive(); code = message[:4]
@@ -105,14 +106,15 @@ end
                     assert hashlib.sha256(received).digest() == expected_digest
                     completed = True
                 elif code == b"COUT" and expected_id is not None:
-                    raise AssertionError("Small entry-edge jitter switched back and cancelled the drag")
+                    assert released, "Small entry-edge jitter switched back and cancelled the drag"
+                    break
                 elif code == b"DMUP" and message[4:] == b"\x01":
                     assert completed, "Release arrived before the file snapshot"
-                    break
-            else: raise RuntimeError("Missing remote release")
-            assert completed
+                    released = True
+            else: raise RuntimeError("Missing release or intentional return")
+            assert completed and released
             assert driver.wait(timeout=10) == 0
-        print("PASS: actual Explorer source -> real Windows server boundary/hooks -> mutual TLS -> verified file and remote release")
+        print("PASS: actual Explorer source -> real Windows server -> mutual TLS, verified file, edge jitter, release and intentional return")
     finally:
         for process in reversed(processes):
             if process.poll() is None: process.terminate()

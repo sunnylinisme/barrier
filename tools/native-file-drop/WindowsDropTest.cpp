@@ -252,6 +252,8 @@ static bool explorerSource(const wchar_t* folder, bool serverMode) {
                 mouse_event(MOUSEEVENTF_MOVE, static_cast<DWORD>(-2), 0, 0, 0);
                 pump(1000);
                 mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0); pump(300);
+                // A deliberate movement back must still return control to the host.
+                mouse_event(MOUSEEVENTF_MOVE, static_cast<DWORD>(-64), 0, 0, 0); pump(300);
             } else {
                 GUITHREADINFO gui = {}; gui.cbSize = sizeof(gui);
                 GetGUIThreadInfo(GetWindowThreadProcessId(GetForegroundWindow(), nullptr), &gui);
