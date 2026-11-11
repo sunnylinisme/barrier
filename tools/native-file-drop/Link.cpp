@@ -376,7 +376,7 @@ int main(int argc, char** argv) {
                 } else if (f.size() == 2 && (f[0] == "ACCEPT" || f[0] == "REJECT")) {
                     std::lock_guard<std::mutex> lock(state.mutex); if (state.approvalId == f[1]) state.decision = f[0] == "ACCEPT" ? 1 : -1;
                 } else if (f[0] == "FORGET") {
-                    std::lock_guard<std::mutex> lock(state.mutex); ++state.generation; state.decision = -1; state.request = false;
+                    std::lock_guard<std::mutex> lock(state.mutex); ++state.generation; state.decision = -1; state.request = false; state.saved = Peer{};
                     atomicWrite(state.trustPath(), ""); std::error_code error; fs::remove(state.profile / "Peer.txt", error); require(!error, "Cannot remove saved pairing"); state.saved = Peer{}; emit("REMOVED");
                 }
             } catch (const std::exception& error) { emit("ERROR\t" + base64(error.what())); }

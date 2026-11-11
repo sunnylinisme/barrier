@@ -188,12 +188,21 @@ sealed class ShareWindow : Form
     readonly Dictionary<string, NearbyDevice> devices = new Dictionary<string, NearbyDevice>();
     readonly System.Windows.Forms.Timer retry = new System.Windows.Forms.Timer { Interval = 3000 };
     readonly bool testing;
+    readonly List<ShareCard> cards = new List<ShareCard>();
     Process backend, link;
     Form consent, diagnostics;
     string consentId, connectedAddress = "", savedPeer = "";
     bool closing, loading = true, enabled = true;
     bool Host { get { return role.SelectedIndex == 0; } }
-    void At(Control c, int x, int y, int width, int height) { c.SetBounds(x, y, width, height); Controls.Add(c); c.BringToFront(); }
+    void At(Control c, int x, int y, int width, int height)
+    {
+        var bounds = new Rectangle(x,y,width,height);
+        if (!(c is ShareCard)) foreach (var card in cards) if (card.Bounds.Contains(bounds)) {
+            c.SetBounds(x-card.Left,y-card.Top,width,height); card.Controls.Add(c); c.BringToFront(); return;
+        }
+        c.Bounds=bounds; Controls.Add(c); c.BringToFront();
+        if (c is ShareCard) cards.Add((ShareCard)c);
+    }
     void LabelAt(string text, int x, int y, int width) { At(new Label { Text = text }, x, y, width, 26); }
     public ShareWindow(bool selfTest = false)
     {
@@ -252,7 +261,7 @@ sealed class ShareWindow : Form
             } catch (Exception e) { loading = false; Error(e); }
         };
         FormClosing += delegate(object sender, FormClosingEventArgs e) {
-            if (!closing && !testing) { e.Cancel = true; Hide(); tray.ShowBalloonTip(1500, "Barrier Share", "仍在背景搜尋與連線；從系統匣可結束程式。", ToolTipIcon.Info); return; }
+            if (!closing && !testing) { e.Cancel = true; Hide(); tray.ShowBalloonTip(1500, "Barrier Share", "程式已收至系統匣；可從圖示開啟或結束。", ToolTipIcon.Info); return; }
             closing = true; retry.Stop(); StopLink(); StopBackend(); tray.Dispose();
         };
     }
@@ -379,6 +388,7 @@ sealed class ShareWindow : Form
     internal void TestDiscovery(string directory)
     {
         role.SelectedIndex = 0;
+        if (!(role.Parent is ShareCard) || !(nearby.Parent is ShareCard) || !(pair.Parent is ShareCard)) throw new Exception("Card controls must belong to their visible container");
         string fp = "v2:sha256:" + new string('a', 64), name = Convert.ToBase64String(Encoding.UTF8.GetBytes("另一台電腦"));
         LinkLine("DEVICE\t" + fp + "\t" + name + "\t192.168.1.2\t24801\tR");
         LinkLine("DEVICE\t" + fp + "\t" + name + "\t192.168.1.3\t24801\tR");
