@@ -12,7 +12,7 @@
 #include <vector>
 #include <algorithm>
 #include <UIAutomation.h>
-#include <filesystem>
+#include "io/filesystem.h"
 
 static bool received = false;
 static const std::string payload("network snapshot\n\x00\x01\xff", 20);
@@ -258,7 +258,7 @@ static bool explorerSource(const wchar_t* folder, bool serverMode) {
                 auto captured = barrier::captureWindowsNativeDrag();
                 std::error_code error;
                 bool correct = multiple ? captured.empty() : !captured.empty() &&
-                    std::filesystem::equivalent(std::filesystem::u8path(captured), path, error) && !error;
+                    barrier::fs::equivalent(barrier::fs::u8path(captured), path, error) && !error;
                 std::cout << (correct ? "PASS" : "FAIL") << ": Explorer source capture, multiple=" << multiple << "\n";
                 passed = correct && passed;
                 passed = barrier::cancelWindowsNativeDrag() && passed; pump(300);
