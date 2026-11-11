@@ -53,9 +53,9 @@ class Wire:
                 return message
         raise RuntimeError("Missing " + repr(code))
 
-    def clipboard(self, data, sequence):
+    def clipboard(self, data, sequence, identifier=0):
         for marker, chunk in [(1, str(len(data)).encode()), (2, data), (3, b"")]:
-            self.send(b"DCLP" + struct.pack("!BIBI", 0, sequence, marker, len(chunk)) + chunk)
+            self.send(b"DCLP" + struct.pack("!BIBI", identifier, sequence, marker, len(chunk)) + chunk)
 
     def read_clipboard(self):
         data = bytearray()
@@ -152,8 +152,10 @@ for role in ["server", "client"]:
                         received, sequence = wire.read_clipboard()
                         assert received == envelope(local_bytes), "Windows host did not send Explorer's file"
                         assert sequence is not None
-                        wire.send(b"CCLP" + struct.pack("!BI", 0, sequence))
-                        wire.clipboard(envelope(peer_bytes), sequence)
+                        # Windows reports one system clipboard as both Barrier IDs.
+                        for identifier in [0, 1]:
+                            wire.send(b"CCLP" + struct.pack("!BI", identifier, sequence))
+                            wire.clipboard(envelope(peer_bytes), sequence, identifier)
                         time.sleep(.3)
                         driver("--clipboard-return")
                         wire.until(b"COUT")

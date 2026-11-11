@@ -63,6 +63,12 @@ jobs:
           -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
           -DBARRIER_BUILD_GUI=OFF -DBARRIER_BUILD_INSTALLER=OFF -DBARRIER_BUILD_TESTS=OFF
           -DBARRIER_USE_SYSTEM_OPENSSL=ON -DBARRIER_NATIVE_DROP_TESTS=ON
+      - name: Build desktop launcher
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force build/bin/Release | Out-Null
+          & "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe" /nologo /target:winexe /platform:x64 /codepage:65001 /reference:System.Windows.Forms.dll /reference:System.Drawing.dll /reference:System.Xml.Linq.dll "/win32manifest:$PWD\tools\native-file-drop\utf8.manifest" "/out:$PWD\build\bin\Release\BarrierShare.exe" "$PWD\tools\native-file-drop\BarrierShare.cs"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Build
         run: cmake --build build --config Release --parallel 3
       - name: Protocol and actual OLE tests
@@ -80,11 +86,9 @@ jobs:
         run: python tools/native-file-drop/windows-server-network-test.py build/bin/Release
       - name: Bidirectional file clipboard and actual Explorer paste
         run: python tools/native-file-drop/windows-clipboard-network-test.py build/bin/Release
-      - name: Build desktop launcher
+      - name: Desktop settings and pairing migration
         shell: pwsh
         run: |
-          & "$env:WINDIR/Microsoft.NET/Framework64/v4.0.30319/csc.exe" /nologo /target:winexe /platform:x64 /codepage:65001 /reference:System.Windows.Forms.dll /reference:System.Drawing.dll /reference:System.Xml.Linq.dll /win32manifest:tools/native-file-drop/utf8.manifest /out:build/bin/Release/BarrierShare.exe tools/native-file-drop/BarrierShare.cs
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           New-Item -ItemType Directory build/gui-test | Out-Null
           $test = Start-Process build/bin/Release/BarrierShare.exe -ArgumentList '--self-test', "$PWD/build/gui-test" -PassThru
           if (-not $test.WaitForExit(60000)) { $test.Kill(); throw 'Desktop self-test timed out' }

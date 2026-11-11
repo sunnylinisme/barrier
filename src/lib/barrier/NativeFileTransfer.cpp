@@ -58,6 +58,7 @@ std::shared_ptr<const NativeFile> readNativeFile(const std::string& path)
     if (size > nativeFileLimit) throw std::runtime_error("Native drop preview supports files up to 16 MiB");
     std::ifstream in;
     open_utf8_path(in, p, std::ios::binary);
+    if (!in) throw std::runtime_error("Cannot open source file");
     file->bytes.resize(static_cast<std::size_t>(size));
     if ((size && !in.read(&file->bytes[0], static_cast<std::streamsize>(size))) || in.peek() != EOF)
         throw std::runtime_error("Cannot read file, or file changed while reading");

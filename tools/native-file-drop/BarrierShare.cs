@@ -11,6 +11,7 @@ using System.Net.Sockets;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
+using System.Threading.Tasks;
 using System.Windows.Forms;
 using System.Xml.Linq;
 
@@ -41,11 +42,11 @@ static class ShareSettings
     public static string Pair(params string[] args)
     {
         using (var process = Process.Start(Command("barrier-pair.exe", args))) {
-            string output = process.StandardOutput.ReadToEnd();
-            string error = process.StandardError.ReadToEnd();
+            var output = Task.Factory.StartNew(() => process.StandardOutput.ReadToEnd());
+            var error = Task.Factory.StartNew(() => process.StandardError.ReadToEnd());
             if (!process.WaitForExit(15000)) { process.Kill(); throw new IOException("配對工具未回應。"); }
-            if (process.ExitCode != 0) throw new IOException(error + output);
-            return output.Trim();
+            if (process.ExitCode != 0) throw new IOException(error.Result + output.Result);
+            return output.Result.Trim();
         }
     }
     public static string Init(bool host) { return Pair("init", Profile(host)); }
@@ -221,6 +222,7 @@ sealed class ShareWindow : Form
         details.AppendText(line + Environment.NewLine);
         if (line.Contains("connected to server") || line.Contains("has connected")) status.Text = "已連線 · 雙向複製貼上已啟用";
         if (line.Contains("received and verified") && line.Contains("clipboard")) status.Text = "已收到檔案，可在資料夾 Ctrl+V 貼上";
+        if (line.Contains("WARNING") && line.Contains("file clipboard:")) status.Text = "檔案無法複製：請確認是單一檔案、16 MiB 以內。詳細原因見下方。";
         if (line.Contains("disconnected") || line.Contains("server is dead")) status.Text = "連線中斷，正在重連…";
         var match = Regex.Match(line, @"\(SHA256\):\s*([0-9A-Fa-f:]{95})");
         if (!match.Success) return;
@@ -296,6 +298,13 @@ static class ShareProgram
             ShareSettings.Pair("trust", oldProfile, "server", peer);
             if (!ShareSettings.Import(old, false, false) || ShareSettings.Init(false) != peer || !ShareSettings.Trusted(false, peer)) throw new Exception("Pairing import failed");
             if (ShareSettings.Import(old, false, false)) throw new Exception("Existing pairing overwritten");
+            // Paths with spaces and a trailing slash must survive native argv parsing.
+            string spaced = Path.Combine(directory, "path with spaces") + Path.DirectorySeparatorChar;
+            ShareSettings.Pair("init", spaced);
+            if (!File.Exists(Path.Combine(spaced, "SSL", "Barrier.pem"))) throw new Exception("Argument quoting failed");
+            bool rejected = false;
+            try { ShareSettings.Backend(false, "host & command"); } catch (IOException) { rejected = true; }
+            if (!rejected) throw new Exception("Invalid server address accepted");
             ShareSettings.Init(true);
             using (var core = Process.Start(ShareSettings.Backend(true, ""))) {
                 Thread.Sleep(1500);
