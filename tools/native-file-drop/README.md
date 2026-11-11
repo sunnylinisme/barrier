@@ -15,8 +15,6 @@
 5. 接收端打開目的資料夾，在主控端 Explorer 按住一個小檔案，拖過右邊界後繼續保持按住，在另一台 Explorer 的目的資料夾空白處放開。檔案應出現，原檔仍保留。
 6. 主控端紀錄在 `profile-server/server.log`，接收端在 `profile/windows.log`。兩個 profile 含各自私鑰，請勿在兩台間複製或上傳。不同主控端的第一次配對，請使用新的解壓資料夾，避免誤用既有 Mac 的信任設定。
 
-只有檔案拖到邊界時才會暫時建立透明的原生接收視窗，以取得 Explorer 的拖曳資料；它不執行本機移動或複製。擷取後以標記過的取消事件結束本機拖曳，這些內部事件不會轉送成另一台的按鍵或放開動作。
-
 ## Mac → Windows：兩端準備
 
 1. 停止兩台原有的 Barrier。分別解壓縮 `barrier-cross-drop-macos-arm64.zip` 和 `barrier-cross-drop-windows-x64.zip`；不要在 ZIP 內執行。
@@ -38,6 +36,8 @@
 按 Ctrl+C 停止。記錄分別在 `profile/mac.log`、`profile/windows.log`。成功傳完會記錄 `sent`、`received and verified`；Windows 檔案總管接受複製會記錄 `copy accepted`。這個訊息不替代實際檔案／雜湊確認。
 
 ## 實作與自動驗證
+
+只有檔案拖到邊界時才會暫時建立小型的原生接收視窗，以取得 Explorer 的拖曳資料；它不執行本機移動或複製。擷取後以標記過的取消事件結束本機拖曳，這些內部事件不會轉送成另一台的按鍵或放開動作。
 
 新增選項 `--native-file-drop`，兩端都需開啟；禁用 TLS 時拒絕啟動。Windows 握手後宣告接收能力。檔案分成最多 64 KiB 的訊息，走既有互驗憑證的 TLS 連線，綁定本次切換序號。接收端檢查大小、檔名、序號、完整長度和 SHA-256，通過後才交給 Windows OLE 的 `FILEDESCRIPTORW`／`FILECONTENTS`。檔案總管在放下的位置取資料；不把遠端路徑當成本機寫入路徑。
 

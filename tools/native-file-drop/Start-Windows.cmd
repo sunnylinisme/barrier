@@ -2,7 +2,7 @@
 setlocal
 cd /d "%~dp0"
 echo Barrier native file drop receiver (Mac or Windows host)
-echo Windows fingerprint (copy this to the Mac setup window):
+echo Receiver fingerprint (copy this to the host setup window):
 barrier-pair.exe init "%~dp0profile"
 if errorlevel 1 goto failed
 if exist "%~dp0profile\SSL\Fingerprints\TrustedServers.txt" goto address
