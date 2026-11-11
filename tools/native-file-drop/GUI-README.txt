@@ -30,6 +30,6 @@ Barrier Share — Windows 雙向檔案複製測試版
 舊 CMD 啟動器僅保留作拖曳版本相容用途；雙向檔案複製請用 BarrierShare.exe。
 
 本版僅實作 Windows 檔案剪貼簿。macOS 檔案雙向複製尚未納入此介面。
-Windows 10 / 11 x64；使用 Windows 隨附的 .NET Framework 4.x，不需要額外的 Qt 執行環境。
+Windows 10（1903 以上）/ 11 x64；使用 Windows 隨附的 .NET Framework 4.x，不需要額外的 Qt 執行環境。
 來源與授權：https://github.com/sunnylinisme/barrier/tree/prototype/native-file-drop
 GPL-2.0-or-later；依附元件授權見 licenses。

@@ -305,7 +305,10 @@ static class ShareProgram
             bool rejected = false;
             try { ShareSettings.Backend(false, "host & command"); } catch (IOException) { rejected = true; }
             if (!rejected) throw new Exception("Invalid server address accepted");
-            ShareSettings.Init(true);
+            string oldHost = Path.Combine(old, "profile-server");
+            string hostFingerprint = ShareSettings.Pair("init", oldHost);
+            ShareSettings.Pair("trust", oldHost, "client", peer);
+            if (!ShareSettings.Import(old, true, false) || ShareSettings.Init(true) != hostFingerprint || !ShareSettings.Trusted(true, peer)) throw new Exception("Host pairing import failed");
             using (var core = Process.Start(ShareSettings.Backend(true, ""))) {
                 Thread.Sleep(1500);
                 if (core.HasExited) throw new Exception("Hidden backend failed: " + core.StandardError.ReadToEnd());
@@ -314,7 +317,7 @@ static class ShareProgram
             }
             using (var window = new ShareWindow()) {
                 window.Show(); Application.DoEvents();
-                using (var bitmap = new Bitmap(window.Width, window.Height)) { window.DrawToBitmap(bitmap, window.ClientRectangle); bitmap.Save(Path.Combine(directory, "gui.png")); }
+                using (var bitmap = new Bitmap(window.Width, window.Height)) { window.DrawToBitmap(bitmap, new Rectangle(Point.Empty, window.Size)); bitmap.Save(Path.Combine(directory, "gui.png")); }
                 window.Close();
             }
             File.WriteAllText(Path.Combine(directory, "PASS.txt"), "Settings persist; old pairing and trust preserved; hidden backend starts/stops; GUI renders.");

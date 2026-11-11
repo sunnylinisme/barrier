@@ -1,4 +1,16 @@
-# Barrier 跨機拖放：Mac／Windows → Windows 驗證版
+# Barrier Share：Windows 雙向檔案複製與跨機拖放驗證版
+
+## Windows 雙向 Ctrl+C／Ctrl+V（新版圖形介面）
+
+兩台都使用完整新版，停止舊 CMD 程式後雙擊 `BarrierShare.exe`。選擇主控／接收端，接收端填主控端的區網 IP。主控端在左、接收端在右。設定與配對存於 `%LOCALAPPDATA%\BarrierShare`；將新版放入舊包資料夾可自動沿用配對，或按「沿用舊版配對」選擇舊包資料夾，不必重貼 v2 指紋。首次配對會顯示另一台的憑證識別碼，核對後才信任。
+
+在任一台檔案總管選取一個檔案並 Ctrl+C，移到另一台的目標資料夾 Ctrl+V。兩個方向都保留原檔，每次一個一般檔案、最大 16 MiB，尚未支援資料夾、多檔或 macOS 檔案剪貼簿。文字剪貼簿及鍵鼠共享保留。GUI 開啟 `--file-clipboard` 與剪貼簿同步，預設不啟用拖曳；舊 CMD 啟動器仍維持以下拖曳驗證模式。完整操作見 [GUI-README.txt](GUI-README.txt)。
+
+新增的檔案剪貼簿格式透過既有雙向 TLS 剪貼簿協定傳輸；接收端檢查長度、安全檔名與 SHA-256，寫入本機獨立暫存資料夾後，以 Windows `CF_HDROP` 提供 Explorer 貼上。只宣告 COPY，不移除來源。GUI 可在停止後清理暫存；清理前已貼出的檔案不受影響。
+
+`windows-clipboard-network-test.py` 分別啟動正式 Windows server/client 與模擬 TLS 對端，在真正 Explorer 執行複製和貼上，以不同的本機／遠端位元組排除誤用舊剪貼簿，確認兩個角色的送收及原檔保留。GUI 自我測試檢查設定保存、中文路徑、舊憑證與信任匯入、隱藏背景程式啟停及畫面繪製。自動測試不替代 Windows 10／11 兩台實機驗收。
+
+## 先前的拖曳驗證模式
 
 這是修改過的 Barrier 主程式。以主控端的鍵盤滑鼠操作兩台電腦，在 Mac Finder 或 Windows 檔案總管按住檔案拖過主控端右邊界，繼續拖到接收端 Windows 檔案總管的目的資料夾並放開。目的地由檔案總管決定，沒有固定收件資料夾。
 
