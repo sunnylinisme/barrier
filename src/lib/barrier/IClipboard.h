@@ -59,6 +59,7 @@ public:
         kText,            //!< Text format, UTF-8, newline is LF
         kHTML,            //!< HTML format, HTML fragment, UTF-8, newline is LF
         kBitmap,        //!< Bitmap format, BMP 24/32bpp, BI_RGB
+        kFile,          //!< Validated single-file snapshot; opt-in platform converter
         kNumFormats        //!< The number of clipboard formats
     };
 

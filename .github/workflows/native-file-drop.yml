@@ -78,6 +78,8 @@ jobs:
         run: python tools/native-file-drop/windows-cli-network-test.py build/bin/Release
       - name: Windows server Explorer-to-TLS integration
         run: python tools/native-file-drop/windows-server-network-test.py build/bin/Release
+      - name: Bidirectional file clipboard and actual Explorer paste
+        run: python tools/native-file-drop/windows-clipboard-network-test.py build/bin/Release
       - name: Package
         shell: pwsh
         run: |

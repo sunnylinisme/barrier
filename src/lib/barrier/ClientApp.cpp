@@ -76,8 +76,8 @@ ClientApp::parseArgs(int argc, const char* const* argv)
     ArgParser argParser(this);
     bool result = argParser.parseClientArgs(args(), argc, argv);
 
-    if (args().m_nativeFileDrop && !args().m_enableCrypto) {
-        LOG((CLOG_PRINT "--native-file-drop requires authenticated encryption"));
+    if ((args().m_nativeFileDrop || args().m_fileClipboard) && !args().m_enableCrypto) {
+        LOG((CLOG_PRINT "Native file transfer requires authenticated encryption"));
         m_bye(kExitArgs);
     }
     if (!result || args().m_shouldExit) {

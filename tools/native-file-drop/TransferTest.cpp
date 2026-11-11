@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "barrier/NativeFileProtocol.h"
 #include "barrier/ProtocolUtil.h"
+#include "barrier/Clipboard.h"
 #include "io/IStream.h"
 #include "arch/Arch.h"
 #include "base/Log.h"
@@ -95,6 +96,18 @@ int main(int argc, char** argv)
         for (std::size_t size : {std::size_t(0), std::size_t(131137), barrier::nativeFileLimit}) {
             barrier::NativeFile source{"測試-😀.bin", std::string(size, '\0')};
             for (std::size_t i = 0; i < size; ++i) source.bytes[i] = static_cast<char>(i * 19);
+            auto encoded = barrier::encodeClipboardFile(source);
+            auto decoded = barrier::decodeClipboardFile(encoded);
+            check(decoded->name == source.name && decoded->bytes == source.bytes, "clipboard file mismatch");
+            Clipboard clipboard; clipboard.open(0); clipboard.add(IClipboard::kFile, encoded); clipboard.close();
+            auto envelope = clipboard.marshall();
+            Clipboard copy; copy.unmarshall(envelope, 0); copy.open(0);
+            check(copy.get(IClipboard::kFile) == encoded, "clipboard envelope mismatch"); copy.close();
+            copy.unmarshall(envelope.substr(0, envelope.size() - 1), 0); copy.open(0);
+            check(copy.get(IClipboard::kFile) == encoded, "truncated clipboard replaced valid content"); copy.close();
+            rejects([&] { barrier::decodeClipboardFile(encoded.substr(0, encoded.size() - 1)); });
+            auto damaged = encoded; damaged[12] ^= 1;
+            rejects([&] { barrier::decodeClipboardFile(damaged); });
             MemoryStream stream; barrier::sendNativeFile(&stream, 42, source);
             barrier::NativeFileReceiver receiver;
             std::shared_ptr<const barrier::NativeFile> result;
@@ -107,6 +120,8 @@ int main(int argc, char** argv)
             rejects([&] { receive(stream, stream.packets.back(), 42, receiver); });
         }
         barrier::NativeFile source{"安全.txt", "real\nfile bytes"};
+        rejects([&] { barrier::encodeClipboardFile({"../bad", "data"}); });
+        rejects([&] { barrier::encodeClipboardFile({"large", std::string(barrier::nativeFileLimit + 1, 'x')}); });
         MemoryStream stream; barrier::sendNativeFile(&stream, 42, source);
         barrier::NativeFileReceiver receiver;
         rejects([&] { receive(stream, stream.packets[0], 41, receiver); });

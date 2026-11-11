@@ -28,6 +28,19 @@ IClipboard::unmarshall(IClipboard* clipboard, const String& data, Time time)
 {
     assert(clipboard != NULL);
 
+    // Validate the entire envelope before replacing the current clipboard.
+    if (data.size() < 4) return;
+    const UInt32 count = readUInt32(data.data());
+    std::size_t offset = 4;
+    for (UInt32 i = 0; i < count; ++i) {
+        if (data.size() - offset < 8) return;
+        const UInt32 size = readUInt32(data.data() + offset + 4);
+        offset += 8;
+        if (size > data.size() - offset) return;
+        offset += size;
+    }
+    if (offset != data.size()) return;
+
     const char* index = data.data();
 
     if (clipboard->open(time)) {
@@ -52,7 +65,7 @@ IClipboard::unmarshall(IClipboard* clipboard, const String& data, Time time)
             // save the data if it's a known format.  if either the client
             // or server supports more clipboard formats than the other
             // then one of them will get a format >= kNumFormats here.
-            if (format <IClipboard::kNumFormats) {
+            if (static_cast<UInt32>(format) < IClipboard::kNumFormats) {
                 clipboard->add(format, String(index, size));
             }
             index += size;

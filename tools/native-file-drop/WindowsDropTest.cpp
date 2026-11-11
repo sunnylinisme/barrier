@@ -13,6 +13,8 @@
 #include <algorithm>
 #include <UIAutomation.h>
 #include "io/filesystem.h"
+#include "platform/MSWindowsClipboardFileConverter.h"
+#include "common/DataDirectories.h"
 
 static bool received = false;
 static const std::string payload("network snapshot\n\x00\x01\xff", 20);
@@ -220,6 +222,63 @@ static bool writeSource(const std::wstring& path) {
     bool ok = WriteFile(file, payload.data(), static_cast<DWORD>(payload.size()), &count, nullptr) && count == payload.size();
     CloseHandle(file); return ok;
 }
+static bool clipboardExplorer(const wchar_t* folder, bool paste, const std::string& expected = payload) {
+    const auto path = barrier::fs::path(folder) / barrier::fs::u8path("跨機複製測試.txt");
+    if (!paste && !writeSource(path.wstring())) return false;
+    auto opened = reinterpret_cast<INT_PTR>(ShellExecuteW(nullptr, L"open", folder, nullptr, nullptr, SW_SHOWNORMAL));
+    ExplorerSearch search{PathFindFileNameW(folder)};
+    auto deadline = GetTickCount64() + 15000;
+    while (opened > 32 && !search.window && GetTickCount64() < deadline) {
+        EnumWindows(findExplorer, reinterpret_cast<LPARAM>(&search)); pump(100);
+    }
+    if (!search.window) return false;
+    SetWindowPos(search.window, HWND_TOPMOST, 20, 20, 900, 650, SWP_SHOWWINDOW);
+    SetForegroundWindow(search.window); pump(700);
+    const auto serial = GetClipboardSequenceNumber();
+    key(VK_CONTROL);
+    if (!paste) { key('A'); key('A', true); }
+    key(paste ? 'V' : 'C'); key(paste ? 'V' : 'C', true); key(VK_CONTROL, true);
+    bool passed = false;
+    deadline = GetTickCount64() + 8000;
+    do {
+        try {
+            if (paste && barrier::fs::exists(path)) passed = barrier::readNativeFile(path.u8string())->bytes == expected;
+            if (!paste && GetClipboardSequenceNumber() != serial && OpenClipboard(nullptr)) {
+                auto handle = GetClipboardData(CF_HDROP);
+                MSWindowsClipboardFileConverter converter;
+                auto encoded = handle ? converter.toIClipboard(handle) : std::string();
+                CloseClipboard();
+                if (!encoded.empty()) passed = barrier::decodeClipboardFile(encoded)->bytes == payload;
+            }
+        } catch (...) {}
+        if (passed) break;
+        pump(100);
+    } while (GetTickCount64() < deadline);
+    if (!passed) saveScreen(L"explorer-clipboard.bmp");
+    PostMessageW(search.window, WM_CLOSE, 0, 0); pump(300);
+    std::cout << (passed ? "PASS" : "FAIL") << ": actual Explorer " << (paste ? "paste" : "copy") << " and file bytes\n";
+    return passed;
+}
+static bool clipboardRoundtrip() {
+    wchar_t temp[MAX_PATH], folder[MAX_PATH];
+    if (!GetTempPathW(MAX_PATH, temp) || !GetTempFileNameW(temp, L"bcp", 0, folder)) return false;
+    DeleteFileW(folder); if (!CreateDirectoryW(folder, nullptr)) return false;
+    const auto root = barrier::fs::path(folder), destination = root / "destination";
+    barrier::fs::create_directory(destination);
+    barrier::DataDirectories::profile(root / "profile");
+    HWND window = CreateWindowW(L"STATIC", L"Clipboard test", 0, 0, 0, 1, 1, HWND_MESSAGE, nullptr, GetModuleHandle(nullptr), nullptr);
+    MSWindowsClipboard clipboard(window, true);
+    auto wire = barrier::encodeClipboardFile({"跨機複製測試.txt", payload});
+    bool passed = clipboard.open(0);
+    if (passed) { passed = clipboard.empty(); clipboard.add(IClipboard::kFile, wire); clipboard.close(); }
+    MSWindowsClipboardFileConverter converter;
+    wire[12] ^= 1;
+    passed = converter.fromIClipboard(wire) == nullptr && passed;
+    passed = clipboardExplorer(destination.wstring().c_str(), true) && passed;
+    if (OpenClipboard(window)) { EmptyClipboard(); CloseClipboard(); }
+    DestroyWindow(window); barrier::fs::remove_all(root);
+    return passed;
+}
 static bool explorerSource(const wchar_t* folder, bool serverMode) {
     const std::wstring path = std::wstring(folder) + L"\\跨機來源測試.txt";
     const std::wstring second = std::wstring(folder) + L"\\second.txt";
@@ -286,6 +345,20 @@ int main(int argc, char** argv)
     Arch arch; arch.init(); Log log; log.setFilter(kDEBUG2);
     std::cout << "test: initialized architecture\n";
     if (FAILED(OleInitialize(nullptr))) return 1;
+    if (argc > 1 && std::strcmp(argv[1], "--clipboard-roundtrip") == 0) {
+        bool passed = clipboardRoundtrip(); OleUninitialize(); return passed ? 0 : 1;
+    }
+    if ((argc == 3 || argc == 4) && (std::strcmp(argv[1], "--clipboard-copy") == 0 || std::strcmp(argv[1], "--clipboard-paste") == 0)) {
+        auto expected = argc == 4 ? barrier::readNativeFile(argv[3])->bytes : payload;
+        bool passed = clipboardExplorer(barrier::fs::u8path(argv[2]).wstring().c_str(), std::strcmp(argv[1], "--clipboard-paste") == 0, expected);
+        OleUninitialize(); return passed ? 0 : 1;
+    }
+    if (argc == 2 && (std::strcmp(argv[1], "--clipboard-cross") == 0 || std::strcmp(argv[1], "--clipboard-return") == 0)) {
+        if (std::strcmp(argv[1], "--clipboard-cross") == 0)
+            mouse_event(MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE, 65535, 30000, 0, 0);
+        else mouse_event(MOUSEEVENTF_MOVE, static_cast<DWORD>(-64), 0, 0, 0);
+        pump(500); OleUninitialize(); return 0;
+    }
     if (argc > 1 && std::strcmp(argv[1], "--explorer") == 0) {
         auto file = std::make_shared<barrier::NativeFile>(); file->name = "跨機測試.txt"; file->bytes = payload;
         bool passed = true;

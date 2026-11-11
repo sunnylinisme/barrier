@@ -22,6 +22,7 @@
 #include "platform/MSWindowsClipboardUTF16Converter.h"
 #include "platform/MSWindowsClipboardBitmapConverter.h"
 #include "platform/MSWindowsClipboardHTMLConverter.h"
+#include "platform/MSWindowsClipboardFileConverter.h"
 #include "platform/MSWindowsClipboardFacade.h"
 #include "arch/win32/ArchMiscWindows.h"
 #include "base/Log.h"
@@ -32,7 +33,7 @@
 
 UINT                    MSWindowsClipboard::s_ownershipFormat = 0;
 
-MSWindowsClipboard::MSWindowsClipboard(HWND window) :
+MSWindowsClipboard::MSWindowsClipboard(HWND window, bool fileClipboard) :
     m_window(window),
     m_time(0),
     m_facade(new MSWindowsClipboardFacade()),
@@ -42,6 +43,7 @@ MSWindowsClipboard::MSWindowsClipboard(HWND window) :
     m_converters.push_back(new MSWindowsClipboardUTF16Converter);
     m_converters.push_back(new MSWindowsClipboardBitmapConverter);
     m_converters.push_back(new MSWindowsClipboardHTMLConverter);
+    if (fileClipboard) m_converters.push_back(new MSWindowsClipboardFileConverter);
 }
 
 MSWindowsClipboard::~MSWindowsClipboard()
@@ -113,6 +115,15 @@ MSWindowsClipboard::add(EFormat format, const std::string& data)
             if (win32Data != NULL) {
                 UINT win32Format = converter->getWin32Format();
                 m_facade->write(win32Data, win32Format);
+                if (format == kFile) {
+                    HGLOBAL effect = GlobalAlloc(GMEM_MOVEABLE, sizeof(DWORD));
+                    auto value = static_cast<DWORD*>(effect ? GlobalLock(effect) : nullptr);
+                    if (value) {
+                        *value = 1; // DROPEFFECT_COPY: never remove the sender's original.
+                        GlobalUnlock(effect);
+                        m_facade->write(effect, RegisterClipboardFormatW(L"Preferred DropEffect"));
+                    } else if (effect) GlobalFree(effect);
+                }
             }
         }
     }

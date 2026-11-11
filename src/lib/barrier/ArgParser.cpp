@@ -258,6 +258,9 @@ ArgParser::parseGenericArgs(int argc, const char* const* argv, int& i)
     else if (isArg(i, argc, argv, NULL, "--client")) {
         // HACK: stop error happening when using portable (barrierp)
     }
+    else if (isArg(i, argc, argv, NULL, "--file-clipboard")) {
+        argsBase().m_fileClipboard = true;
+    }
     else if (isArg(i, argc, argv, NULL, "--native-file-drop")) {
         argsBase().m_nativeFileDrop = true;
         argsBase().m_enableDragDrop = true;

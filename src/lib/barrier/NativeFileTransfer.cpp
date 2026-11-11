@@ -59,8 +59,33 @@ std::shared_ptr<const NativeFile> readNativeFile(const std::string& path)
     std::ifstream in;
     open_utf8_path(in, p, std::ios::binary);
     file->bytes.resize(static_cast<std::size_t>(size));
-    if (!in.read(&file->bytes[0], static_cast<std::streamsize>(size)) || in.peek() != EOF)
+    if ((size && !in.read(&file->bytes[0], static_cast<std::streamsize>(size))) || in.peek() != EOF)
         throw std::runtime_error("Cannot read file, or file changed while reading");
+    return file;
+}
+std::string encodeClipboardFile(const NativeFile& file)
+{
+    if (!nativeFilenameValid(file.name) || file.bytes.size() > nativeFileLimit)
+        throw std::runtime_error("Clipboard supports one regular file up to 16 MiB");
+    std::string data("NFC1");
+    for (uint32_t value : {static_cast<uint32_t>(file.name.size()), static_cast<uint32_t>(file.bytes.size())})
+        for (int shift = 24; shift >= 0; shift -= 8) data += static_cast<char>(value >> shift);
+    return data + nativeDigest(file.bytes) + file.name + file.bytes;
+}
+std::shared_ptr<const NativeFile> decodeClipboardFile(const std::string& data)
+{
+    if (data.size() < 44 || data.compare(0, 4, "NFC1") != 0)
+        throw std::runtime_error("Invalid clipboard file header");
+    uint32_t nameSize = 0, size = 0;
+    for (unsigned i = 4; i < 8; ++i) nameSize = (nameSize << 8) | static_cast<unsigned char>(data[i]);
+    for (unsigned i = 8; i < 12; ++i) size = (size << 8) | static_cast<unsigned char>(data[i]);
+    if (!nameSize || nameSize > 240 || size > nativeFileLimit || data.size() != 44 + nameSize + size)
+        throw std::runtime_error("Invalid clipboard file size");
+    auto file = std::make_shared<NativeFile>();
+    file->name = data.substr(44, nameSize);
+    file->bytes = data.substr(44 + nameSize);
+    if (!nativeFilenameValid(file->name) || nativeDigest(file->bytes) != data.substr(12, 32))
+        throw std::runtime_error("Invalid clipboard file name or digest");
     return file;
 }
 void NativeFileReceiver::reset() { file_.reset(); digest_.clear(); id_ = size_ = 0; }

@@ -16,6 +16,8 @@ struct NativeFile { std::string name, bytes; };
 bool nativeFilenameValid(const std::string& name);
 std::string nativeDigest(const std::string& bytes);
 std::shared_ptr<const NativeFile> readNativeFile(const std::string& path);
+std::string encodeClipboardFile(const NativeFile& file);
+std::shared_ptr<const NativeFile> decodeClipboardFile(const std::string& data);
 class NativeFileReceiver {
 public:
     void begin(uint32_t id, uint32_t size, const std::string& name, const std::string& digest);
