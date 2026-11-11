@@ -61,6 +61,11 @@ ServerProxy::ServerProxy(Client* client, barrier::IStream* stream, IEventQueue* 
 {
     assert(m_client != NULL);
     assert(m_stream != NULL);
+    m_filesEnabled = App::instance().argsBase().m_fileClipboard;
+    m_files.reset(new barrier::FileClipboardTransfer(m_stream, [this](ClipboardID id, uint32_t, const std::string& handle) {
+        Clipboard clipboard; clipboard.open(0); clipboard.add(IClipboard::kFile, handle); clipboard.close();
+        m_client->setClipboard(id, &clipboard);
+    }));
 
     // initialize modifier translation table
     for (KeyModifierID id = 0; id < kKeyModifierIDLast; ++id)
@@ -176,6 +181,7 @@ ServerProxy::parseHandshakeMessage(const UInt8* code)
         // handshake is complete
         m_parser = &ServerProxy::parseMessage;
         m_client->handshakeComplete();
+        if (m_filesEnabled) ProtocolUtil::writef(m_stream, barrier::fileClipboardCapability, 2);
 #if WINAPI_MSWINDOWS
         m_nativeAllowed = App::instance().argsBase().m_nativeFileDrop && App::instance().argsBase().m_enableCrypto;
         if (m_nativeAllowed) ProtocolUtil::writef(m_stream, barrier::nativeCapability, 1);
@@ -239,7 +245,16 @@ ServerProxy::parseHandshakeMessage(const UInt8* code)
 ServerProxy::EResult
 ServerProxy::parseMessage(const UInt8* code)
 {
-    if (memcmp(code, "NDF", 3) == 0) {
+    if (memcmp(code, barrier::fileClipboardCapability, 4) == 0) {
+        UInt32 version = 0;
+        if (!ProtocolUtil::readf(m_stream, barrier::fileClipboardCapability + 4, &version)) return kUnknown;
+        m_filesReady = m_filesEnabled && version == 2;
+        LOG((CLOG_INFO "file clipboard: peer %s", m_filesReady ? "ready (streaming v2)" : "requires matching version"));
+    }
+    else if (memcmp(code, "FC", 2) == 0) {
+        if (!m_filesReady || !m_files->receive(code)) return kUnknown;
+    }
+    else if (memcmp(code, "NDF", 3) == 0) {
         if (!m_nativeAllowed) return kUnknown;
         try {
             auto file = barrier::receiveNativeFile(m_stream, code, m_seqNum, m_nativeReceiver);
@@ -387,6 +402,8 @@ ServerProxy::onInfoChanged()
 bool
 ServerProxy::onGrabClipboard(ClipboardID id)
 {
+    if (m_filesEnabled && id != kClipboardClipboard) return true;
+    if (id == kClipboardClipboard) m_files->cancel();
     LOG((CLOG_DEBUG1 "sending clipboard %d changed", id));
     ProtocolUtil::writef(m_stream, kMsgCClipboard, id, m_seqNum);
     return true;
@@ -395,6 +412,14 @@ ServerProxy::onGrabClipboard(ClipboardID id)
 void
 ServerProxy::onClipboardChanged(ClipboardID id, const IClipboard* clipboard)
 {
+    if (m_filesEnabled && id != kClipboardClipboard) return;
+    if (clipboard->has(IClipboard::kFile)) {
+        if (!m_filesReady) { LOG((CLOG_WARN "file clipboard: update both computers to the streaming version")); return; }
+        try { m_files->start(clipboard->get(IClipboard::kFile), id, m_seqNum); }
+        catch (const std::exception& e) { LOG((CLOG_WARN "file clipboard: %s", e.what())); }
+        return;
+    }
+    if (id == kClipboardClipboard) m_files->cancel();
     std::string data = IClipboard::marshall(clipboard);
     LOG((CLOG_DEBUG "sending clipboard %d seqnum=%d", id, m_seqNum));
 
@@ -602,6 +627,8 @@ ServerProxy::setClipboard()
         // forward
         Clipboard clipboard;
         clipboard.unmarshall(dataCached, 0);
+        if (clipboard.has(IClipboard::kFile)) throw XBadClient("file handles cannot be received as legacy clipboard data");
+        if (id == kClipboardClipboard) m_files->cancel();
         m_client->setClipboard(id, &clipboard);
 
         LOG((CLOG_INFO "clipboard was updated"));
@@ -622,6 +649,8 @@ ServerProxy::grabClipboard()
         return;
     }
 
+    if (m_filesEnabled && id != kClipboardClipboard) return;
+    if (id == kClipboardClipboard) m_files->cancel();
     // forward
     m_client->grabClipboard(id);
 }

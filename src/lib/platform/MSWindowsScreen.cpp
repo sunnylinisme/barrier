@@ -380,8 +380,9 @@ void MSWindowsScreen::send_drag_thread()
 }
 
 bool
-MSWindowsScreen::setClipboard(ClipboardID, const IClipboard* src)
+MSWindowsScreen::setClipboard(ClipboardID id, const IClipboard* src)
 {
+    if (App::instance().argsBase().m_fileClipboard && id != kClipboardClipboard) return true;
     MSWindowsClipboard dst(m_window, App::instance().argsBase().m_fileClipboard);
     if (src != NULL) {
         // save clipboard data
@@ -493,8 +494,9 @@ MSWindowsScreen::getEventTarget() const
 }
 
 bool
-MSWindowsScreen::getClipboard(ClipboardID, IClipboard* dst) const
+MSWindowsScreen::getClipboard(ClipboardID id, IClipboard* dst) const
 {
+    if (App::instance().argsBase().m_fileClipboard && id != kClipboardClipboard) return false;
     MSWindowsClipboard src(m_window, App::instance().argsBase().m_fileClipboard);
     Clipboard::copy(dst, &src);
     return true;

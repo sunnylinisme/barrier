@@ -144,9 +144,11 @@ IClipboard::copy(IClipboard* dst, const IClipboard* src, Time time)
     if (src->open(time)) {
         if (dst->open(time)) {
             if (dst->empty()) {
+                const bool files = src->has(IClipboard::kFile);
                 for (SInt32 format = 0;
                                 format != IClipboard::kNumFormats; ++format) {
                     IClipboard::EFormat eFormat = (IClipboard::EFormat)format;
+                    if (files && eFormat != IClipboard::kFile) continue;
                     if (src->has(eFormat)) {
                         dst->add(eFormat, src->get(eFormat));
                     }

@@ -12,19 +12,17 @@ import time
 binary = pathlib.Path(sys.argv[1]).resolve()
 name = "跨機複製測試.txt"
 # Exercise many production 32 KiB chunks, not only a tiny clipboard message.
-local_bytes = (bytes(range(256)) * 4901)[:1254436]
-peer_bytes = b"distinct peer clipboard\n\xff\x00reverse" + bytes(reversed(range(256))) * 8192
+local_bytes = bytes(range(256)) * (262144 + 1)
+peer_bytes = b"distinct peer clipboard\n\xff\x00reverse" + bytes(reversed(range(256))) * 131072
 
-
-def envelope(content):
-    filename = name.encode("utf-8")
-    file = b"NFC1" + struct.pack("!II", len(filename), len(content)) + hashlib.sha256(content).digest() + filename + content
-    return struct.pack("!III", 1, 3, len(file)) + file
 
 
 class Wire:
-    def __init__(self, connection):
+    def __init__(self, connection, server=False):
         self.connection = connection
+        self.server = server
+        self.sequence = None
+        connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         connection.settimeout(12)
 
     def send(self, message):
@@ -43,7 +41,7 @@ class Wire:
         size, = struct.unpack("!I", self.exact(4))
         assert size < 20 * 1024 * 1024
         message = self.exact(size)
-        if message == b"CALV":
+        if message == b"CALV" and not self.server:
             self.send(b"CALV")
         return message
 
@@ -54,42 +52,64 @@ class Wire:
                 return message
         raise RuntimeError("Missing " + repr(code))
 
-    def clipboard(self, data, sequence, identifier=0):
-        chunks = [(1, str(len(data)).encode())]
-        chunks.extend((2, data[offset:offset + 32768]) for offset in range(0, len(data), 32768))
-        chunks.append((3, b""))
-        for marker, chunk in chunks:
-            self.send(b"DCLP" + struct.pack("!BIBI", identifier, sequence, marker, len(chunk)) + chunk)
+    def clipboard(self, content, sequence):
+        transfer = 123456
+        counter = 0
+        def send(code, body=b""):
+            nonlocal counter
+            self.send(code + struct.pack("!I", transfer) + body)
+            if self.server and counter % 32 == 0:
+                self.send(b"CALV")
+                self.send(b"DMMV" + struct.pack("!HH", 300, 250))
+            response = self.until(b"FCAK")
+            assert response == b"FCAK" + struct.pack("!II", transfer, counter)
+            counter += 1
+        def string(value): return struct.pack("!I", len(value)) + value
+        send(b"FCBG", struct.pack("!BI", 0, sequence))
+        send(b"FCEN", b"\x01" + string(name.encode()) + string(str(len(content)).encode()))
+        for offset in range(0, len(content), 65536):
+            send(b"FCHK", string(content[offset:offset + 65536]))
+        send(b"FCFE", string(hashlib.sha256(content).digest()))
+        send(b"FCDN")
 
-    def read_clipboard(self, wanted_identifier=0):
-        data = bytearray()
+    def read_clipboard(self):
+        digest = hashlib.sha256(); received = 0; transfer = None; counter = 0
         expected = None
-        sequence = None
-        for _ in range(300):
+        for _ in range(10000):
             message = self.receive()
             if message.startswith(b"CINN"):
-                sequence, = struct.unpack_from("!I", message, 8)
-            if not message.startswith(b"DCLP"):
+                self.sequence, = struct.unpack_from("!I", message, 8)
+            code = message[:4]
+            if code == b"FCBG":
+                transfer, identifier, _ = struct.unpack_from("!IBI", message, 4)
+                assert identifier == 0
+            elif code == b"FCEN":
+                identifier, kind, length = struct.unpack_from("!IBI", message, 4)
+                assert identifier == transfer and kind == 1
+                assert message[13:13 + length].decode() == name
+                size_length, = struct.unpack_from("!I", message, 13 + length)
+                expected = int(message[17 + length:17 + length + size_length])
+            elif code == b"FCHK":
+                identifier, length = struct.unpack_from("!II", message, 4)
+                assert identifier == transfer and length == len(message) - 12 and length <= 65536
+                digest.update(message[12:]); received += length
+            elif code == b"FCFE":
+                identifier, length = struct.unpack_from("!II", message, 4)
+                assert identifier == transfer and length == 32 and message[12:] == digest.digest()
+                assert expected == received
+            elif code == b"FCDN":
+                assert struct.unpack_from("!I", message, 4)[0] == transfer
+                self.send(b"FCAK" + struct.pack("!II", transfer, counter))
+                return digest.digest(), received, self.sequence
+            elif code in [b"FCNO", b"FCAB"]:
+                raise AssertionError("File transfer rejected: " + repr(message[:200]))
+            else:
                 continue
-            identifier, _, marker, length = struct.unpack_from("!BIBI", message, 4)
-            chunk = message[14:]
-            assert length == len(chunk)
-            if identifier != wanted_identifier:
-                continue
-            if marker == 1:
-                expected = int(chunk); data.clear()
-            elif marker == 2:
-                data.extend(chunk)
-            elif marker == 3:
-                assert expected == len(data)
-                # An initial empty clipboard may precede the user's copy.
-                if bytes(data) == struct.pack("!I", 0):
-                    continue
-                return bytes(data), sequence
-        raise RuntimeError("Missing file clipboard")
+            self.send(b"FCAK" + struct.pack("!II", transfer, counter)); counter += 1
+        raise RuntimeError("Missing streaming file clipboard")
 
 
-for role in ["server", "client"]:
+for role, direction in [("server", d) for d in ["right", "left", "up", "down"]] + [("client", "right")]:
     with tempfile.TemporaryDirectory(prefix="barrier-clipboard-") as temporary:
         root = pathlib.Path(temporary)
         source, destination = root / "來源", root / "目的地"
@@ -121,7 +141,8 @@ for role in ["server", "client"]:
                 if role == "server":
                     listener.close()
                     config = root / "server.conf"
-                    config.write_text("section: screens\n windows-host:\n windows:\nend\nsection: links\n windows-host:\n  right = windows\n windows:\n  left = windows-host\nend\nsection: options\n clipboardSharing = true\nend\n")
+                    opposite = {"right": "left", "left": "right", "up": "down", "down": "up"}[direction]
+                    config.write_text(("section: screens\n windows-host:\n windows:\nend\nsection: links\n windows-host:\n  right = windows\n windows:\n  left = windows-host\nend\nsection: options\n clipboardSharing = true\nend\n").replace("right = windows", direction + " = windows").replace("left = windows-host", opposite + " = windows-host"))
                     args = ["barriers.exe", "--name", "windows-host", "-c", str(config), "--address", "127.0.0.1:" + str(port)]
                     profile = server_profile
                 else:
@@ -143,7 +164,7 @@ for role in ["server", "client"]:
                     peer, _ = listener.accept()
                 with context.wrap_socket(peer, server_side=role == "client", server_hostname="Barrier" if role == "server" else None) as connection:
                     assert hashlib.sha256(connection.getpeercert(binary_form=True)).hexdigest() == (server_fp if role == "server" else client_fp).split(":", 2)[2]
-                    wire = Wire(connection)
+                    wire = Wire(connection, server=role == "client")
                     if role == "server":
                         assert wire.receive().startswith(b"Barrier")
                         wire.send(b"Barrier" + struct.pack("!HHI", 1, 6, 7) + b"windows")
@@ -152,21 +173,17 @@ for role in ["server", "client"]:
                             if message == b"QINF":
                                 wire.send(b"DINF" + struct.pack("!hhhhhhh", 0, 0, 1024, 768, 0, 200, 200))
                             if message.startswith(b"DSOP"): break
+                        wire.send(b"FCAP" + struct.pack("!I", 2))
+                        assert wire.until(b"FCAP") == b"FCAP" + struct.pack("!I", 2)
                         driver("--clipboard-copy", source, local_expected)
-                        driver("--clipboard-cross")
-                        received, sequence = wire.read_clipboard()
-                        assert received == envelope(local_bytes), "Windows host did not send Explorer's file"
+                        driver("--clipboard-cross", direction)
+                        digest, size, sequence = wire.read_clipboard()
+                        assert digest == hashlib.sha256(local_bytes).digest() and size == len(local_bytes)
                         assert sequence is not None
-                        # Drain the second Windows clipboard ID before this synchronous
-                        # test peer sends in reverse; production peers read continuously.
-                        received_selection, _ = wire.read_clipboard(1)
-                        assert received_selection == envelope(local_bytes)
-                        # Windows reports one system clipboard as both Barrier IDs.
-                        for identifier in [0, 1]:
-                            wire.send(b"CCLP" + struct.pack("!BI", identifier, sequence))
-                            wire.clipboard(envelope(peer_bytes), sequence, identifier)
+                        wire.send(b"CCLP" + struct.pack("!BI", 0, sequence))
+                        wire.clipboard(peer_bytes, sequence)
                         time.sleep(.3)
-                        driver("--clipboard-return")
+                        driver("--clipboard-return", direction)
                         wire.until(b"COUT")
                         driver("--clipboard-paste", destination, expected)
                     else:
@@ -175,17 +192,19 @@ for role in ["server", "client"]:
                         wire.send(b"QINF"); wire.until(b"DINF")
                         wire.send(b"CIAK"); wire.send(b"CROP")
                         wire.send(b"DSOP" + struct.pack("!I", 2) + b"CLPS" + struct.pack("!I", 1))
+                        assert wire.until(b"FCAP") == b"FCAP" + struct.pack("!I", 2)
+                        wire.send(b"FCAP" + struct.pack("!I", 2))
                         wire.send(b"CINN" + struct.pack("!HHIH", 200, 200, 42, 0))
-                        wire.clipboard(envelope(peer_bytes), 42)
+                        wire.clipboard(peer_bytes, 42)
                         time.sleep(.4)
                         driver("--clipboard-paste", destination, expected)
                         driver("--clipboard-copy", source, local_expected)
                         wire.send(b"COUT")
-                        received, _ = wire.read_clipboard()
-                        assert received == envelope(local_bytes), "Windows receiver did not send Explorer's file"
+                        digest, size, _ = wire.read_clipboard()
+                        assert digest == hashlib.sha256(local_bytes).digest() and size == len(local_bytes)
                     assert (source / name).read_bytes() == local_bytes, "Source file changed"
                     assert (destination / name).read_bytes() == peer_bytes, "Paste contained stale or wrong bytes"
-                    print("PASS: real Windows " + role + ", mutual TLS, bidirectional file clipboard, actual Explorer copy/paste, distinct peer bytes and original preserved")
+                    print("PASS: real Windows " + role + " direction=" + direction + ", mutual TLS, bidirectional file clipboard, actual Explorer copy/paste, distinct peer bytes and original preserved")
         finally:
             if core is not None:
                 if core.poll() is None: core.terminate()

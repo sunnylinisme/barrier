@@ -88,6 +88,7 @@ OSXScreen::OSXScreen(IEventQueue* events, bool isPrimary, bool autoShowHideCurso
 	m_screensaverNotify(false),
 	m_ownClipboard(false),
 	m_clipboardTimer(NULL),
+	m_pasteboard(App::instance().argsBase().m_fileClipboard),
 	m_hiddenWindow(NULL),
 	m_userInputWindow(NULL),
 	m_switchEventHandlerRef(0),
@@ -233,8 +234,9 @@ OSXScreen::getEventTarget() const
 }
 
 bool
-OSXScreen::getClipboard(ClipboardID, IClipboard* dst) const
+OSXScreen::getClipboard(ClipboardID id, IClipboard* dst) const
 {
+    if (App::instance().argsBase().m_fileClipboard && id != kClipboardClipboard) return false;
 	Clipboard::copy(dst, &m_pasteboard);
 	return true;
 }
@@ -903,8 +905,9 @@ OSXScreen::leave()
 }
 
 bool
-OSXScreen::setClipboard(ClipboardID, const IClipboard* src)
+OSXScreen::setClipboard(ClipboardID id, const IClipboard* src)
 {
+    if (App::instance().argsBase().m_fileClipboard && id != kClipboardClipboard) return true;
 	if (src != NULL) {
 		LOG((CLOG_DEBUG "setting clipboard"));
 		Clipboard::copy(&m_pasteboard, src);

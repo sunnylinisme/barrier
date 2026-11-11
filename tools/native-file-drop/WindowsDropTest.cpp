@@ -15,6 +15,13 @@
 #include "io/filesystem.h"
 #include "platform/MSWindowsClipboardFileConverter.h"
 #include "common/DataDirectories.h"
+#include "barrier/FileClipboardTransfer.h"
+#include <fstream>
+
+static std::string readBytes(const barrier::fs::path& path) {
+    std::ifstream in; barrier::open_utf8_path(in, path, std::ios::binary);
+    return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+}
 
 static bool received = false;
 static const std::string payload("network snapshot\n\x00\x01\xff", 20);
@@ -242,13 +249,16 @@ static bool clipboardExplorer(const wchar_t* folder, bool paste, const std::stri
     deadline = GetTickCount64() + 8000;
     do {
         try {
-            if (paste && barrier::fs::exists(path)) passed = barrier::readNativeFile(path.u8string())->bytes == expected;
+            if (paste && barrier::fs::exists(path)) passed = readBytes(path) == expected;
             if (!paste && GetClipboardSequenceNumber() != serial && OpenClipboard(nullptr)) {
                 auto handle = GetClipboardData(CF_HDROP);
                 MSWindowsClipboardFileConverter converter;
                 auto encoded = handle ? converter.toIClipboard(handle) : std::string();
                 CloseClipboard();
-                if (!encoded.empty()) passed = barrier::decodeClipboardFile(encoded)->bytes == expected;
+                if (!encoded.empty()) {
+                    auto files = barrier::clipboardFiles(encoded);
+                    passed = files->roots.size() == 1 && readBytes(files->roots[0]) == expected;
+                }
             }
         } catch (...) {}
         if (passed) break;
@@ -268,7 +278,9 @@ static bool clipboardRoundtrip() {
     barrier::DataDirectories::profile(root / "profile");
     HWND window = CreateWindowW(L"STATIC", L"Clipboard test", 0, 0, 0, 1, 1, HWND_MESSAGE, nullptr, GetModuleHandle(nullptr), nullptr);
     MSWindowsClipboard clipboard(window, true);
-    auto wire = barrier::encodeClipboardFile({"跨機複製測試.txt", payload});
+    const auto source = root / barrier::fs::u8path("跨機複製測試.txt");
+    if (!writeSource(source.wstring())) return false;
+    auto wire = barrier::registerClipboardFiles({source});
     bool passed = clipboard.open(0);
     if (passed) { passed = clipboard.empty(); clipboard.add(IClipboard::kFile, wire); clipboard.close(); }
     MSWindowsClipboardFileConverter converter;
@@ -349,14 +361,21 @@ int main(int argc, char** argv)
         bool passed = clipboardRoundtrip(); OleUninitialize(); return passed ? 0 : 1;
     }
     if ((argc == 3 || argc == 4) && (std::strcmp(argv[1], "--clipboard-copy") == 0 || std::strcmp(argv[1], "--clipboard-paste") == 0)) {
-        auto expected = argc == 4 ? barrier::readNativeFile(argv[3])->bytes : payload;
+        auto expected = argc == 4 ? readBytes(barrier::fs::u8path(argv[3])) : payload;
         bool passed = clipboardExplorer(barrier::fs::u8path(argv[2]).wstring().c_str(), std::strcmp(argv[1], "--clipboard-paste") == 0, expected);
         OleUninitialize(); return passed ? 0 : 1;
     }
-    if (argc == 2 && (std::strcmp(argv[1], "--clipboard-cross") == 0 || std::strcmp(argv[1], "--clipboard-return") == 0)) {
-        if (std::strcmp(argv[1], "--clipboard-cross") == 0)
-            mouse_event(MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE, 65535, 30000, 0, 0);
-        else mouse_event(MOUSEEVENTF_MOVE, static_cast<DWORD>(-64), 0, 0, 0);
+    if ((argc == 2 || argc == 3) && (std::strcmp(argv[1], "--clipboard-cross") == 0 || std::strcmp(argv[1], "--clipboard-return") == 0)) {
+        std::string direction = argc == 3 ? argv[2] : "right";
+        if (std::strcmp(argv[1], "--clipboard-cross") == 0) {
+            DWORD x = direction == "right" ? 65535 : direction == "left" ? 0 : 30000;
+            DWORD y = direction == "down" ? 65535 : direction == "up" ? 0 : 30000;
+            mouse_event(MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE, x, y, 0, 0);
+        } else {
+            int dx = direction == "right" ? -64 : direction == "left" ? 64 : 0;
+            int dy = direction == "down" ? -64 : direction == "up" ? 64 : 0;
+            mouse_event(MOUSEEVENTF_MOVE, static_cast<DWORD>(dx), static_cast<DWORD>(dy), 0, 0);
+        }
         pump(500); OleUninitialize(); return 0;
     }
     if (argc > 1 && std::strcmp(argv[1], "--explorer") == 0) {
