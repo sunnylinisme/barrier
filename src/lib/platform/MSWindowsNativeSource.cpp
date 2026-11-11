@@ -5,7 +5,6 @@
 #include <shellapi.h>
 #include <thread>
 #include <vector>
-#include <algorithm>
 
 namespace barrier {
 namespace {
@@ -56,7 +55,7 @@ private:
     LONG refs_ = 1;
 };
 void nudgeDrag() {
-    POINT point; GetCursorPos(&point);
+    POINT point = {}; if (!GetCursorPos(&point)) return;
     LONG step = point.x > GetSystemMetrics(SM_XVIRTUALSCREEN) ? -1 : 1;
     INPUT input[2] = {};
     for (auto& event : input) {
@@ -75,32 +74,23 @@ std::string captureWindowsNativeDrag()
     // A separate STA pumps the Explorer data object's calls while Barrier waits at the boundary.
     std::thread worker([&result]() {
         if (FAILED(OleInitialize(nullptr))) return;
-        POINT point; GetCursorPos(&point);
+        POINT point = {};
+        if (!GetCursorPos(&point)) { OleUninitialize(); return; }
         WNDCLASSW wc = {}; wc.hInstance = GetModuleHandleW(nullptr);
         wc.lpfnWndProc = DefWindowProcW; wc.lpszClassName = L"BarrierNativeSourceCapture";
         wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
         RegisterClassW(&wc);
-        HWND window = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TOPMOST,
-            wc.lpszClassName, L"", WS_POPUP, point.x - 8, point.y - 8, 16, 16,
+        HWND window = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TOPMOST | WS_EX_LAYERED,
+            wc.lpszClassName, L"", WS_POPUP, point.x - 48, point.y - 48, 96, 96,
             nullptr, nullptr, wc.hInstance, nullptr);
         auto target = new CaptureTarget;
         bool registered = window && SUCCEEDED(RegisterDragDrop(window, target));
         if (registered) {
-            // Keep the brief observer opaque so Explorer can hit-test it reliably.
-            BOOL positioned = SetWindowPos(window, HWND_TOPMOST, point.x - 8, point.y - 8, 16, 16, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+            // Create as topmost: promoting a new background window at show time can leave it behind Explorer.
+            // Alpha zero would also remove it from OLE hit testing.
+            SetLayeredWindowAttributes(window, 0, 1, LWA_ALPHA);
+            SetWindowPos(window, HWND_TOPMOST, point.x - 48, point.y - 48, 96, 96, SWP_NOACTIVATE | SWP_SHOWWINDOW);
             UpdateWindow(window);
-            char hit[128] = {}; GetClassNameA(WindowFromPoint(point), hit, sizeof(hit));
-            RECT rect = {}; GetWindowRect(window, &rect);
-            POINT physical = {}; GetPhysicalCursorPos(&physical);
-            LOG((CLOG_DEBUG "native source: observer positioned=%d visible=%d enabled=%d hit=%s point=%ld,%ld physical=%ld,%ld rect=%ld,%ld,%ld,%ld style=%lx",
-                int(positioned), int(IsWindowVisible(window)), int(IsWindowEnabled(window)), hit, point.x, point.y, physical.x, physical.y,
-                rect.left, rect.top, rect.right, rect.bottom, static_cast<unsigned long>(GetWindowLongW(window, GWL_EXSTYLE))));
-            for (HWND above = GetTopWindow(nullptr); above; above = GetWindow(above, GW_HWNDNEXT)) {
-                RECT area = {}; GetWindowRect(above, &area);
-                if (!IsWindowVisible(above) || !PtInRect(&area, point)) continue;
-                char name[128] = {}; GetClassNameA(above, name, sizeof(name));
-                LOG((CLOG_DEBUG "native source: z-order class=%s observer=%d rect=%ld,%ld,%ld,%ld", name, int(above == window), area.left, area.top, area.right, area.bottom));
-            }
             nudgeDrag();
             auto deadline = GetTickCount64() + 600;
             auto nextNudge = GetTickCount64() + 100;
