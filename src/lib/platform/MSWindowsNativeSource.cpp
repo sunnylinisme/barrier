@@ -78,6 +78,7 @@ std::string captureWindowsNativeDrag()
         POINT point; GetCursorPos(&point);
         WNDCLASSW wc = {}; wc.hInstance = GetModuleHandleW(nullptr);
         wc.lpfnWndProc = DefWindowProcW; wc.lpszClassName = L"BarrierNativeSourceCapture";
+        wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
         RegisterClassW(&wc);
         HWND window = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_LAYERED,
             wc.lpszClassName, L"", WS_POPUP, point.x - 48, point.y - 48, 96, 96,
@@ -88,6 +89,9 @@ std::string captureWindowsNativeDrag()
             // Alpha zero would make the window invisible to OLE hit testing as well.
             SetLayeredWindowAttributes(window, 0, 1, LWA_ALPHA);
             SetWindowPos(window, HWND_TOPMOST, point.x - 48, point.y - 48, 96, 96, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+            UpdateWindow(window);
+            char hit[128] = {}; GetClassNameA(WindowFromPoint(point), hit, sizeof(hit));
+            LOG((CLOG_DEBUG "native source: observer visible=%d hit=%s", int(IsWindowVisible(window)), hit));
             nudgeDrag();
             auto deadline = GetTickCount64() + 600;
             auto nextNudge = GetTickCount64() + 100;
