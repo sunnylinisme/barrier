@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Real helper processes, isolated loopback discovery/TLS. Never starts input capture."""
-import pathlib, subprocess, socket, tempfile, threading, queue, time, sys, base64
+import pathlib, subprocess, socket, tempfile, threading, queue, time, sys, base64, ssl, select
 BIN = pathlib.Path(sys.argv[1]).resolve()
 SUFFIX = '.exe' if sys.platform == 'win32' else ''
 def port():
@@ -38,6 +38,32 @@ def invitation(host, receiver, peer):
     host.send('PAIR', peer); a=host.wait('VERIFY'); b=receiver.wait('REQUEST')
     assert a[4] == b[4] and len(a[4]) == 6, (a, b)
     return a[1], b[1]
+class Impostor:
+    """Advertises the saved identity but proves a different TLS certificate."""
+    def __init__(self, own, claimed, pem, host_pem):
+        self.udp=socket.socket(socket.AF_INET,socket.SOCK_DGRAM); self.udp.bind(('127.0.0.1',own))
+        self.tcp=socket.socket(); self.tcp.bind(('127.0.0.1',own)); self.tcp.listen(4)
+        self.context=ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER); self.context.load_cert_chain(str(pem)); self.context.load_verify_locations(str(host_pem)); self.context.verify_mode=ssl.CERT_REQUIRED
+        self.claimed=claimed; self.stopped=False; self.handshakes=0
+        def serve():
+            while not self.stopped:
+                ready,_,_=select.select([self.udp,self.tcp],[],[],.1)
+                if self.udp in ready:
+                    data,remote=self.udp.recvfrom(1024); fields=data.decode().split('\t')
+                    if len(fields)==2 and fields[0]=='BSEARCH1':
+                        self.udp.sendto(('BHERE1\tR\t'+base64.b64encode('偽裝電腦'.encode()).decode()+'\t'+self.claimed+'\t'+fields[1]).encode(),remote)
+                if self.tcp in ready:
+                    raw,_=self.tcp.accept(); raw.settimeout(3)
+                    try:
+                        with self.context.wrap_socket(raw,server_side=True) as connection:
+                            self.handshakes+=1
+                            try: connection.recv(512)
+                            except ssl.SSLError: pass
+                    except (ssl.SSLError,OSError): raw.close()
+        self.thread=threading.Thread(target=serve,daemon=True); self.thread.start()
+    def stop(self):
+        self.stopped=True; self.thread.join(5); self.udp.close(); self.tcp.close()
+
 def run():
     with tempfile.TemporaryDirectory(prefix='barrier-link-') as temp:
         root=pathlib.Path(temp); hp=root/'主控'; rp=root/'接收'; hf=initialize(hp); rf=initialize(rp)
@@ -65,6 +91,19 @@ def run():
             host.wait('CONNECT'); receiver.wait('CONNECT')
             assert not any(e[0] in ('VERIFY','REQUEST') for e in host.history+receiver.history)
             print('PASS: restart and rediscovery reconnect automatically without new consent',flush=True)
+            host.stop(); receiver.stop()
+            rogue=root/'偽裝'; initialize(rogue); a,b=port(),port()
+            impostor=Impostor(b,rf,rogue/'SSL/Barrier.pem',hp/'SSL/Barrier.pem')
+            try:
+                host=Agent(hp,'host',a,b); assert host.wait('DEVICE')[1]==rf
+                time.sleep(6)
+                assert impostor.handshakes>0, 'Impostor TLS endpoint was never reached'
+                assert not any(e[0] in ('CONNECT','VERIFY','PAIRED') for e in host.history), 'Forged discovery established trust'
+                assert (hp/'SSL/Fingerprints/TrustedClients.txt').read_text().strip()==rf
+                print('PASS: forged discovery with different TLS identity cannot reconnect or replace trust',flush=True)
+            finally: host.stop(); impostor.stop()
+            a,b=port(),port(); host=Agent(hp,'host',a,b); receiver=Agent(rp,'receiver',b,a)
+            host.wait('CONNECT'); receiver.wait('CONNECT')
             receiver.send('FORGET'); receiver.wait('REMOVED'); host.clear(); receiver.clear()
             time.sleep(6.5)
             assert not any(e[0]=='CONNECT' for e in host.history+receiver.history), 'Revoked pair reconnected'

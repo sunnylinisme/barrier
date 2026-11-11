@@ -313,8 +313,12 @@ func selfTest(_ directory: URL) throws {
     guard app.computers.count == 1 && app.computers[0].address == "192.168.1.3" else { throw ShareError.message("Discovery list update failed") }
     app.linkLine("SAVED\t\(peer)\t\(name)")
     app.linkLine("VERIFY\ttest-request\t\(name)\t\(peer)\t123456")
-    RunLoop.current.run(until: Date().addingTimeInterval(0.3))
+    app.consent?.layout()
+    app.consent?.window.displayIfNeeded()
+    RunLoop.current.run(until: Date().addingTimeInterval(0.5))
     guard let sheet = app.consent?.window.contentView, let sheetBitmap = sheet.bitmapImageRepForCachingDisplay(in: sheet.bounds) else { throw ShareError.message("Missing pairing dialog") }
+    sheet.wantsLayer = true; sheet.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+    sheet.layoutSubtreeIfNeeded(); sheet.displayIfNeeded()
     sheet.cacheDisplay(in: sheet.bounds, to: sheetBitmap)
     try sheetBitmap.representation(using: .png, properties: [:])!.write(to: directory.appendingPathComponent("gui-pairing.png"))
     app.linkLine("CLOSED\ttest-request")

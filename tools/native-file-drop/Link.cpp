@@ -163,7 +163,7 @@ struct Session {
 };
 static void runSession(State& state, SSL_CTX* context, Socket accepted, Peer peer, bool automatic) {
     unsigned generation; { std::lock_guard<std::mutex> lock(state.mutex); generation = state.generation; }
-    bool incoming = accepted != invalidSocket; std::string requestId;
+    bool incoming = accepted != invalidSocket, resume = automatic; std::string requestId;
     try {
         SocketOwner connection(incoming ? accepted : socket(AF_INET, SOCK_STREAM, IPPROTO_TCP));
         require(connection.value != invalidSocket, "Cannot create pairing connection");
@@ -187,7 +187,7 @@ static void runSession(State& state, SSL_CTX* context, Socket accepted, Peer pee
             }
         }
         Session session(state, generation, connection.release(), context); session.handshake(incoming);
-        const auto fingerprint = session.peerFingerprint(); bool resume = automatic;
+        const auto fingerprint = session.peerFingerprint();
         if (incoming) {
             auto hello = fields(session.read());
             require(hello.size() == 3 && hello[0] == "BPAIR1" && (hello[1] == "PAIR" || hello[1] == "RESUME") && validName(hello[2]), "Invalid pairing invitation");
@@ -226,7 +226,7 @@ static void runSession(State& state, SSL_CTX* context, Socket accepted, Peer pee
             emit("CONNECT\t" + peer.fingerprint + '\t' + peer.name + '\t' + peer.ip);
         }
     } catch (const std::exception& error) {
-        if (!automatic && !state.stopping) emit("ERROR\t" + base64(error.what()));
+        if (!resume && !state.stopping) emit("ERROR\t" + base64(error.what()));
     }
     if (!requestId.empty()) emit("CLOSED\t" + requestId);
     { std::lock_guard<std::mutex> lock(state.mutex); state.approvalId.clear(); state.decision = 0; }
@@ -304,7 +304,12 @@ static void network(State& state, const std::string& testTarget) {
                         sendto(udp.value, reply.data(), static_cast<int>(reply.size()), 0, reinterpret_cast<sockaddr*>(&from), length);
                     } else if (f.size() == 5 && f[0] == "BHERE1" && f[1] == (state.host ? "R" : "H") && validName(f[2]) && validFingerprint(f[3]) && f[3] != state.fingerprint && f[4] == query) {
                         Peer p{f[3], f[2], addressOf(from), ntohs(from.sin_port), f[1][0], now};
-                        { std::lock_guard<std::mutex> lock(state.mutex); if (state.devices.size() < 128 || state.devices.count(p.fingerprint)) state.devices[p.fingerprint] = p; else continue; }
+                        { std::lock_guard<std::mutex> lock(state.mutex);
+                            auto existing = state.devices.find(p.fingerprint);
+                            // Keep a responding interface stable on computers with both Wi-Fi and Ethernet.
+                            if (existing != state.devices.end() && (existing->second.ip != p.ip || existing->second.port != p.port) && now - existing->second.seen < std::chrono::seconds(7)) continue;
+                            if (state.devices.size() < 128 || existing != state.devices.end()) state.devices[p.fingerprint] = p; else continue;
+                        }
                         emit("DEVICE\t" + p.fingerprint + '\t' + p.name + '\t' + p.ip + '\t' + std::to_string(p.port) + '\t' + p.role);
                     }
                 }
