@@ -55,10 +55,13 @@ class Wire:
         raise RuntimeError("Missing " + repr(code))
 
     def clipboard(self, data, sequence, identifier=0):
-        for marker, chunk in [(1, str(len(data)).encode()), (2, data), (3, b"")]:
+        chunks = [(1, str(len(data)).encode())]
+        chunks.extend((2, data[offset:offset + 32768]) for offset in range(0, len(data), 32768))
+        chunks.append((3, b""))
+        for marker, chunk in chunks:
             self.send(b"DCLP" + struct.pack("!BIBI", identifier, sequence, marker, len(chunk)) + chunk)
 
-    def read_clipboard(self):
+    def read_clipboard(self, wanted_identifier=0):
         data = bytearray()
         expected = None
         sequence = None
@@ -71,7 +74,7 @@ class Wire:
             identifier, _, marker, length = struct.unpack_from("!BIBI", message, 4)
             chunk = message[14:]
             assert length == len(chunk)
-            if identifier != 0:
+            if identifier != wanted_identifier:
                 continue
             if marker == 1:
                 expected = int(chunk); data.clear()
@@ -154,6 +157,10 @@ for role in ["server", "client"]:
                         received, sequence = wire.read_clipboard()
                         assert received == envelope(local_bytes), "Windows host did not send Explorer's file"
                         assert sequence is not None
+                        # Drain the second Windows clipboard ID before this synchronous
+                        # test peer sends in reverse; production peers read continuously.
+                        received_selection, _ = wire.read_clipboard(1)
+                        assert received_selection == envelope(local_bytes)
                         # Windows reports one system clipboard as both Barrier IDs.
                         for identifier in [0, 1]:
                             wire.send(b"CCLP" + struct.pack("!BI", identifier, sequence))
