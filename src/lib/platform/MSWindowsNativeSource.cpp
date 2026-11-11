@@ -87,10 +87,20 @@ std::string captureWindowsNativeDrag()
         bool registered = window && SUCCEEDED(RegisterDragDrop(window, target));
         if (registered) {
             // Keep the brief observer opaque so Explorer can hit-test it reliably.
-            SetWindowPos(window, HWND_TOPMOST, point.x - 8, point.y - 8, 16, 16, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+            BOOL positioned = SetWindowPos(window, HWND_TOPMOST, point.x - 8, point.y - 8, 16, 16, SWP_NOACTIVATE | SWP_SHOWWINDOW);
             UpdateWindow(window);
             char hit[128] = {}; GetClassNameA(WindowFromPoint(point), hit, sizeof(hit));
-            LOG((CLOG_DEBUG "native source: observer visible=%d hit=%s", int(IsWindowVisible(window)), hit));
+            RECT rect = {}; GetWindowRect(window, &rect);
+            POINT physical = {}; GetPhysicalCursorPos(&physical);
+            LOG((CLOG_DEBUG "native source: observer positioned=%d visible=%d enabled=%d hit=%s point=%ld,%ld physical=%ld,%ld rect=%ld,%ld,%ld,%ld style=%lx",
+                int(positioned), int(IsWindowVisible(window)), int(IsWindowEnabled(window)), hit, point.x, point.y, physical.x, physical.y,
+                rect.left, rect.top, rect.right, rect.bottom, static_cast<unsigned long>(GetWindowLongW(window, GWL_EXSTYLE))));
+            for (HWND above = GetTopWindow(nullptr); above; above = GetWindow(above, GW_HWNDNEXT)) {
+                RECT area = {}; GetWindowRect(above, &area);
+                if (!IsWindowVisible(above) || !PtInRect(&area, point)) continue;
+                char name[128] = {}; GetClassNameA(above, name, sizeof(name));
+                LOG((CLOG_DEBUG "native source: z-order class=%s observer=%d rect=%ld,%ld,%ld,%ld", name, int(above == window), area.left, area.top, area.right, area.bottom));
+            }
             nudgeDrag();
             auto deadline = GetTickCount64() + 600;
             auto nextNudge = GetTickCount64() + 100;
