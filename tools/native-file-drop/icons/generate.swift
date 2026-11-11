@@ -4,29 +4,31 @@ import AppKit
 let destination = URL(fileURLWithPath: CommandLine.arguments[1])
 try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
 for size in [16, 32, 64, 128, 256, 512, 1024] {
-    let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: size, pixelsHigh: size, bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
+    let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: size, pixelsHigh: size,
+        bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+        colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
     NSGraphicsContext.saveGraphicsState()
     NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: bitmap)
-    let transform = AffineTransform(scale: CGFloat(size)/1024)
-    (transform as NSAffineTransform).concat()
-    let background = NSBezierPath(roundedRect: NSRect(x: 40, y: 40, width: 944, height: 944), xRadius: 214, yRadius: 214)
-    NSGradient(starting: NSColor(srgbRed: 0.21, green: 0.49, blue: 1, alpha: 1), ending: NSColor(srgbRed: 0.10, green: 0.23, blue: 0.72, alpha: 1))!.draw(in: background, angle: -70)
-    func panel(_ rect: NSRect, _ opacity: CGFloat) {
-        NSColor.white.withAlphaComponent(opacity).setFill()
-        NSBezierPath(roundedRect: rect, xRadius: 48, yRadius: 48).fill()
-        NSColor(srgbRed: 0.18, green: 0.37, blue: 0.85, alpha: 1).setFill()
-        NSBezierPath(roundedRect: rect.insetBy(dx: 25, dy: 25), xRadius: 26, yRadius: 26).fill()
+    (AffineTransform(scale: CGFloat(size)/1024) as NSAffineTransform).concat()
+    func color(_ r: CGFloat, _ g: CGFloat, _ b: CGFloat) -> NSColor {
+        NSColor(srgbRed: r, green: g, blue: b, alpha: 1)
     }
-    panel(NSRect(x: 188, y: 425, width: 410, height: 320), 0.60)
-    panel(NSRect(x: 426, y: 279, width: 410, height: 320), 1)
-    func arrow(_ x1: CGFloat, _ x2: CGFloat, _ y: CGFloat) {
-        let direction: CGFloat = x2 > x1 ? 1 : -1
-        let path = NSBezierPath(); path.lineWidth = 35; path.lineCapStyle = .round; path.lineJoinStyle = .round
-        path.move(to: NSPoint(x: x1, y: y)); path.line(to: NSPoint(x: x2, y: y))
-        path.move(to: NSPoint(x: x2-direction*55, y: y+55)); path.line(to: NSPoint(x: x2, y: y)); path.line(to: NSPoint(x: x2-direction*55, y: y-55))
-        NSColor.white.setStroke(); path.stroke()
+    let tile = NSBezierPath(roundedRect: NSRect(x: 40, y: 40, width: 944, height: 944), xRadius: 214, yRadius: 214)
+    NSGradient(starting: color(0.98, 0.99, 1), ending: color(0.82, 0.88, 0.96))!.draw(in: tile, angle: -70)
+    // A slightly heavier mark stays clear at the 16 px Windows title/tray size.
+    let weight: CGFloat = size == 16 ? 64 : 48
+    let ink = color(0.12, 0.26, 0.45)
+    func frame(_ rect: NSRect, _ stroke: NSColor) {
+        let line = NSBezierPath(roundedRect: rect, xRadius: 64, yRadius: 64)
+        line.lineWidth = weight; stroke.setStroke(); line.stroke()
     }
-    arrow(310, 710, 556); arrow(710, 310, 451)
+    frame(NSRect(x: 220, y: 411, width: 366, height: 318), ink)
+    let front = NSBezierPath(roundedRect: NSRect(x: 413, y: 268, width: 395, height: 347), xRadius: 80, yRadius: 80)
+    color(0.89, 0.93, 0.98).setFill(); front.fill()
+    frame(NSRect(x: 438, y: 293, width: 366, height: 318), color(0.10, 0.40, 0.94))
+    let bridge = NSBezierPath()
+    bridge.move(to: NSPoint(x: 458, y: 505)); bridge.line(to: NSPoint(x: 564, y: 505))
+    bridge.lineWidth = weight; bridge.lineCapStyle = .round; ink.setStroke(); bridge.stroke()
     NSGraphicsContext.restoreGraphicsState()
     try bitmap.representation(using: .png, properties: [:])!.write(to: destination.appendingPathComponent("icon-\(size).png"))
 }

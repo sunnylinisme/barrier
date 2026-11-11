@@ -20,6 +20,7 @@ Barrier Share 0.3.2 — Windows／Mac 雙向複製通用測試版
    Windows 防火牆若詢問，允許 barrier-link.exe 和 barriers.exe 使用私人網路。
 
 0.3.2 更新
+重新設計淺色原生風格 App 圖示，適用 Mac Dock 與 Windows 程式／工作列／系統匣。
 檔案讀寫改由背景執行，避免來源檔案開啟或磁碟回應緩慢時卡住鍵鼠與連線。
 取消傳輸及關閉連線不等待磁碟；已取消的傳輸不會再次更新剪貼簿。
 
