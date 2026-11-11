@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "MSWindowsNativeSource.h"
+#include "base/Log.h"
 #include <ole2.h>
 #include <shellapi.h>
 #include <thread>
@@ -26,7 +27,9 @@ public:
         if (!(keys & MK_LBUTTON)) return S_OK;
         FORMATETC format = {CF_HDROP, nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL};
         STGMEDIUM medium = {};
-        if (FAILED(data->GetData(&format, &medium))) return S_OK;
+        HRESULT result = data->GetData(&format, &medium);
+        LOG((CLOG_DEBUG "native source: DragEnter keys=%lu format result=%lx", keys, static_cast<unsigned long>(result)));
+        if (FAILED(result)) return S_OK;
         if (medium.tymed == TYMED_HGLOBAL && medium.hGlobal &&
             DragQueryFileW(static_cast<HDROP>(medium.hGlobal), 0xffffffff, nullptr, 0) == 1) {
             UINT count = DragQueryFileW(static_cast<HDROP>(medium.hGlobal), 0, nullptr, 0);
@@ -53,9 +56,16 @@ private:
     LONG refs_ = 1;
 };
 void nudgeDrag() {
-    INPUT input = {}; input.type = INPUT_MOUSE;
-    input.mi.dwFlags = MOUSEEVENTF_MOVE; input.mi.dwExtraInfo = nativeDragInputTag;
-    SendInput(1, &input, sizeof(input));
+    POINT point; GetCursorPos(&point);
+    LONG step = point.x > GetSystemMetrics(SM_XVIRTUALSCREEN) ? -1 : 1;
+    INPUT input[2] = {};
+    for (auto& event : input) {
+        event.type = INPUT_MOUSE;
+        event.mi.dwFlags = MOUSEEVENTF_MOVE | MOUSEEVENTF_MOVE_NOCOALESCE;
+        event.mi.dwExtraInfo = nativeDragInputTag;
+    }
+    input[0].mi.dx = step; input[1].mi.dx = -step;
+    SendInput(2, input, sizeof(INPUT));
 }
 }
 std::string captureWindowsNativeDrag()
@@ -88,6 +98,7 @@ std::string captureWindowsNativeDrag()
                 MsgWaitForMultipleObjects(0, nullptr, FALSE, 10, QS_ALLINPUT);
             }
             if (GetAsyncKeyState(VK_LBUTTON) & 0x8000) result = target->path;
+            LOG((CLOG_DEBUG "native source: capture entered=%d path bytes=%u", int(target->entered), static_cast<unsigned>(result.size())));
             ShowWindow(window, SW_HIDE);
             RevokeDragDrop(window);
         }

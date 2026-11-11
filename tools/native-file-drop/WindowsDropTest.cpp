@@ -249,6 +249,11 @@ static bool explorerSource(const wchar_t* folder, bool serverMode) {
                 pump(2000);
                 mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0); pump(300);
             } else {
+                GUITHREADINFO gui = {}; gui.cbSize = sizeof(gui);
+                GetGUIThreadInfo(GetWindowThreadProcessId(GetForegroundWindow(), nullptr), &gui);
+                char captureClass[128] = {}; GetClassNameA(gui.hwndCapture, captureClass, sizeof(captureClass));
+                std::cout << "test: Explorer capture=" << captureClass << " left=" << GetAsyncKeyState(VK_LBUTTON) << "\n";
+                if (!multiple) saveScreen(L"explorer-source-held.bmp");
                 auto captured = barrier::captureWindowsNativeDrag();
                 bool correct = multiple ? captured.empty() : captured == utf8(path.c_str());
                 std::cout << (correct ? "PASS" : "FAIL") << ": Explorer source capture, multiple=" << multiple << "\n";

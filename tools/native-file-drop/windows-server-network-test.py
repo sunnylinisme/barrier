@@ -46,7 +46,7 @@ end
         with socket.socket() as free:
             free.bind(("127.0.0.1", 0)); port = free.getsockname()[1]
         server = subprocess.Popen([str(binary / "barriers.exe"), "-f", "--no-tray", "--name", "windows-host",
-            "--native-file-drop", "--profile-dir", str(server_profile), "-c", str(config),
+            "--native-file-drop", "--debug", "DEBUG1", "--profile-dir", str(server_profile), "-c", str(config),
             "--address", "127.0.0.1:" + str(port), "--log", str(root / "server.log")], stdout=log, stderr=subprocess.STDOUT)
         processes.append(server)
         deadline = time.monotonic() + 15

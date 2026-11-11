@@ -1,12 +1,23 @@
-# Barrier 跨機拖放：Mac → Windows 驗證版
+# Barrier 跨機拖放：Mac／Windows → Windows 驗證版
 
-這是修改過的 Barrier 主程式。以 Mac 的鍵盤滑鼠操作兩台電腦，在 Finder 按住檔案拖過 Mac 右邊界，繼續拖到 Windows 檔案總管的目的資料夾並放開。目的地由檔案總管決定，沒有固定收件資料夾。
+這是修改過的 Barrier 主程式。以主控端的鍵盤滑鼠操作兩台電腦，在 Mac Finder 或 Windows 檔案總管按住檔案拖過主控端右邊界，繼續拖到接收端 Windows 檔案總管的目的資料夾並放開。目的地由檔案總管決定，沒有固定收件資料夾。
 
-目前範圍：Apple Silicon Mac 當 server、Windows 10（1903 以上）／11 x64 當 client，同一區域網路，單個一般檔案最多 16 MiB，只複製、不刪除 Mac 原檔。資料夾、多檔、符號連結、Windows → Mac 及 Windows → Windows 尚未實作。這是待雙機實測的開發版本，並非已證實在所有桌面環境正常運作的正式版。
+目前範圍：Apple Silicon Mac 或 Windows 10（1903 以上）／11 x64 當主控端（server）、Windows x64 當接收端（client），同一區域網路，單個一般檔案最多 16 MiB，只複製、不刪除來源原檔。目前方向為主控端 → 接收端；從接收端拖回主控端、資料夾、多檔及符號連結尚未支援。這是待雙機實測的開發版本，並非已證實在所有桌面環境正常運作的正式版。
 
 此驗證版的啟動設定暫停跨機剪貼簿同步（`clipboardSharing = false`），避免大量剪貼簿資料與鍵鼠共用連線而造成輸入延遲或逾時。兩台之間的複製貼上暫不可用；每台電腦內的複製貼上、鍵盤滑鼠轉送及獨立的原生拖檔功能仍保留。
 
-## 兩端準備
+## Windows → Windows
+
+1. 兩台都下載完整的 Windows 套件，各解壓到新的資料夾。這次需包含 `barriers.exe` 與 `Start-Windows-Server.cmd`；先前只有接收端的更新包不能用來當主控端。
+2. 連接你要使用的鍵盤滑鼠那台開 `Start-Windows-Server.cmd`，另一台開 `Start-Windows.cmd`。接收端在主控端的右側。
+3. 互相貼上兩邊顯示的 `v2:sha256:...` 配對碼。接收端輸入主控端的區網 IPv4 位址。Windows 防火牆若詢問，允許主控端 `barriers.exe` 在私人區網接收連線。
+4. 兩邊都以一般使用者執行，保持啟動視窗開著。先確認鍵盤滑鼠可以跨機。
+5. 接收端打開目的資料夾，在主控端 Explorer 按住一個小檔案，拖過右邊界後繼續保持按住，在另一台 Explorer 的目的資料夾空白處放開。檔案應出現，原檔仍保留。
+6. 主控端紀錄在 `profile-server/server.log`，接收端在 `profile/windows.log`。兩個 profile 含各自私鑰，請勿在兩台間複製或上傳。不同主控端的第一次配對，請使用新的解壓資料夾，避免誤用既有 Mac 的信任設定。
+
+只有檔案拖到邊界時才會暫時建立透明的原生接收視窗，以取得 Explorer 的拖曳資料；它不執行本機移動或複製。擷取後以標記過的取消事件結束本機拖曳，這些內部事件不會轉送成另一台的按鍵或放開動作。
+
+## Mac → Windows：兩端準備
 
 1. 停止兩台原有的 Barrier。分別解壓縮 `barrier-cross-drop-macos-arm64.zip` 和 `barrier-cross-drop-windows-x64.zip`；不要在 ZIP 內執行。
 2. Mac 開啟 `Start-Mac.command`，Windows 開啟 `Start-Windows.cmd`。兩邊都會顯示自己的 `v2:sha256:...` 憑證指紋。
@@ -30,6 +41,6 @@
 
 新增選項 `--native-file-drop`，兩端都需開啟；禁用 TLS 時拒絕啟動。Windows 握手後宣告接收能力。檔案分成最多 64 KiB 的訊息，走既有互驗憑證的 TLS 連線，綁定本次切換序號。接收端檢查大小、檔名、序號、完整長度和 SHA-256，通過後才交給 Windows OLE 的 `FILEDESCRIPTORW`／`FILECONTENTS`。檔案總管在放下的位置取資料；不把遠端路徑當成本機寫入路徑。
 
-`native-transfer-test` 使用主程式同一份送收程式測試空檔、二進位、中文／emoji、16 MiB、拒收損毀與越界封包、過期序號與取消狀態。`windows-cli-network-test.py` 啟動真正的 Windows client，經雙向驗證憑證的 TLS 接收主程式送出格式，再將資料拖放到原生測試接收視窗。Windows 的 `native-windows-drop-test` 測試遠端放開與取消，也使用 Windows 真正的資料夾接收器驗證落檔。`native-windows-explorer` 會另開真正的 Explorer 視窗，以正式拖放程式拖入中文檔名的二進位測試檔，並核對寫入內容；失敗會保留測試桌面截圖。這些自動測試仍不能取代兩台實機的 Finder → Explorer 操作驗收。
+`native-transfer-test` 使用主程式同一份送收程式測試空檔、二進位、中文／emoji、16 MiB、拒收損毀與越界封包、過期序號與取消狀態。`windows-cli-network-test.py` 啟動真正的 Windows client，經雙向驗證憑證的 TLS 接收主程式送出格式，再將資料拖放到原生測試接收視窗。Windows 的 `native-windows-drop-test` 測試遠端放開與取消，也使用 Windows 真正的資料夾接收器驗證落檔。`native-windows-explorer` 會另開真正的 Explorer 視窗，以正式拖放程式拖入中文檔名的二進位測試檔，並核對寫入內容；失敗會保留測試桌面截圖。`native-windows-source` 另外從真正 Explorer 拖出檔案，測試中文路徑、原檔保留與多檔拒收；`windows-server-network-test.py` 讓正式 Windows 主控程式從螢幕邊界擷取 Explorer 拖曳，經雙向 TLS 傳送，再驗證檔案內容與實際放開訊息。這些自動測試仍不能取代兩台實機的完整操作驗收。
 
 建置：CMake，關閉 GUI／installer／舊測試，開啟 `BARRIER_USE_SYSTEM_OPENSSL` 和 `BARRIER_NATIVE_DROP_TESTS`。Windows 使用 vcpkg `openssl:x64-windows-static` 和 `CMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded`；Mac 使用 arm64 OpenSSL 靜態函式庫。完整建置參數見 `.github/workflows/native-file-drop.yml`。
