@@ -18,7 +18,7 @@ with tempfile.TemporaryDirectory(prefix="barrier-source-") as temporary:
     try:
         def pair(*args):
             return subprocess.check_output([str(binary / "barrier-pair.exe"), *map(str, args)], text=True).strip()
-        server_profile, client_profile = root / "server", root / "client"
+        server_profile, client_profile = root / "主控設定", root / "接收設定"
         server_fingerprint = pair("init", server_profile)
         pair("init", client_profile)
         pair("trust", server_profile, "client", pair("init", client_profile))
@@ -78,7 +78,7 @@ end
                 if message.startswith(b"DSOP"): break
             send(b"CNDF" + struct.pack("!I", 1))
             time.sleep(.3)
-            source = root / "source"; source.mkdir()
+            source = root / "來源資料夾"; source.mkdir()
             driver = subprocess.Popen([str(binary / "native-windows-drop-test.exe"), "--server-source", str(source)])
             processes.append(driver)
             expected_id = None; expected_size = None; expected_digest = None; received = bytearray(); completed = False

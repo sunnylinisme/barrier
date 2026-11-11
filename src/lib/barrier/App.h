@@ -166,7 +166,7 @@ private:
     "  -l  --log <file>         write log messages to file.\n" \
     "      --no-tray            disable the system tray icon.\n" \
     "      --enable-drag-drop   enable file drag & drop.\n" \
-    "      --native-file-drop   preview: encrypted Mac-to-Windows native drop.\n" \
+    "      --native-file-drop   preview: encrypted Mac/Windows-to-Windows drop.\n" \
     "      --enable-crypto      enable the crypto (ssl) plugin (default, deprecated).\n" \
     "      --disable-crypto     disable the crypto (ssl) plugin.\n" \
     "      --profile-dir <path> use named profile directory instead.\n" \
