@@ -1,5 +1,7 @@
 """Production Windows server/client + mutual TLS + actual Explorer copy/paste."""
 import hashlib
+import collections
+import select
 import pathlib
 import socket
 import ssl
@@ -22,6 +24,8 @@ class Wire:
         self.connection = connection
         self.server = server
         self.sequence = None
+        self.pending = collections.deque()
+        self.incoming = bytearray()
         connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         connection.settimeout(12)
 
@@ -31,19 +35,67 @@ class Wire:
     def exact(self, count):
         result = bytearray()
         while len(result) < count:
-            part = self.connection.recv(count - len(result))
+            if self.incoming:
+                take = min(count - len(result), len(self.incoming))
+                part = bytes(self.incoming[:take]); del self.incoming[:take]
+            else:
+                part = self.connection.recv(count - len(result))
             if not part:
                 raise RuntimeError("Peer disconnected")
             result.extend(part)
         return bytes(result)
 
     def receive(self):
+        return self.pending.popleft() if self.pending else self.read_packet()
+
+    def read_packet(self):
         size, = struct.unpack("!I", self.exact(4))
         assert size < 20 * 1024 * 1024
         message = self.exact(size)
         if message == b"CALV" and not self.server:
             self.send(b"CALV")
         return message
+
+    def drive(self, command):
+        # Explorer can take longer than the peer timeout. Keep servicing the wire
+        # while its GUI driver runs, exactly as a real peer's event loop would.
+        process = subprocess.Popen(command)
+        deadline, next_heartbeat = time.monotonic() + 25, 0
+        old_timeout = self.connection.gettimeout()
+        self.connection.settimeout(.1)
+        try:
+            while process.poll() is None:
+                now = time.monotonic()
+                if now >= deadline:
+                    raise subprocess.TimeoutExpired(command, 25)
+                if now >= next_heartbeat:
+                    self.send(b"CALV"); next_heartbeat = now + 1
+                if self.connection.pending() or select.select([self.connection], [], [], .1)[0]:
+                    try:
+                        data = self.connection.recv(65536)
+                    except (socket.timeout, ssl.SSLWantReadError):
+                        continue
+                    if not data:
+                        raise RuntimeError("Peer disconnected during Explorer operation")
+                    self.incoming.extend(data)
+                while len(self.incoming) >= 4:
+                    size, = struct.unpack_from("!I", self.incoming)
+                    assert size < 20 * 1024 * 1024
+                    if len(self.incoming) < size + 4:
+                        break
+                    message = bytes(self.incoming[4:4 + size]); del self.incoming[:4 + size]
+                    if message == b"CALV":
+                        if not self.server: self.send(b"CALV")
+                    else:
+                        assert len(self.pending) < 128, "GUI driver did not consume protocol traffic"
+                        self.pending.append(message)
+            if process.returncode:
+                raise subprocess.CalledProcessError(process.returncode, command)
+        finally:
+            self.connection.settimeout(old_timeout)
+            if process.poll() is None:
+                process.kill()
+            process.wait()
 
     def until(self, code):
         for _ in range(200):
@@ -123,7 +175,7 @@ for role, direction in [("server", d) for d in ["right", "left", "up", "down"]] 
                 return subprocess.check_output([str(binary / "barrier-pair.exe"), *map(str, args)], text=True).strip()
 
             def driver(*args):
-                subprocess.run([str(binary / "native-windows-drop-test.exe"), *map(str, args)], check=True, timeout=25)
+                wire.drive([str(binary / "native-windows-drop-test.exe"), *map(str, args)])
 
             server_profile, client_profile = root / "主控設定", root / "接收設定"
             server_fp, client_fp = pair("init", server_profile), pair("init", client_profile)
