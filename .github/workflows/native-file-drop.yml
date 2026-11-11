@@ -31,6 +31,8 @@ jobs:
       - name: LAN discovery, consent and automatic reconnection
         run: python3 tools/native-file-drop/link-network-test.py build/bin
       - name: Package and test native Mac app
+        env:
+          BARRIER_CODESIGN_IDENTITY: '-' # Disposable CI test artifact, not a stable signed release.
         run: sh tools/native-file-drop/package-macos.sh build
       - uses: actions/upload-artifact@v4
         if: always()

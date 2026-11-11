@@ -1,6 +1,11 @@
 #!/bin/sh
 set -eu
 BUILD="${1:?build directory}"
+: "${BARRIER_CODESIGN_IDENTITY:?Set a fixed signing identity; use - only for disposable ad-hoc test builds}"
+export BARRIER_CODESIGN_IDENTITY
+if [ "$BARRIER_CODESIGN_IDENTITY" = "-" ]; then
+    echo "WARNING: ad-hoc test build; macOS privacy grants may not survive updates." >&2
+fi
 APP="$BUILD/Barrier Share.app"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Helpers" "$APP/Contents/Resources/licenses" "$APP/Contents/Frameworks"
 xcrun swiftc -swift-version 5 -target "$(uname -m)-apple-macos15.0" -O \
@@ -12,7 +17,7 @@ cp tools/native-file-drop/icons/BarrierShare.icns "$APP/Contents/Resources/"
 cp tools/native-file-drop/licenses/* "$APP/Contents/Resources/licenses/"
 git rev-parse HEAD > "$APP/Contents/Resources/COMMIT.txt"
 python3 - "$APP" <<'PY'
-import pathlib, plistlib, shutil, subprocess, sys
+import os, pathlib, plistlib, shutil, subprocess, sys
 app = pathlib.Path(sys.argv[1]).resolve()
 contents = app / 'Contents'
 with (contents / 'Info.plist').open('wb') as out:
@@ -42,10 +47,14 @@ while queue:
         subprocess.run(['install_name_tool', '-change', dependency, relative, str(binary)], check=True)
     if binary.parent == frameworks:
         subprocess.run(['install_name_tool', '-id', '@rpath/' + binary.name, str(binary)], check=True)
-for binary in seen:
-    subprocess.run(['codesign', '--force', '--sign', '-', str(binary)], check=True)
+for binary in sorted(seen):
+    identifier = 'org.barriershare.desktop'
+    if binary.parent.name == 'Helpers': identifier += '.' + binary.name
+    elif binary.parent.name == 'Frameworks': identifier += '.framework.' + binary.name
+    subprocess.run(['codesign', '--force', '--sign', os.environ['BARRIER_CODESIGN_IDENTITY'],
+                    '--identifier', identifier, str(binary)], check=True)
 PY
-codesign --force --sign - "$APP"
+codesign --force --sign "$BARRIER_CODESIGN_IDENTITY" --identifier org.barriershare.desktop "$APP"
 codesign --verify --deep --strict "$APP"
 "$APP/Contents/MacOS/BarrierShare" --self-test "$BUILD/gui-test"
 cat "$BUILD/gui-test/PASS.txt"

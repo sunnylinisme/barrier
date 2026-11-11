@@ -1,6 +1,7 @@
 """Production Windows server/client + mutual TLS + actual Explorer copy/paste."""
 import hashlib
 import collections
+import ctypes
 import select
 import pathlib
 import socket
@@ -16,6 +17,32 @@ name = "跨機複製測試.txt"
 # Exercise many production 32 KiB chunks, not only a tiny clipboard message.
 local_bytes = bytes(range(256)) * (262144 + 1)
 peer_bytes = b"distinct peer clipboard\n\xff\x00reverse" + bytes(reversed(range(256))) * 131072
+
+
+def entry_point(info, direction):
+    assert len(info) == 18 and info[:4] == b"DINF", "Invalid client screen information"
+    x, y, width, height, _, _, _ = struct.unpack("!hhhhhhh", info[4:])
+    assert width > 2 and height > 2, "Client screen is too small"
+    # The direction is the receiver's position relative to its simulated host.
+    return {"right": (x, y + height // 2), "left": (x + width - 1, y + height // 2),
+            "up": (x + width // 2, y + height - 1), "down": (x + width // 2, y)}[direction]
+
+
+def wait_cursor(expected):
+    from ctypes import wintypes
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    user32.GetPhysicalCursorPos.argtypes = [ctypes.POINTER(wintypes.POINT)]
+    user32.GetPhysicalCursorPos.restype = wintypes.BOOL
+    point = wintypes.POINT()
+    deadline = time.monotonic() + 3
+    while time.monotonic() < deadline:
+        if not user32.GetPhysicalCursorPos(ctypes.byref(point)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        # SendInput absolute coordinates can round by one physical pixel.
+        if abs(point.x - expected[0]) <= 1 and abs(point.y - expected[1]) <= 1:
+            return
+        time.sleep(.03)
+    raise AssertionError("Client pointer did not reach edge: expected %r, actual %r" % (expected, (point.x, point.y)))
 
 
 
@@ -161,7 +188,7 @@ class Wire:
         raise RuntimeError("Missing streaming file clipboard")
 
 
-for role, direction in [("server", d) for d in ["right", "left", "up", "down"]] + [("client", "right")]:
+for role, direction in [(role, d) for role in ["server", "client"] for d in ["right", "left", "up", "down"]]:
     with tempfile.TemporaryDirectory(prefix="barrier-clipboard-") as temporary:
         root = pathlib.Path(temporary)
         source, destination = root / "來源", root / "目的地"
@@ -241,22 +268,25 @@ for role, direction in [("server", d) for d in ["right", "left", "up", "down"]] 
                     else:
                         wire.send(b"Barrier" + struct.pack("!HH", 1, 6))
                         assert wire.until(b"Barrier").endswith(b"windows")
-                        wire.send(b"QINF"); wire.until(b"DINF")
+                        wire.send(b"QINF"); entry = entry_point(wire.until(b"DINF"), direction)
                         wire.send(b"CIAK"); wire.send(b"CROP")
                         wire.send(b"DSOP" + struct.pack("!I", 2) + b"CLPS" + struct.pack("!I", 1))
                         assert wire.until(b"FCAP") == b"FCAP" + struct.pack("!I", 2)
                         wire.send(b"FCAP" + struct.pack("!I", 2))
-                        wire.send(b"CINN" + struct.pack("!HHIH", 200, 200, 42, 0))
+                        wire.send(b"CINN" + struct.pack("!hhIH", *entry, 42, 0))
+                        wait_cursor(entry)
                         wire.clipboard(peer_bytes, 42)
                         time.sleep(.4)
                         driver("--clipboard-paste", destination, expected)
                         driver("--clipboard-copy", source, local_expected)
+                        wire.send(b"DMMV" + struct.pack("!hh", *entry))
+                        wait_cursor(entry)
                         wire.send(b"COUT")
                         digest, size, _ = wire.read_clipboard()
                         assert digest == hashlib.sha256(local_bytes).digest() and size == len(local_bytes)
                     assert (source / name).read_bytes() == local_bytes, "Source file changed"
                     assert (destination / name).read_bytes() == peer_bytes, "Paste contained stale or wrong bytes"
-                    print("PASS: real Windows " + role + " direction=" + direction + ", mutual TLS, bidirectional file clipboard, actual Explorer copy/paste, distinct peer bytes and original preserved")
+                    print("PASS: real Windows " + role + " direction=" + direction + ", simulated TLS peer, bidirectional file clipboard, actual Explorer copy/paste, distinct peer bytes and original preserved" + (", native client edge entry/return verified" if role == "client" else ""))
         finally:
             if core is not None:
                 if core.poll() is None: core.terminate()
