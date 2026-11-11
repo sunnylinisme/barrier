@@ -215,16 +215,16 @@ static bool itemPoint(HWND window, POINT& point) {
     }
     if (root) root->Release(); automation->Release(); return found;
 }
-static bool writeSource(const std::wstring& path) {
+static bool writeSource(const std::wstring& path, const std::string& bytes = payload) {
     HANDLE file = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, 0, nullptr);
     if (file == INVALID_HANDLE_VALUE) return false;
     DWORD count = 0;
-    bool ok = WriteFile(file, payload.data(), static_cast<DWORD>(payload.size()), &count, nullptr) && count == payload.size();
+    bool ok = WriteFile(file, bytes.data(), static_cast<DWORD>(bytes.size()), &count, nullptr) && count == bytes.size();
     CloseHandle(file); return ok;
 }
 static bool clipboardExplorer(const wchar_t* folder, bool paste, const std::string& expected = payload) {
     const auto path = barrier::fs::path(folder) / barrier::fs::u8path("跨機複製測試.txt");
-    if (!paste && !writeSource(path.wstring())) return false;
+    if (!paste && !writeSource(path.wstring(), expected)) return false;
     auto opened = reinterpret_cast<INT_PTR>(ShellExecuteW(nullptr, L"open", folder, nullptr, nullptr, SW_SHOWNORMAL));
     ExplorerSearch search{PathFindFileNameW(folder)};
     auto deadline = GetTickCount64() + 15000;
@@ -248,7 +248,7 @@ static bool clipboardExplorer(const wchar_t* folder, bool paste, const std::stri
                 MSWindowsClipboardFileConverter converter;
                 auto encoded = handle ? converter.toIClipboard(handle) : std::string();
                 CloseClipboard();
-                if (!encoded.empty()) passed = barrier::decodeClipboardFile(encoded)->bytes == payload;
+                if (!encoded.empty()) passed = barrier::decodeClipboardFile(encoded)->bytes == expected;
             }
         } catch (...) {}
         if (passed) break;

@@ -11,8 +11,9 @@ import time
 
 binary = pathlib.Path(sys.argv[1]).resolve()
 name = "跨機複製測試.txt"
-local_bytes = b"network snapshot\n\x00\x01\xff"
-peer_bytes = b"distinct peer clipboard\n\xff\x00reverse"
+# Exercise many production 32 KiB chunks, not only a tiny clipboard message.
+local_bytes = (bytes(range(256)) * 4901)[:1254436]
+peer_bytes = b"distinct peer clipboard\n\xff\x00reverse" + bytes(reversed(range(256))) * 8192
 
 
 def envelope(content):
@@ -91,6 +92,7 @@ for role in ["server", "client"]:
         source, destination = root / "來源", root / "目的地"
         source.mkdir(); destination.mkdir()
         expected = root / "expected.bin"; expected.write_bytes(peer_bytes)
+        local_expected = root / "local.bin"; local_expected.write_bytes(local_bytes)
         core = None
         console = open(root / "console.log", "w", encoding="utf-8")
         try:
@@ -147,7 +149,7 @@ for role in ["server", "client"]:
                             if message == b"QINF":
                                 wire.send(b"DINF" + struct.pack("!hhhhhhh", 0, 0, 1024, 768, 0, 200, 200))
                             if message.startswith(b"DSOP"): break
-                        driver("--clipboard-copy", source)
+                        driver("--clipboard-copy", source, local_expected)
                         driver("--clipboard-cross")
                         received, sequence = wire.read_clipboard()
                         assert received == envelope(local_bytes), "Windows host did not send Explorer's file"
@@ -170,7 +172,7 @@ for role in ["server", "client"]:
                         wire.clipboard(envelope(peer_bytes), 42)
                         time.sleep(.4)
                         driver("--clipboard-paste", destination, expected)
-                        driver("--clipboard-copy", source)
+                        driver("--clipboard-copy", source, local_expected)
                         wire.send(b"COUT")
                         received, _ = wire.read_clipboard()
                         assert received == envelope(local_bytes), "Windows receiver did not send Explorer's file"
