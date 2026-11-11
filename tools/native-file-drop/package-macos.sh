@@ -18,7 +18,7 @@ contents = app / 'Contents'
 with (contents / 'Info.plist').open('wb') as out:
     plistlib.dump(dict(CFBundleIdentifier='org.barriershare.desktop', CFBundleName='Barrier Share',
         CFBundleDisplayName='Barrier Share', CFBundleExecutable='BarrierShare', CFBundlePackageType='APPL',
-        CFBundleVersion='4', CFBundleShortVersionString='0.3.1', CFBundleIconFile='BarrierShare.icns', LSMinimumSystemVersion='15.0',
+        CFBundleVersion='5', CFBundleShortVersionString='0.3.2', CFBundleIconFile='BarrierShare.icns', LSMinimumSystemVersion='15.0',
         NSHighResolutionCapable=True, NSPrincipalClass='NSApplication',
         NSLocalNetworkUsageDescription='搜尋同一區域網路的電腦，經雙方同意後配對，共用鍵鼠與複製檔案。'), out)
 # Homebrew builds need their OpenSSL libraries bundled; local static builds have none.

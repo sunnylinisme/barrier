@@ -18,7 +18,7 @@
 #pragma once
 
 #include "server/ClientProxy1_5.h"
-#include "barrier/FileClipboardTransfer.h"
+#include "barrier/AsyncFileClipboardTransfer.h"
 
 class Server;
 class IEventQueue;
@@ -41,6 +41,6 @@ private:
 
 private:
     IEventQueue*        m_events;
-    std::unique_ptr<barrier::FileClipboardTransfer> m_files;
+    std::unique_ptr<barrier::AsyncFileClipboardTransfer> m_files;
     bool m_filesEnabled = false, m_filesReady = false;
 };

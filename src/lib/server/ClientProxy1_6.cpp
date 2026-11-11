@@ -37,13 +37,13 @@ ClientProxy1_6::ClientProxy1_6(const std::string& name, barrier::IStream* stream
     m_events(events)
 {
     m_filesEnabled = App::instance().argsBase().m_fileClipboard;
-    m_files.reset(new barrier::FileClipboardTransfer(getStream(), [this](ClipboardID id, uint32_t sequence, const std::string& handle) {
+    m_files.reset(new barrier::AsyncFileClipboardTransfer(getStream(), [this](ClipboardID id, uint32_t sequence, const std::string& handle) {
         auto& target = m_clipboard[id];
         target.m_clipboard.open(0); target.m_clipboard.empty(); target.m_clipboard.add(IClipboard::kFile, handle); target.m_clipboard.close();
         target.m_sequenceNumber = sequence;
         auto info = new ClipboardInfo; info->m_id = id; info->m_sequenceNumber = sequence;
         m_events->addEvent(Event(m_events->forClipboard().clipboardChanged(), getEventTarget(), info));
-    }));
+    }, events));
     m_events->adoptHandler(m_events->forClipboard().clipboardSending(),
                                 this,
                                 new TMethodEventJob<ClientProxy1_6>(this,

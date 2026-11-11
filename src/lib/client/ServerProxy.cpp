@@ -62,10 +62,10 @@ ServerProxy::ServerProxy(Client* client, barrier::IStream* stream, IEventQueue* 
     assert(m_client != NULL);
     assert(m_stream != NULL);
     m_filesEnabled = App::instance().argsBase().m_fileClipboard;
-    m_files.reset(new barrier::FileClipboardTransfer(m_stream, [this](ClipboardID id, uint32_t, const std::string& handle) {
+    m_files.reset(new barrier::AsyncFileClipboardTransfer(m_stream, [this](ClipboardID id, uint32_t, const std::string& handle) {
         Clipboard clipboard; clipboard.open(0); clipboard.add(IClipboard::kFile, handle); clipboard.close();
         m_client->setClipboard(id, &clipboard);
-    }));
+    }, events));
 
     // initialize modifier translation table
     for (KeyModifierID id = 0; id < kKeyModifierIDLast; ++id)

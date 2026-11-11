@@ -76,8 +76,7 @@ std::string registerClipboardFiles(const std::vector<fs::path>& paths) {
     for (const auto& path : paths) {
         auto absolute = fs::absolute(path).lexically_normal();
         auto name = absolute.filename().u8string(); safeRelative(name);
-        auto status = fs::symlink_status(absolute);
-        if (!fs::is_regular_file(status) && !fs::is_directory(status)) throw std::runtime_error("Links and special files are not supported");
+        // File type/existence is validated by the disk worker immediately before opening.
         std::transform(name.begin(), name.end(), name.begin(), [](unsigned char c) { return c < 128 ? std::tolower(c) : c; });
         if (!names.insert(name).second) throw std::runtime_error("Selected items have conflicting names");
         files->roots.push_back(absolute);

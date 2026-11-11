@@ -1,4 +1,4 @@
-Barrier Share 0.3.1 — Windows／Mac 雙向複製通用測試版
+Barrier Share 0.3.2 — Windows／Mac 雙向複製通用測試版
 
 支援 Windows 10（1903 以上）／11 x64，以及 Apple Silicon Mac（macOS 15 以上）。
 一次連接兩台，可自由搭配作主控端或接收端；兩台必須更新到本版，並在同一區網。
@@ -18,6 +18,10 @@ Barrier Share 0.3.1 — Windows／Mac 雙向複製通用測試版
 5. Mac 首次需允許「區域網路」、「輔助使用」及「輸入監控」。若系統列出 barriers／barrierc，也需允許。
    按「權限設定」可開啟設定；必要時重開程式。
    Windows 防火牆若詢問，允許 barrier-link.exe 和 barriers.exe 使用私人網路。
+
+0.3.2 更新
+檔案讀寫改由背景執行，避免來源檔案開啟或磁碟回應緩慢時卡住鍵鼠與連線。
+取消傳輸及關閉連線不等待磁碟；已取消的傳輸不會再次更新剪貼簿。
 
 0.3.1 更新
 修正 Windows 正式入口誤用介面測試模式，導致視窗開啟但搜尋服務未啟動。

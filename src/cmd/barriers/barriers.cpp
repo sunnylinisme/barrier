@@ -17,6 +17,7 @@
  */
 
 #include "barrier/ServerApp.h"
+#include "barrier/AsyncFileClipboardTransfer.h"
 #include "arch/Arch.h"
 #include "base/Log.h"
 #include "base/EventQueue.h"
@@ -54,6 +55,8 @@ main(int argc, char** argv)
 
     ServerApp app(&events, createTaskBarReceiver);
     int result = app.run(argc, argv);
+    // Keep the event queue and logging alive until disk workers have stopped.
+    barrier::AsyncFileClipboardTransfer::finishShutdown(result);
 #if SYSAPI_WIN32
     if (IsDebuggerPresent()) {
         printf("\n\nHit a key to close...\n");
