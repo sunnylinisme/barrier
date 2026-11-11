@@ -28,6 +28,8 @@ jobs:
         run: |
           cmake --build build --parallel 3
           ctest --test-dir build --output-on-failure
+      - name: LAN discovery, consent and automatic reconnection
+        run: python3 tools/native-file-drop/link-network-test.py build/bin
       - name: Package and test native Mac app
         run: sh tools/native-file-drop/package-macos.sh build
       - uses: actions/upload-artifact@v4
@@ -93,6 +95,8 @@ jobs:
         run: python tools/native-file-drop/windows-server-network-test.py build/bin/Release
       - name: Bidirectional file clipboard and actual Explorer paste
         run: python tools/native-file-drop/windows-clipboard-network-test.py build/bin/Release
+      - name: LAN discovery, consent and automatic reconnection
+        run: python tools/native-file-drop/link-network-test.py build/bin/Release
       - name: Desktop settings and pairing migration
         shell: pwsh
         run: |
@@ -115,7 +119,7 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory build/package | Out-Null
-          Copy-Item build/bin/Release/barrierc.exe, build/bin/Release/barriers.exe, build/bin/Release/barrier-pair.exe, build/bin/Release/BarrierShare.exe build/package/
+          Copy-Item build/bin/Release/barrierc.exe, build/bin/Release/barriers.exe, build/bin/Release/barrier-pair.exe, build/bin/Release/barrier-link.exe, build/bin/Release/BarrierShare.exe build/package/
           Copy-Item tools/native-file-drop/GUI-README.txt build/package/
           Copy-Item LICENSE build/package/
           Copy-Item -Recurse tools/native-file-drop/licenses build/package/

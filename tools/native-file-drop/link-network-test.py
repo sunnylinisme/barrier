@@ -1,0 +1,76 @@
+#!/usr/bin/env python3
+"""Real helper processes, isolated loopback discovery/TLS. Never starts input capture."""
+import pathlib, subprocess, socket, tempfile, threading, queue, time, sys, base64
+BIN = pathlib.Path(sys.argv[1]).resolve()
+SUFFIX = '.exe' if sys.platform == 'win32' else ''
+def port():
+    with socket.socket() as s:
+        s.bind(('127.0.0.1', 0)); return s.getsockname()[1]
+class Agent:
+    def __init__(self, profile, role, own, other):
+        self.profile = profile; self.events = queue.Queue(); self.history = []
+        self.p = subprocess.Popen([str(BIN / ('barrier-link' + SUFFIX)), str(profile), role, '測試 ' + role, str(own), str(other)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8', bufsize=1)
+        def reader():
+            for line in self.p.stdout:
+                parts = line.rstrip('\r\n').split('\t'); self.events.put(parts); self.history.append(parts)
+        self.thread = threading.Thread(target=reader, daemon=True); self.thread.start(); self.wait('READY')
+    def send(self, *parts): self.p.stdin.write('\t'.join(parts) + '\n'); self.p.stdin.flush()
+    def wait(self, kind, timeout=12):
+        end = time.monotonic() + timeout
+        while time.monotonic() < end:
+            try: event = self.events.get(timeout=.2)
+            except queue.Empty: continue
+            if event[0] == kind: return event
+            if event[0] == 'FATAL': raise AssertionError(base64.b64decode(event[1]).decode())
+        raise AssertionError('Missing ' + kind + ': ' + repr(self.history[-12:]))
+    def stop(self):
+        if self.p.poll() is None:
+            self.send('QUIT')
+            try: self.p.wait(10)
+            except subprocess.TimeoutExpired: self.p.kill(); self.p.wait(); raise
+        self.thread.join(2)
+    def clear(self):
+        self.history.clear()
+        while not self.events.empty(): self.events.get_nowait()
+def initialize(profile):
+    return subprocess.check_output([str(BIN / ('barrier-pair' + SUFFIX)), 'init', str(profile)], text=True).strip()
+def invitation(host, receiver, peer):
+    host.send('PAIR', peer); a=host.wait('VERIFY'); b=receiver.wait('REQUEST')
+    assert a[4] == b[4] and len(a[4]) == 6, (a, b)
+    return a[1], b[1]
+def run():
+    with tempfile.TemporaryDirectory(prefix='barrier-link-') as temp:
+        root=pathlib.Path(temp); hp=root/'主控'; rp=root/'接收'; hf=initialize(hp); rf=initialize(rp)
+        a,b=port(),port(); host=receiver=None
+        try:
+            host=Agent(hp,'host',a,b); receiver=Agent(rp,'receiver',b,a)
+            assert host.wait('DEVICE')[1] == rf
+            assert receiver.wait('DEVICE')[1] == hf
+            hi,ri=invitation(host,receiver,rf)
+            assert not (hp/'Peer.txt').exists() and not (rp/'Peer.txt').exists()
+            host.send('ACCEPT',hi); time.sleep(.3)
+            assert not (hp/'Peer.txt').exists() and not (rp/'Peer.txt').exists(), 'One-sided consent persisted trust'
+            receiver.send('REJECT',ri); host.wait('CLOSED'); receiver.wait('CLOSED')
+            assert not (hp/'Peer.txt').exists() and not (rp/'Peer.txt').exists()
+            print('PASS: LAN discovery, equal TLS-bound short codes, no trust before both consent, decline',flush=True)
+            time.sleep(2.1)
+            hi,ri=invitation(host,receiver,rf); host.send('ACCEPT',hi); receiver.send('ACCEPT',ri)
+            host.wait('PAIRED'); receiver.wait('PAIRED'); host.wait('CONNECT'); receiver.wait('CONNECT')
+            assert (hp/'SSL/Fingerprints/TrustedClients.txt').read_text().strip()==rf
+            assert (rp/'SSL/Fingerprints/TrustedServers.txt').read_text().strip()==hf
+            print('PASS: two approvals persist exact TLS certificate pins and connect both roles',flush=True)
+            host.stop(); receiver.stop()
+            # New discovery endpoints simulate a changed network address after restarting.
+            a,b=port(),port(); host=Agent(hp,'host',a,b); receiver=Agent(rp,'receiver',b,a)
+            host.wait('CONNECT'); receiver.wait('CONNECT')
+            assert not any(e[0] in ('VERIFY','REQUEST') for e in host.history+receiver.history)
+            print('PASS: restart and rediscovery reconnect automatically without new consent',flush=True)
+            receiver.send('FORGET'); receiver.wait('REMOVED'); host.clear(); receiver.clear()
+            time.sleep(6.5)
+            assert not any(e[0]=='CONNECT' for e in host.history+receiver.history), 'Revoked pair reconnected'
+            assert not (rp/'Peer.txt').exists() and not (rp/'SSL/Fingerprints/TrustedServers.txt').read_text().strip()
+            print('PASS: forgetting a peer blocks automatic reconnect and clears trust',flush=True)
+        finally:
+            if host: host.stop()
+            if receiver: receiver.stop()
+if __name__=='__main__': run()

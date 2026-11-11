@@ -1,8 +1,16 @@
 # Barrier Share：Windows／Mac 雙向複製通用測試版
 
-Windows 10（1903 以上）／11 x64 與 Apple Silicon Mac（macOS 15 以上）可以任選主控／接收角色，雙向複製多個檔案或資料夾。主控端可設定接收端在右、左、上、下；兩台更新同版後使用原生視窗程式，無需 CMD。完整操作、配對遷移、暫存清理與限制見 [GUI-README.txt](GUI-README.txt)。
+Windows 10（1903 以上）／11 x64 與 Apple Silicon Mac（macOS 15 以上）可以任選主控／接收角色，雙向複製多個檔案或資料夾。主控端可設定接收端在右、左、上、下；兩台更新同版後使用原生視窗程式，無需 CMD。完整操作、區網搜尋與配對、暫存清理與限制見 [GUI-README.txt](GUI-README.txt)。
 
-Windows 開啟 `BarrierShare.exe`，Mac 開啟 `Barrier Share.app`。主／副角色只決定鍵鼠來源，不限制複製方向。舊包配對可匯入；設定分別保存在 `%LOCALAPPDATA%\BarrierShare` 與 `~/Library/Application Support/BarrierShare`。首次連線仍需核對憑證，之後記住信任。
+Windows 開啟 `BarrierShare.exe`，Mac 開啟 `Barrier Share.app`。主／副角色只決定鍵鼠來源，不限制複製方向。主控端從區網電腦清單邀請接收端，兩邊核對 TLS 綁定的 6 位數短碼並同意；之後以已保存憑證自動重連。無需輸入 IP 或指紋。設定分別保存在 `%LOCALAPPDATA%\BarrierShare` 與 `~/Library/Application Support/BarrierShare`。主介面提供暫停與解除配對。
+
+## 區網搜尋、同意與重連
+
+兩套原生 GUI 使用同一個 `barrier-link` 輔助程式。IPv4 UDP 24801 搜尋只提供名稱／位址／憑證指紋提示，不授予信任。主控端對選取的接收端建立 TCP 24801 雙向憑證 TLS 連線，核對搜尋得到的憑證，並透過 TLS exporter 產生當次連線的 6 位數核對碼。雙方各自明確同意後才保存對方的真實 TLS 憑證指紋；鍵鼠與剪貼簿程式在此之前不啟動。
+
+已配對電腦重新被搜尋到時，以保存的指紋驗證新的 TLS 連線；只有雙方仍記住彼此才通知 GUI 啟動／重連 Barrier。接收端使用經驗證的 TCP 對端 IP，因此 DHCP 位址改變不必重新輸入。偽造名稱／搜尋封包不能直接替換信任或啟動控制。解除配對會清除目前角色的 peer 記錄與信任；拒絕、逾時或單方同意不建立新信任。一次一個對端、同一 IPv4 廣播網域，未實作跨子網或 VPN 探索。
+
+`link-network-test.py` 在隔離 loopback 端點啟動真正的輔助程式，驗證搜尋、相同 TLS 短碼、雙方同意、拒絕、保存、重開後自動連線與解除配對。測試不啟動鍵鼠攔截。GUI 自我測試另檢查清單更新／移除，以及關閉過期配對視窗。
 
 ## 檔案剪貼簿
 
