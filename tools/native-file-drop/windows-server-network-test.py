@@ -104,6 +104,8 @@ end
                     assert transfer_id == expected_id and bytes(received) == payload
                     assert hashlib.sha256(received).digest() == expected_digest
                     completed = True
+                elif code == b"COUT" and expected_id is not None:
+                    raise AssertionError("Small entry-edge jitter switched back and cancelled the drag")
                 elif code == b"DMUP" and message[4:] == b"\x01":
                     assert completed, "Release arrived before the file snapshot"
                     break

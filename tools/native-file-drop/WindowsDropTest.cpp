@@ -247,7 +247,10 @@ static bool explorerSource(const wchar_t* folder, bool serverMode) {
                 // Ordinary input (no private tag) must travel through the real server hooks.
                 mouse_event(MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE, 65535,
                             static_cast<DWORD>((point.y + 20) * 65535.0 / (GetSystemMetrics(SM_CYSCREEN) - 1)), 0, 0);
-                pump(2000);
+                pump(1000);
+                // A tiny hand movement while waiting at the receiving edge must not cancel the file.
+                mouse_event(MOUSEEVENTF_MOVE, static_cast<DWORD>(-2), 0, 0, 0);
+                pump(1000);
                 mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0); pump(300);
             } else {
                 GUITHREADINFO gui = {}; gui.cbSize = sizeof(gui);
