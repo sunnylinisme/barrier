@@ -129,7 +129,7 @@ for role in ["server", "client"]:
                     args = ["barrierc.exe", "--name", "windows", "127.0.0.1:" + str(port)]
                     profile = client_profile
                 args[0] = str(binary / args[0])
-                args[1:1] = ["-f", "--no-tray", "--file-clipboard", "--profile-dir", str(profile), "--log", str(root / "core.log")]
+                args[1:1] = ["-f", "--no-tray", "--debug", "DEBUG1", "--file-clipboard", "--profile-dir", str(profile), "--log", str(root / "core.log")]
                 core = subprocess.Popen(args, stdout=console, stderr=subprocess.STDOUT)
                 if role == "server":
                     deadline = time.monotonic() + 15
