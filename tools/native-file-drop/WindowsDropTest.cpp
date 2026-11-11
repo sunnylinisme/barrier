@@ -12,6 +12,7 @@
 #include <vector>
 #include <algorithm>
 #include <UIAutomation.h>
+#include <filesystem>
 
 static bool received = false;
 static const std::string payload("network snapshot\n\x00\x01\xff", 20);
@@ -231,7 +232,7 @@ static bool explorerSource(const wchar_t* folder, bool serverMode) {
     }
     bool passed = search.window != nullptr;
     if (search.window) {
-        SetWindowPos(search.window, HWND_TOPMOST, 20, 20, 900, 650, SWP_SHOWWINDOW);
+        SetWindowPos(search.window, HWND_NOTOPMOST, 20, 20, 900, 650, SWP_SHOWWINDOW);
         SetForegroundWindow(search.window); pump(1000);
         for (bool multiple : {false, true}) {
             if (serverMode && multiple) break;
@@ -255,7 +256,9 @@ static bool explorerSource(const wchar_t* folder, bool serverMode) {
                 std::cout << "test: Explorer capture=" << captureClass << " left=" << GetAsyncKeyState(VK_LBUTTON) << "\n";
                 if (!multiple) saveScreen(L"explorer-source-held.bmp");
                 auto captured = barrier::captureWindowsNativeDrag();
-                bool correct = multiple ? captured.empty() : captured == utf8(path.c_str());
+                std::error_code error;
+                bool correct = multiple ? captured.empty() : !captured.empty() &&
+                    std::filesystem::equivalent(std::filesystem::u8path(captured), path, error) && !error;
                 std::cout << (correct ? "PASS" : "FAIL") << ": Explorer source capture, multiple=" << multiple << "\n";
                 passed = correct && passed;
                 passed = barrier::cancelWindowsNativeDrag() && passed; pump(300);
