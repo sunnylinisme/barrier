@@ -19,6 +19,8 @@ static class ShareSettings
 {
     public static string Root = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "BarrierShare");
     public static string Bin = AppDomain.CurrentDomain.BaseDirectory;
+    public static readonly string[] Directions = { "right", "left", "up", "down" };
+    public static string Position = "right";
     public static string Profile(bool host) { return Path.Combine(Root, host ? "profile-server" : "profile"); }
     public static string Quote(string value)
     {
@@ -53,18 +55,20 @@ static class ShareSettings
     public static void Save(bool host, string address)
     {
         Directory.CreateDirectory(Root);
-        var document = new XDocument(new XElement("settings", new XAttribute("host", host), new XAttribute("address", address)));
+        var document = new XDocument(new XElement("settings", new XAttribute("host", host), new XAttribute("address", address), new XAttribute("position", Position)));
         string path = Path.Combine(Root, "settings.xml"), temporary = path + ".new";
         document.Save(temporary);
         if (File.Exists(path)) File.Replace(temporary, path, null); else File.Move(temporary, path);
     }
     public static void Load(out bool host, out string address)
     {
-        host = true; address = "";
+        host = true; address = ""; Position = "right";
         string path = Path.Combine(Root, "settings.xml");
         if (!File.Exists(path)) return;
         var root = XDocument.Load(path).Root;
         host = (bool)root.Attribute("host"); address = (string)root.Attribute("address") ?? "";
+        string position = (string)root.Attribute("position");
+        Position = Directions.Contains(position) ? position : "right";
     }
     static void CopyTree(string source, string target)
     {
@@ -108,7 +112,9 @@ static class ShareSettings
     }
     public static string Config(bool clipboard)
     {
-        return "section: screens\n windows-host:\n windows:\nend\nsection: links\n windows-host:\n  right = windows\n windows:\n  left = windows-host\nend\nsection: options\n clipboardSharing = " + (clipboard ? "true" : "false") + "\nend\n";
+        if (!Directions.Contains(Position)) throw new IOException("請選擇有效的螢幕位置。");
+        string opposite = new[] { "left", "right", "down", "up" }[Array.IndexOf(Directions, Position)];
+        return ("section: screens\n windows-host:\n windows:\nend\nsection: links\n windows-host:\n  right = windows\n windows:\n  left = windows-host\nend\nsection: options\n clipboardSharing = " + (clipboard ? "true" : "false") + "\nend\n").Replace("right = windows", Position + " = windows").Replace("left = windows-host", opposite + " = windows-host");
     }
     public static ProcessStartInfo Backend(bool host, string address)
     {
@@ -130,7 +136,8 @@ static class ShareSettings
 
 sealed class ShareWindow : Form
 {
-    readonly ComboBox role = new ComboBox();
+    readonly ComboBox role = new ComboBox(), position = new ComboBox();
+    readonly Label positionHint = new Label();
     readonly TextBox address = new TextBox(), fingerprint = new TextBox(), details = new TextBox();
     readonly Label status = new Label(), addresses = new Label();
     readonly Button start = new Button(), stop = new Button(), import = new Button(), clear = new Button();
@@ -144,26 +151,30 @@ sealed class ShareWindow : Form
     public ShareWindow()
     {
         Text = "Barrier Share · 雙向檔案複製（測試版）";
-        Font = new Font("Microsoft JhengHei UI", 10F); ClientSize = new Size(680, 615);
+        Font = new Font("Microsoft JhengHei UI", 10F); ClientSize = new Size(680, 665);
         FormBorderStyle = FormBorderStyle.FixedSingle; MaximizeBox = false; StartPosition = FormStartPosition.CenterScreen;
         Icon = SystemIcons.Application;
         LabelAt("兩台電腦，共用鍵鼠與複製貼上", 24, 20, 620);
         LabelAt("這台電腦", 24, 63, 120); At(role, 150, 58, 502, 32);
         role.DropDownStyle = ComboBoxStyle.DropDownList;
-        role.Items.AddRange(new object[] { "主控端 — 滑鼠與鍵盤接在這台", "接收端 — 位於主控端螢幕右邊" });
+        role.Items.AddRange(new object[] { "主控端 — 滑鼠與鍵盤接在這台", "接收端 — 使用另一台的滑鼠與鍵盤" });
         LabelAt("主控端 IP", 24, 106, 120); At(address, 150, 101, 502, 30);
-        At(addresses, 24, 144, 628, 45);
-        At(status, 24, 197, 628, 30); status.ForeColor = Color.FromArgb(20, 80, 145);
+        LabelAt("接收端位置", 24, 149, 120); At(position, 150, 144, 502, 32);
+        position.DropDownStyle = ComboBoxStyle.DropDownList;
+        position.Items.AddRange(new object[] { "主控端右方", "主控端左方", "主控端上方", "主控端下方" }); position.SelectedIndex = 0;
+        positionHint.Text = "由主控端設定"; At(positionHint, 150, 149, 502, 26);
+        At(addresses, 24, 194, 628, 45);
+        At(status, 24, 247, 628, 30); status.ForeColor = Color.FromArgb(20, 80, 145);
         start.Text = "開始連線"; stop.Text = "停止"; import.Text = "沿用舊版配對"; clear.Text = "清除檔案暫存";
-        At(start, 24, 234, 140, 40); At(stop, 176, 234, 100, 40);
-        At(import, 288, 234, 176, 40); At(clear, 476, 234, 176, 40); stop.Enabled = false;
-        LabelAt("本機識別碼（首次配對時供另一台核對）", 24, 292, 620);
-        At(fingerprint, 24, 322, 628, 60); fingerprint.Multiline = true; fingerprint.ReadOnly = true;
+        At(start, 24, 284, 140, 40); At(stop, 176, 284, 100, 40);
+        At(import, 288, 284, 176, 40); At(clear, 476, 284, 176, 40); stop.Enabled = false;
+        LabelAt("本機識別碼（首次配對時供另一台核對）", 24, 342, 620);
+        At(fingerprint, 24, 372, 628, 60); fingerprint.Multiline = true; fingerprint.ReadOnly = true;
         fingerprint.Font = new Font("Consolas", 10); fingerprint.BackColor = SystemColors.Window;
-        LabelAt("檔案：選取一個檔案 → Ctrl+C → 移到另一台 → 在資料夾 Ctrl+V", 24, 396, 635);
-        LabelAt("主 ↔ 副皆可。每次一個檔案，最大 16 MiB；保留原檔。", 24, 423, 635);
-        LabelAt("目前不含資料夾／多檔；此介面預設不啟用拖曳。", 24, 450, 635);
-        At(details, 24, 485, 628, 106); details.Multiline = true; details.ReadOnly = true; details.ScrollBars = ScrollBars.Vertical;
+        LabelAt("選取檔案／資料夾 → 複製 → 移到另一台 → 等接收完成後貼上", 24, 446, 635);
+        LabelAt("Windows 使用 Ctrl+C／V；Mac 使用 ⌘C／V。雙向保留原檔。", 24, 473, 635);
+        LabelAt("可選多檔與資料夾；分段傳送，沒有 16 MiB 檔案大小上限。", 24, 500, 635);
+        At(details, 24, 535, 628, 106); details.Multiline = true; details.ReadOnly = true; details.ScrollBars = ScrollBars.Vertical;
         details.Font = new Font("Consolas", 8); details.BackColor = Color.FromArgb(247, 248, 250);
         var menu = new ContextMenuStrip(); menu.Items.Add("開啟視窗", null, delegate { Show(); WindowState = FormWindowState.Normal; Activate(); });
         menu.Items.Add("結束", null, delegate { closing = true; Close(); });
@@ -173,10 +184,11 @@ sealed class ShareWindow : Form
         import.Click += delegate { ImportPairing(); }; clear.Click += delegate { ClearCache(); };
         role.SelectedIndexChanged += delegate { if (!loading) RefreshRole(); };
         address.TextChanged += delegate { if (!loading) Save(); };
+        position.SelectedIndexChanged += delegate { if (!loading && position.SelectedIndex >= 0) { ShareSettings.Position = ShareSettings.Directions[position.SelectedIndex]; RefreshRole(); } };
         Shown += delegate {
             try {
                 ShareSettings.Import(ShareSettings.Bin, true, false); ShareSettings.Import(ShareSettings.Bin, false, false);
-                bool host; string ip; ShareSettings.Load(out host, out ip); role.SelectedIndex = host ? 0 : 1; address.Text = ip;
+                bool host; string ip; ShareSettings.Load(out host, out ip); role.SelectedIndex = host ? 0 : 1; address.Text = ip; position.SelectedIndex = Array.IndexOf(ShareSettings.Directions, ShareSettings.Position);
                 loading = false; RefreshRole();
             } catch (Exception e) { loading = false; role.SelectedIndex = 0; Error(e); }
         };
@@ -189,11 +201,11 @@ sealed class ShareWindow : Form
     void Save() { try { ShareSettings.Save(Host, address.Text.Trim()); } catch (Exception e) { status.Text = "無法儲存設定：" + e.Message; } }
     void RefreshRole()
     {
-        address.Enabled = !Host; Save();
+        address.Enabled = !Host; position.Visible = Host; positionHint.Visible = !Host; Save();
         try {
             string fp = ShareSettings.Init(Host); fingerprint.Text = fp;
             string[] ips = Dns.GetHostAddresses(Dns.GetHostName()).Where(ip => ip.AddressFamily == AddressFamily.InterNetwork && !IPAddress.IsLoopback(ip)).Select(ip => ip.ToString()).ToArray();
-            addresses.Text = Host ? "接收端請填這台的區網 IP：" + String.Join("、", ips) + "\r\n接收端固定放在螢幕右邊。" : "填好主控端 IP 後連線；兩台需在同一個區域網路。";
+            addresses.Text = Host ? "接收端請填這台的區網 IP：" + String.Join("、", ips) + "\r\n接收端的位置由上方選單設定。" : "填好主控端 IP 後連線；兩台需在同一個區域網路。";
             status.Text = File.Exists(ShareSettings.TrustedPath(Host)) ? "已保留配對資料，按「開始連線」即可。" : "尚未配對；連線時會顯示對方識別碼供核對。";
         } catch (Exception e) { Error(e); }
     }
@@ -208,7 +220,7 @@ sealed class ShareWindow : Form
             process.Exited += delegate { if (!closing && IsHandleCreated) BeginInvoke((Action)delegate { if (backend == process) { StopBackend(); status.Text = "連線程式已停止，請查看下方紀錄。"; } }); };
             backend = process; status.Text = Host ? "等待接收端連線…" : "正在連線…";
             process.Start(); process.BeginOutputReadLine(); process.BeginErrorReadLine();
-            start.Enabled = role.Enabled = address.Enabled = import.Enabled = clear.Enabled = false; stop.Enabled = true;
+            start.Enabled = role.Enabled = address.Enabled = import.Enabled = clear.Enabled = position.Enabled = false; stop.Enabled = true;
         } catch (Exception e) { StopBackend(); Error(e); }
     }
     void PostLine(Process process, string line)
@@ -221,8 +233,10 @@ sealed class ShareWindow : Form
         if (details.TextLength > 24000) details.Text = details.Text.Substring(details.TextLength - 12000);
         details.AppendText(line + Environment.NewLine);
         if (line.Contains("connected to server") || line.Contains("has connected")) status.Text = "已連線 · 雙向複製貼上已啟用";
+        if (line.Contains("file clipboard: sending")) status.Text = "正在傳送檔案… 可繼續操作滑鼠與鍵盤";
+        if (line.Contains("file clipboard: receiving")) status.Text = "正在接收檔案… 完成後即可貼上";
         if (line.Contains("received and verified") && line.Contains("clipboard")) status.Text = "已收到檔案，可在資料夾 Ctrl+V 貼上";
-        if (line.Contains("WARNING") && line.Contains("file clipboard:")) status.Text = "檔案無法複製：請確認是單一檔案、16 MiB 以內。詳細原因見下方。";
+        if (line.Contains("WARNING") && line.Contains("file clipboard:")) status.Text = "檔案複製未完成；請查看下方原因，修正後重新複製。";
         if (line.Contains("disconnected") || line.Contains("server is dead")) status.Text = "連線中斷，正在重連…";
         var match = Regex.Match(line, @"\(SHA256\):\s*([0-9A-Fa-f:]{95})");
         if (!match.Success) return;
@@ -242,7 +256,7 @@ sealed class ShareWindow : Form
             try { if (!process.HasExited) { process.Kill(); process.WaitForExit(5000); } } catch (InvalidOperationException) { }
             process.Dispose();
         }
-        start.Enabled = role.Enabled = import.Enabled = clear.Enabled = true; address.Enabled = !Host; stop.Enabled = false;
+        start.Enabled = role.Enabled = import.Enabled = clear.Enabled = position.Enabled = true; address.Enabled = !Host; stop.Enabled = false;
         status.Text = "已停止；設定與配對已保留。";
     }
     void ImportPairing()
@@ -264,8 +278,10 @@ sealed class ShareWindow : Form
                 if (paths.Cast<string>().Any(p => p.StartsWith(ShareSettings.Root + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))) Clipboard.Clear();
             }
             foreach (bool host in new[] { true, false }) {
-                string cache = Path.Combine(ShareSettings.Profile(host), "ClipboardCache");
-                if (Directory.Exists(cache)) Directory.Delete(cache, true);
+                foreach (string name in new[] { "ClipboardCache", "FileClipboardCache" }) {
+                    string cache = Path.Combine(ShareSettings.Profile(host), name);
+                    if (Directory.Exists(cache)) Directory.Delete(cache, true);
+                }
             }
             status.Text = "已清除接收檔案暫存。";
         } catch (Exception e) { Error(e); }
@@ -290,9 +306,9 @@ static class ShareProgram
     {
         try {
             ShareSettings.Root = Path.Combine(directory, "新設定");
-            ShareSettings.Save(false, "192.168.7.4");
+            ShareSettings.Position = "up"; ShareSettings.Save(false, "192.168.7.4");
             bool host; string address; ShareSettings.Load(out host, out address);
-            if (host || address != "192.168.7.4") throw new Exception("Settings roundtrip failed");
+            if (host || address != "192.168.7.4" || ShareSettings.Position != "up") throw new Exception("Settings roundtrip failed");
             string old = Path.Combine(directory, "舊版本"), oldProfile = Path.Combine(old, "profile");
             string peer = ShareSettings.Pair("init", oldProfile);
             ShareSettings.Pair("trust", oldProfile, "server", peer);
@@ -309,6 +325,12 @@ static class ShareProgram
             string hostFingerprint = ShareSettings.Pair("init", oldHost);
             ShareSettings.Pair("trust", oldHost, "client", peer);
             if (!ShareSettings.Import(old, true, false) || ShareSettings.Init(true) != hostFingerprint || !ShareSettings.Trusted(true, peer)) throw new Exception("Host pairing import failed");
+            foreach (string direction in ShareSettings.Directions) {
+                ShareSettings.Position = direction;
+                string config = ShareSettings.Config(true);
+                string opposite = new[] { "left", "right", "down", "up" }[Array.IndexOf(ShareSettings.Directions, direction)];
+                if (!config.Contains(direction + " = windows\n") || !config.Contains(opposite + " = windows-host\n")) throw new Exception("Screen position mapping failed");
+            }
             using (var core = Process.Start(ShareSettings.Backend(true, ""))) {
                 Thread.Sleep(1500);
                 if (core.HasExited) throw new Exception("Hidden backend failed: " + core.StandardError.ReadToEnd());

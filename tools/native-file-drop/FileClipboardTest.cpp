@@ -12,6 +12,7 @@
 #include <stdexcept>
 #if SYSAPI_WIN32
 #include "arch/win32/ArchMiscWindows.h"
+#include <winioctl.h>
 #endif
 using namespace barrier;
 static void check(bool value, const char* why) { if (!value) throw std::runtime_error(why); }
@@ -81,10 +82,32 @@ int main() {
         }
         check(received.empty() && !sender.sending(), "damaged file published");
         sender.start(handle, 0, 42); pass(first, second, receiver); receiver.cancel();
-        while (!second.packets.empty()) pass(second, first, sender);
-        while (!first.packets.empty()) pass(first, second, receiver);
+        while (!first.packets.empty() || !second.packets.empty()) {
+            if (!second.packets.empty()) pass(second, first, sender);
+            if (!first.packets.empty()) pass(first, second, receiver);
+        }
         check(!sender.sending() && received.empty(), "cancelled file published");
         for (const auto& path : fs::directory_iterator(cache)) check(path.path().extension() != ".partial", "partial transfer left behind");
+        // A sparse source proves that sizes do not truncate at 4 GiB, without sending 4 GiB in CI.
+        const auto huge = source / "over-4GiB.bin";
+        const uint64_t hugeSize = (uint64_t(1) << 32) + 17;
+#if SYSAPI_WIN32
+        HANDLE sparse = CreateFileW(huge.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+        check(sparse != INVALID_HANDLE_VALUE, "cannot create sparse source");
+        DWORD returned = 0; LARGE_INTEGER end; end.QuadPart = hugeSize;
+        bool sparseOk = DeviceIoControl(sparse, FSCTL_SET_SPARSE, nullptr, 0, nullptr, 0, &returned, nullptr) && SetFilePointerEx(sparse, end, nullptr, FILE_BEGIN) && SetEndOfFile(sparse);
+        CloseHandle(sparse); check(sparseOk, "cannot size sparse source");
+#else
+        { std::ofstream out; open_utf8_path(out, huge, std::ios::binary); out.seekp(hugeSize - 1); out.put('x'); check(bool(out), "cannot create sparse source"); }
+#endif
+        sender.start(registerClipboardFiles({huge}), 0, 42);
+        pass(first, second, receiver); pass(second, first, sender);
+        check(first.packets.size() == 1 && first.packets.front().compare(0, 4, "FCEN") == 0, "missing large file header");
+        first.input = first.packets.front().substr(4); first.packets.pop_front();
+        UInt32 hugeId = 0; UInt8 hugeKind = 0; std::string hugePath, hugeLength;
+        check(ProtocolUtil::readf(&first, "%4i%1i%s%s", &hugeId, &hugeKind, &hugePath, &hugeLength) && hugeLength == "4294967313", "file size truncated at 4 GiB");
+        sender.cancel(); pass(first, second, receiver); receiver.cancel();
+        check(received.empty(), "cancelled sparse source published");
         // A wire-supplied local capability and path traversal cannot access local files.
         bool rejected = false; try { clipboardFiles("FLOCAL2:untrusted"); } catch (...) { rejected = true; }
         check(rejected, "forged clipboard handle accepted");
@@ -93,7 +116,7 @@ int main() {
         ProtocolUtil::writef(&first, "FCEN%4i%1i%s%s", id, 1, &bad, &length); pass(first, second, receiver);
         check(!fs::exists(root / "escape") && received.empty(), "path traversal accepted");
         fs::remove_all(root);
-        std::cout << "PASS: 96 MiB streamed with <=64 KiB queued, multiple items/folders, binary identity, corruption/cancel/traversal rejection\n";
+        std::cout << "PASS: 96 MiB streamed with <=64 KiB queued, multiple items/folders, binary identity, over-4-GiB size header, corruption/cancel/traversal rejection\n";
         return 0;
     } catch (const std::exception& e) { std::cerr << e.what() << '\n'; std::error_code ec; fs::remove_all(root, ec); return 1; }
 }

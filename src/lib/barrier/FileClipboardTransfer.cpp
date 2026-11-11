@@ -225,6 +225,7 @@ bool FileClipboardTransfer::receive(const unsigned char* code) {
             fs::permissions(receive->directory, fs::perms::owner_all, fs::perm_options::replace);
 #endif
             p.rx = std::move(receive);
+            LOG((CLOG_INFO "file clipboard: receiving files"));
         } else if (memcmp(code, entry, 4) == 0) {
             UInt8 kind = 0; std::string relative, length;
             if (!ProtocolUtil::readf(p.stream, entry + 4, &id, &kind, &relative, &length)) throw std::runtime_error("Invalid file entry");

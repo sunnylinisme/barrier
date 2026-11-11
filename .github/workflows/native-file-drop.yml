@@ -1,4 +1,4 @@
-name: Cross-machine native file drop
+name: Barrier Share desktop
 on:
   pull_request:
     paths: ['src/**', 'tools/native-file-drop/**', 'CMakeLists.txt', '.github/workflows/native-file-drop.yml']
@@ -23,13 +23,20 @@ jobs:
           -DCMAKE_POLICY_VERSION_MINIMUM=3.5
           -DBARRIER_BUILD_GUI=OFF -DBARRIER_BUILD_INSTALLER=OFF -DBARRIER_BUILD_TESTS=OFF
           -DBARRIER_USE_SYSTEM_OPENSSL=ON -DBARRIER_NATIVE_DROP_TESTS=ON
-          -DOPENSSL_ROOT_DIR="$(brew --prefix openssl@3)" -DCMAKE_OSX_SYSROOT="$(xcrun --show-sdk-path)"
+          -DCMAKE_OSX_DEPLOYMENT_TARGET=15.0 -DOPENSSL_ROOT_DIR="$(brew --prefix openssl@3)" -DCMAKE_OSX_SYSROOT="$(xcrun --show-sdk-path)"
       - name: Build and test
         run: |
           cmake --build build --parallel 3
           ctest --test-dir build --output-on-failure
-      - name: Package
+      - name: Package and test native Mac app
         run: sh tools/native-file-drop/package-macos.sh build
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mac-desktop-test
+          path: build/gui-test/*
+          if-no-files-found: ignore
+          retention-days: 7
       - uses: actions/upload-artifact@v4
         with:
           name: barrier-cross-drop-macos-arm64
@@ -110,7 +117,7 @@ jobs:
           New-Item -ItemType Directory build/package | Out-Null
           Copy-Item build/bin/Release/barrierc.exe, build/bin/Release/barriers.exe, build/bin/Release/barrier-pair.exe, build/bin/Release/BarrierShare.exe build/package/
           Copy-Item tools/native-file-drop/GUI-README.txt build/package/
-          Copy-Item tools/native-file-drop/Start-Windows.cmd, tools/native-file-drop/Start-Windows-Server.cmd, tools/native-file-drop/README.md, LICENSE build/package/
+          Copy-Item LICENSE build/package/
           Copy-Item -Recurse tools/native-file-drop/licenses build/package/
           Copy-Item C:/vcpkg/installed/x64-windows-static/share/openssl/copyright build/package/licenses/OpenSSL.txt
           git rev-parse HEAD | Out-File build/package/COMMIT.txt

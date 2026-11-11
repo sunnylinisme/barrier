@@ -280,13 +280,27 @@ static bool clipboardRoundtrip() {
     MSWindowsClipboard clipboard(window, true);
     const auto source = root / barrier::fs::u8path("跨機複製測試.txt");
     if (!writeSource(source.wstring())) return false;
-    auto wire = barrier::registerClipboardFiles({source});
+    const auto sourceFolder = root / barrier::fs::u8path("資料夾");
+    barrier::fs::create_directories(sourceFolder / "empty");
+    if (!writeSource((sourceFolder / "nested.txt").wstring(), "nested content")) return false;
+    auto wire = barrier::registerClipboardFiles({source, sourceFolder});
     bool passed = clipboard.open(0);
     if (passed) { passed = clipboard.empty(); clipboard.add(IClipboard::kFile, wire); clipboard.close(); }
     MSWindowsClipboardFileConverter converter;
+    if (OpenClipboard(window)) {
+        auto data = GetClipboardData(CF_HDROP);
+        auto handle = data ? converter.toIClipboard(data) : std::string();
+        CloseClipboard();
+        passed = !handle.empty() && barrier::clipboardFiles(handle)->roots.size() == 2 && passed;
+    } else passed = false;
     wire[12] ^= 1;
     passed = converter.fromIClipboard(wire) == nullptr && passed;
     passed = clipboardExplorer(destination.wstring().c_str(), true) && passed;
+    auto deadline = GetTickCount64() + 8000;
+    const auto copiedFolder = destination / sourceFolder.filename();
+    while (!barrier::fs::exists(copiedFolder / "nested.txt") && GetTickCount64() < deadline) pump(100);
+    passed = barrier::fs::is_directory(copiedFolder / "empty") && barrier::fs::exists(copiedFolder / "nested.txt") && readBytes(copiedFolder / "nested.txt") == "nested content" && passed;
+    std::cout << (passed ? "PASS" : "FAIL") << ": multiple CF_HDROP items and actual Explorer folder/empty-directory paste\n";
     if (OpenClipboard(window)) { EmptyClipboard(); CloseClipboard(); }
     DestroyWindow(window); barrier::fs::remove_all(root);
     return passed;
