@@ -76,7 +76,7 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force build/bin/Release | Out-Null
-          & "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe" /nologo /target:winexe /platform:x64 /codepage:65001 /reference:System.Windows.Forms.dll /reference:System.Drawing.dll /reference:System.Xml.Linq.dll "/win32manifest:$PWD\tools\native-file-drop\utf8.manifest" "/out:$PWD\build\bin\Release\BarrierShare.exe" "$PWD\tools\native-file-drop\BarrierShare.cs"
+          & "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe" /nologo "/win32icon:$PWD\tools\native-file-drop\icons\BarrierShare.ico" /target:winexe /platform:x64 /codepage:65001 /reference:System.Windows.Forms.dll /reference:System.Drawing.dll /reference:System.Xml.Linq.dll "/win32manifest:$PWD\tools\native-file-drop\utf8.manifest" "/out:$PWD\build\bin\Release\BarrierShare.exe" "$PWD\tools\native-file-drop\BarrierShare.cs"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Build
         run: cmake --build build --config Release --parallel 3
@@ -105,6 +105,16 @@ jobs:
           if (-not $test.WaitForExit(60000)) { $test.Kill(); throw 'Desktop self-test timed out' }
           if ($test.ExitCode -ne 0) { Get-Content build/gui-test/FAIL.txt; throw 'Desktop self-test failed' }
           Get-Content build/gui-test/PASS.txt
+      - name: Normal desktop startup and live discovery in both roles
+        shell: pwsh
+        run: |
+          $test = Start-Process build/bin/Release/BarrierShare.exe -ArgumentList '--startup-test', "$PWD/build/gui-test" -PassThru
+          if (-not $test.WaitForExit(45000)) { $test.Kill(); throw 'Production startup test timed out' }
+          if ($test.ExitCode -ne 0 -or -not (Test-Path build/gui-test/STARTUP-PASS.txt)) {
+            Get-Content build/gui-test/STARTUP-FAIL.txt -ErrorAction SilentlyContinue
+            throw 'Production startup test failed'
+          }
+          Get-Content build/gui-test/STARTUP-PASS.txt
       - uses: actions/upload-artifact@v4
         if: always()
         with:

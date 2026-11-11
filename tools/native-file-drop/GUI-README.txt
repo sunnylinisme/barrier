@@ -1,4 +1,4 @@
-Barrier Share — Windows／Mac 雙向複製通用測試版
+Barrier Share 0.3.1 — Windows／Mac 雙向複製通用測試版
 
 支援 Windows 10（1903 以上）／11 x64，以及 Apple Silicon Mac（macOS 15 以上）。
 一次連接兩台，可自由搭配作主控端或接收端；兩台必須更新到本版，並在同一區網。
@@ -19,8 +19,13 @@ Barrier Share — Windows／Mac 雙向複製通用測試版
    按「權限設定」可開啟設定；必要時重開程式。
    Windows 防火牆若詢問，允許 barrier-link.exe 和 barriers.exe 使用私人網路。
 
+0.3.1 更新
+修正 Windows 正式入口誤用介面測試模式，導致視窗開啟但搜尋服務未啟動。
+加入 Mac App／Dock 與 Windows 程式／工作列／系統匣圖示；保留原有設定、憑證與配對。
+
 如果找不到電腦
 兩邊必須都開啟新版且角色不同；按「重新搜尋」。
+「診斷紀錄」應出現「區網搜尋已啟動 · UDP/TCP 24801」，表示搜尋服務已實際啟動。
 確認在同一區網、私人網路防火牆允許程式，且路由器沒有開啟訪客／用戶端隔離。
 搜尋及配對使用 UDP／TCP 24801，鍵鼠與檔案使用 TCP 24800；不需要網際網路服務或路由器轉發。
 本版使用 IPv4 區網搜尋，不跨子網／VPN。電腦名稱只供辨識，實際連線會檢查已保存的憑證。
@@ -55,6 +60,7 @@ Windows 設定：%LOCALAPPDATA%\BarrierShare
 Mac 設定：~/Library/Application Support/BarrierShare
 日誌位於上述資料夾的 profile-server/server.log 或 profile/windows.log（Mac 為 mac.log）。
 
+正式啟動驗證：實際開啟 Windows 正式視窗，確認主控／接收角色都啟動搜尋服務並回應 UDP 查詢。
 搜尋與配對驗證：實際輔助程式的區網搜尋、TLS 短碼、雙方同意／拒絕、保存配對、重啟後自動重連、解除配對拒絕重連。
 驗證範圍：自動化 Windows 原生剪貼簿與實際檔案總管貼上、雙向 TLS 傳輸、四個螢幕方向；Mac 原生檔案剪貼簿及視窗程式。
 兩台實體 Windows／Mac 的完整操作仍需實機驗收；目前只提供 Windows x64 與 Mac arm64。

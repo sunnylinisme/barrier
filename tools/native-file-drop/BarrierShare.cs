@@ -192,7 +192,7 @@ sealed class ShareWindow : Form
     Process backend, link;
     Form consent, diagnostics;
     string consentId, connectedAddress = "", savedPeer = "";
-    bool closing, loading = true, enabled = true;
+    bool closing, loading = true, enabled = true, discoveryReady;
     bool Host { get { return role.SelectedIndex == 0; } }
     void At(Control c, int x, int y, int width, int height)
     {
@@ -208,7 +208,7 @@ sealed class ShareWindow : Form
     {
         testing = selfTest; Text = "Barrier Share";
         Font = new Font("Microsoft JhengHei UI", 10F); ClientSize = new Size(840, 710); BackColor = ShareStyle.Background; ForeColor = ShareStyle.Ink;
-        FormBorderStyle = FormBorderStyle.FixedSingle; MaximizeBox = false; StartPosition = FormStartPosition.CenterScreen; Icon = SystemIcons.Application;
+        FormBorderStyle = FormBorderStyle.FixedSingle; MaximizeBox = false; StartPosition = FormStartPosition.CenterScreen; Icon = System.Drawing.Icon.ExtractAssociatedIcon(Application.ExecutablePath);
         At(new Label { Text = "Barrier Share", Font = new Font("Segoe UI", 26F, FontStyle.Bold), ForeColor = ShareStyle.Ink }, 32, 24, 550, 48);
         At(new Label { Text = "同一張桌面，連上兩台電腦。", ForeColor = ShareStyle.Muted }, 34, 77, 600, 26);
         At(new Label { Text = "●  區域網路", ForeColor = ShareStyle.Blue, TextAlign = ContentAlignment.MiddleRight }, 650, 38, 158, 30);
@@ -265,6 +265,46 @@ sealed class ShareWindow : Form
             closing = true; retry.Stop(); StopLink(); StopBackend(); tray.Dispose();
         };
     }
+    // Exercise the same window and startup path as a normal launch, including both live roles.
+    public void CheckProductionStartup(string directory)
+    {
+        var timer = new System.Windows.Forms.Timer { Interval = 150 };
+        var deadline = DateTime.UtcNow.AddSeconds(25); Task probe = null; bool receiverChecked = false;
+        Directory.CreateDirectory(directory);
+        timer.Tick += delegate {
+            try {
+                if (testing) throw new Exception("Production window started in interface-test mode");
+                if (DateTime.UtcNow > deadline) throw new Exception("Production discovery did not start: " + status.Text);
+                if (probe == null && discoveryReady && link != null && !link.HasExited) {
+                    string expectedRole = Host ? "H" : "R";
+                    probe = Task.Factory.StartNew(delegate {
+                        using (var udp = new UdpClient(AddressFamily.InterNetwork)) {
+                            udp.Client.ReceiveTimeout = 3000;
+                            string nonce = Guid.NewGuid().ToString("N"); byte[] query = Encoding.ASCII.GetBytes("BSEARCH1\t" + nonce);
+                            udp.Send(query, query.Length, new IPEndPoint(IPAddress.Loopback, 24801));
+                            var sender = new IPEndPoint(IPAddress.Any, 0);
+                            string[] reply = Encoding.UTF8.GetString(udp.Receive(ref sender)).Split('\t');
+                            if (reply.Length != 5 || reply[0] != "BHERE1" || reply[1] != expectedRole || reply[4] != nonce || sender.Port != 24801)
+                                throw new Exception("Production discovery response invalid");
+                        }
+                    });
+                }
+                if (probe != null && probe.IsCompleted) {
+                    probe.GetAwaiter().GetResult();
+                    if (!receiverChecked) { receiverChecked = true; probe = null; role.SelectedIndex = 1; return; }
+                    using (var bitmap = new Bitmap(Width, Height)) { DrawToBitmap(bitmap, new Rectangle(Point.Empty, Size)); bitmap.Save(Path.Combine(directory, "gui-startup.png")); }
+                    using (var bitmap = Icon.ToBitmap()) bitmap.Save(Path.Combine(directory, "app-icon.png"));
+                    File.WriteAllText(Path.Combine(directory, "STARTUP-PASS.txt"), "Normal GUI starts discovery on UDP/TCP 24801; host and receiver both answer nonce queries; role switching restarts service; app icon loads.");
+                    timer.Stop(); closing = true; Close();
+                }
+            } catch (Exception e) {
+                File.WriteAllText(Path.Combine(directory, "STARTUP-FAIL.txt"), e.ToString());
+                Environment.ExitCode = 1; timer.Stop(); closing = true; Close();
+            }
+        };
+        FormClosed += delegate { timer.Dispose(); };
+        Shown += delegate { timer.Start(); };
+    }
     void Error(Exception e) { status.Text = "操作未完成：" + e.Message; }
     void Save() { try { ShareSettings.Save(Host, address.Text.Trim()); } catch (Exception e) { Error(e); } }
     void UpdateControls()
@@ -297,7 +337,7 @@ sealed class ShareWindow : Form
     void Send(string command) { try { if (link != null && !link.HasExited) { link.StandardInput.WriteLine(command); link.StandardInput.Flush(); } } catch (Exception e) { Error(e); } }
     void StopLink()
     {
-        CloseConsent(); var process = link; link = null;
+        CloseConsent(); var process = link; link = null; discoveryReady = false;
         if (process != null) {
             try { if (!process.HasExited) { process.StandardInput.WriteLine("QUIT"); process.StandardInput.Flush(); if (!process.WaitForExit(2000)) process.Kill(); } } catch (InvalidOperationException) { } catch (IOException) { }
             process.Dispose();
@@ -316,7 +356,7 @@ sealed class ShareWindow : Form
     void LinkLine(string line)
     {
         string[] f = line.Split('\t');
-        if (f[0] == "READY") status.Text = Host ? "正在搜尋接收端…" : "可被搜尋，等待主控端邀請…";
+        if (f[0] == "READY") { LogLine("區網搜尋已啟動 · UDP/TCP 24801"); discoveryReady = true; status.Text = Host ? "正在搜尋接收端…" : "可被搜尋，等待主控端邀請…"; }
         else if (f[0] == "DEVICE" && f.Length == 6) {
             NearbyDevice device; string selected = nearby.SelectedItem is NearbyDevice ? ((NearbyDevice)nearby.SelectedItem).Fingerprint : "";
             if (!devices.TryGetValue(f[1], out device)) { device = new NearbyDevice { Fingerprint = f[1] }; devices[f[1]] = device; }
@@ -429,9 +469,15 @@ static class ShareProgram
         bool created;
         using (var mutex = new Mutex(true, "Local\\BarrierShare.Desktop", out created)) {
             if (!created) { MessageBox.Show("Barrier Share 已在執行，請從右下角圖示開啟。", "Barrier Share"); return 0; }
-            Application.Run(new ShareWindow(true));
+            using (var window = new ShareWindow()) {
+                if (args.Length == 2 && args[0] == "--startup-test") {
+                    ShareSettings.Root = Path.Combine(Path.GetFullPath(args[1]), "startup-profile");
+                    window.CheckProductionStartup(Path.GetFullPath(args[1]));
+                }
+                Application.Run(window);
+            }
         }
-        return 0;
+        return Environment.ExitCode;
     }
     static int SelfTest(string directory)
     {
