@@ -80,7 +80,7 @@ std::string captureWindowsNativeDrag()
         wc.lpfnWndProc = DefWindowProcW; wc.lpszClassName = L"BarrierNativeSourceCapture";
         wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
         RegisterClassW(&wc);
-        HWND window = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+        HWND window = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TOPMOST,
             wc.lpszClassName, L"", WS_POPUP, point.x - 8, point.y - 8, 16, 16,
             nullptr, nullptr, wc.hInstance, nullptr);
         auto target = new CaptureTarget;
