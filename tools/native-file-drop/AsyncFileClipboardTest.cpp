@@ -39,7 +39,7 @@ public:
     void* getEventTarget() const override { return nullptr; }
     void close() override {} void flush() override {} void shutdownInput() override {} void shutdownOutput() override {}
 };
-static void pass(Pipe& outgoing, Pipe& incoming, AsyncFileClipboardTransfer& target) {
+template<class Transfer> static void pass(Pipe& outgoing, Pipe& incoming, Transfer& target) {
     if (outgoing.packets.empty()) return;
     auto packet = std::move(outgoing.packets.front()); outgoing.packets.pop_front();
     check(packet.size() >= 8, "Invalid frame"); incoming.input = packet.substr(4);
@@ -114,14 +114,25 @@ int main(int argc, char** argv) {
             }
             pass(a, b, *second); pass(b, a, *first);
         };
+        auto completedCancelIsSilent = [&] {
+            // The receiver callback precedes the final ACK. Wait for the sender to
+            // process that ACK and publish its finished-send result to the event queue.
+            waitFor([&] { Event event; if (!events.getEvent(event, 0.0)) return false; events.dispatchEvent(event); Event::deleteData(event); return true; },
+                    "Sender did not report final acknowledgement completion");
+            dispatch(); check(a.packets.empty() && b.packets.empty(), "Completed transfer left protocol traffic");
+            first->cancel(); second->cancel();
+            check(a.packets.empty() && b.packets.empty(), "Cancelling a completed transfer sent stale abort/rejection");
+        };
         first->start(registerClipboardFiles({large, source / "folder"}), 0, 42);
         waitFor([&] { pump(); return !atB.empty(); }, "Async forward transfer did not finish");
         auto received = clipboardFiles(atB);
         check(sequenceB == 42 && received->roots.size() == 2 && sameBytes(large, received->roots[0]), "Forward bytes or sequence differ");
         check(sameBytes(small, received->roots[1] / "small.txt") && fs::is_directory(received->roots[1] / "empty"), "Folder structure differs");
+        completedCancelIsSilent();
         second->start(registerClipboardFiles({small}), 0, 43);
         waitFor([&] { pump(); return !atA.empty(); }, "Async reverse transfer did not finish");
         check(sequenceA == 43 && sameBytes(small, clipboardFiles(atA)->roots[0]), "Reverse bytes differ");
+        completedCancelIsSilent();
         check(gateA->calls > 30 && gateB->calls > 30, "Chunk transfer bypassed worker");
         std::cout << "PASS: real async file/folder bytes both directions via EventQueue notifications; input-thread-only network and completion callbacks\n";
 
@@ -197,6 +208,31 @@ int main(int argc, char** argv) {
             dispatch();
         }
         std::cout << "PASS: publication errors/reentrant cancel suppress stale ACK; receiver destruction (including throwing callback) has no later network access\n";
+        // The worker has finished the file but not yet delivered native publication.
+        // An abort received in that gap must invalidate the pending completion handle.
+        {
+            Pipe sourcePipe, destinationPipe; bool published = false;
+            auto gate = std::make_shared<Gate>(); std::weak_ptr<Gate> gone = gate;
+            auto destination = std::make_unique<AsyncFileClipboardTransfer>(&destinationPipe,
+                [&](ClipboardID, uint32_t, const std::string&) { published = true; }, &events, root / "aborted-publication", makeHook(gate));
+            FileClipboardTransfer sourceTransfer(&sourcePipe, [](ClipboardID, uint32_t, const std::string&) {}, root / "abort-sender");
+            sourceTransfer.start(registerClipboardFiles({small}), 0, 60);
+            waitFor([&] {
+                dispatch();
+                if (!sourcePipe.packets.empty() && sourcePipe.packets.front().compare(0, 4, "FCDN") == 0) return true;
+                pass(sourcePipe, destinationPipe, *destination); pass(destinationPipe, sourcePipe, sourceTransfer); return false;
+            }, "Sender did not reach pending publication");
+            const auto id = sourcePipe.packets.front().substr(4, 4);
+            gate->arm(); pass(sourcePipe, destinationPipe, *destination); gate->waitBlocked();
+            check(!published, "Native publication escaped the worker gate");
+            Pipe aborted; const auto packet = std::string("FCAB") + id; aborted.write(packet.data(), static_cast<UInt32>(packet.size()));
+            pass(aborted, destinationPipe, *destination); gate->release();
+            waitFor([&] { Event event; if (!events.getEvent(event, 0.0)) return false; events.dispatchEvent(event); Event::deleteData(event); return true; },
+                    "Aborted pending publication did not return its worker result");
+            dispatch(); check(!published && destinationPipe.packets.empty(), "Remote abort failed to suppress pending publication/final ACK");
+            destination.reset(); gate.reset(); waitFor([&] { return gone.expired(); }, "Aborted publication worker did not stop"); dispatch();
+        }
+        std::cout << "PASS: completed transfers cancel silently; remote abort suppresses queued publication and final ACK\n";
         fs::remove_all(root); return 0;
     } catch (const std::exception& error) { std::cerr << "FAIL: " << error.what() << "\nTest files: " << root.u8string() << '\n'; return 1; }
 }
