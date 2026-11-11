@@ -100,7 +100,7 @@ public:
     virtual void        fakeDraggingFiles(DragFileList fileList);
     virtual std::string& getDraggingFilename();
     std::string nativeDraggingPath() override;
-    void cancelNativeSourceDrag() override;
+    bool cancelNativeSourceDrag() override;
 
     const std::string& getDropTarget() const { return m_dropTarget; }
     void                waitForCarbonLoop() const;

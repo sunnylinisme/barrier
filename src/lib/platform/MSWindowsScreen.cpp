@@ -17,6 +17,7 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include "platform/MSWindowsNativeSource.h"
 #include "platform/MSWindowsScreen.h"
 
 #include "platform/MSWindowsDropTarget.h"
@@ -1283,6 +1284,8 @@ MSWindowsScreen::onMouseButton(WPARAM wParam, LPARAM lParam)
         if (pressed) {
             m_buttons[button] = true;
             if (button == kButtonLeft) {
+                m_nativeCaptureAttempted = false;
+                m_nativeSourcePath.clear();
                 m_draggingFilename.clear();
                 LOG((CLOG_DEBUG2 "dragging filename is cleared"));
             }
@@ -1964,4 +1967,28 @@ void MSWindowsScreen::startNativeFile(std::shared_ptr<const barrier::NativeFile>
 {
     m_draggingStarted = false;
     m_nativeDrag.start(file);
+}
+
+bool MSWindowsScreen::isDraggingStarted()
+{
+    if (m_isPrimary && m_isOnScreen && App::instance().argsBase().m_nativeFileDrop &&
+        !(GetAsyncKeyState(VK_LBUTTON) & 0x8000)) return false;
+    return PlatformScreen::isDraggingStarted();
+}
+std::string MSWindowsScreen::nativeDraggingPath()
+{
+    if (!m_isPrimary || !isDraggingStarted()) return {};
+    if (!m_nativeCaptureAttempted) {
+        m_nativeCaptureAttempted = true;
+        m_nativeSourcePath = barrier::captureWindowsNativeDrag();
+        LOG((CLOG_INFO "native drop: %s", m_nativeSourcePath.empty() ?
+             "no single file drag at boundary" : "captured Windows source file"));
+    }
+    return m_nativeSourcePath;
+}
+bool MSWindowsScreen::cancelNativeSourceDrag()
+{
+    if (!barrier::cancelWindowsNativeDrag()) return false;
+    m_draggingStarted = false;
+    return true;
 }

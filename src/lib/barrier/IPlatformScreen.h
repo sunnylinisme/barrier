@@ -40,7 +40,7 @@ class IPlatformScreen : public IScreen,
                 public IKeyState {
 public:
     virtual std::string nativeDraggingPath() { return {}; }
-    virtual void cancelNativeSourceDrag() {}
+    virtual bool cancelNativeSourceDrag() { return false; }
     virtual void startNativeFile(std::shared_ptr<const barrier::NativeFile>) {}
 
     //! @name manipulators

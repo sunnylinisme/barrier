@@ -17,6 +17,7 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include "platform/MSWindowsNativeSource.h"
 #include "platform/MSWindowsHook.h"
 #include "platform/MSWindowsHookResource.h"
 #include "platform/ImmuneKeysReader.h"
@@ -409,7 +410,7 @@ keyboardLLHook(int code, WPARAM wParam, LPARAM lParam)
     KBDLLHOOKSTRUCT* info = reinterpret_cast<KBDLLHOOKSTRUCT*>(lParam);
 
     // do not filter non-action events nor immune keys
-    if (code == HC_ACTION && !is_immune_key(info->vkCode)) {
+    if (code == HC_ACTION && info->dwExtraInfo != barrier::nativeDragInputTag && !is_immune_key(info->vkCode)) {
         WPARAM wParam = info->vkCode;
         LPARAM lParam = 1;                            // repeat code
         lParam |= (info->scanCode << 16);        // scan code
@@ -550,6 +551,8 @@ mouseLLHook(int code, WPARAM wParam, LPARAM lParam)
     if (code == HC_ACTION) {
         // decode the message
         MSLLHOOKSTRUCT* info = reinterpret_cast<MSLLHOOKSTRUCT*>(lParam);
+        if (info->dwExtraInfo == barrier::nativeDragInputTag)
+            return CallNextHookEx(g_hkMouse, code, wParam, lParam);
         SInt32 x = static_cast<SInt32>(info->pt.x);
         SInt32 y = static_cast<SInt32>(info->pt.y);
         SInt32 w = static_cast<SInt16>(HIWORD(info->mouseData));

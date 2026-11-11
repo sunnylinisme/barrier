@@ -1825,13 +1825,17 @@ Server::onMouseMovePrimary(SInt32 x, SInt32 y)
             if (m_args.m_nativeFileDrop && m_screen->isDraggingStarted() && m_active != newScreen) {
                 if (!m_args.m_enableCrypto || !newScreen->nativeFileDrop) return false;
                 std::shared_ptr<const barrier::NativeFile> file;
-                try { file = barrier::readNativeFile(m_screen->nativeDraggingPath()); }
+                try {
+                    auto path = m_screen->nativeDraggingPath();
+                    if (path.empty()) return false;
+                    file = barrier::readNativeFile(path);
+                }
                 catch (const std::exception& e) {
                     LOG((CLOG_WARN "native drop: %s", e.what()));
                     return false;
                 }
                 if (!m_screen->isDraggingStarted()) return false;
-                m_screen->cancelNativeSourceDrag();
+                if (!m_screen->cancelNativeSourceDrag()) return false;
                 switchScreen(newScreen, x, y, false);
                 if (m_active != newScreen) return false;
                 barrier::sendNativeFile(newScreen->getStream(), m_seqNum, *file);

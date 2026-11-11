@@ -41,7 +41,7 @@ primary or secondary screen.
 class Screen : public IScreen {
 public:
     std::string nativeDraggingPath();
-    void cancelNativeSourceDrag();
+    bool cancelNativeSourceDrag();
     void startNativeFile(std::shared_ptr<const NativeFile> file);
 
     Screen(IPlatformScreen* platformScreen, IEventQueue* events);

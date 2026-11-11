@@ -76,12 +76,14 @@ jobs:
           retention-days: 7
       - name: Windows client TLS-to-native-drop integration
         run: python tools/native-file-drop/windows-cli-network-test.py build/bin/Release
+      - name: Windows server Explorer-to-TLS integration
+        run: python tools/native-file-drop/windows-server-network-test.py build/bin/Release
       - name: Package
         shell: pwsh
         run: |
           New-Item -ItemType Directory build/package | Out-Null
-          Copy-Item build/bin/Release/barrierc.exe, build/bin/Release/barrier-pair.exe build/package/
-          Copy-Item tools/native-file-drop/Start-Windows.cmd, tools/native-file-drop/README.md, LICENSE build/package/
+          Copy-Item build/bin/Release/barrierc.exe, build/bin/Release/barriers.exe, build/bin/Release/barrier-pair.exe build/package/
+          Copy-Item tools/native-file-drop/Start-Windows.cmd, tools/native-file-drop/Start-Windows-Server.cmd, tools/native-file-drop/README.md, LICENSE build/package/
           Copy-Item -Recurse tools/native-file-drop/licenses build/package/
           Copy-Item C:/vcpkg/installed/x64-windows-static/share/openssl/copyright build/package/licenses/OpenSSL.txt
           git rev-parse HEAD | Out-File build/package/COMMIT.txt

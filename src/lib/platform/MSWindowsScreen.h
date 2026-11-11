@@ -120,6 +120,9 @@ public:
     virtual bool        isPrimary() const;
     virtual void        fakeDraggingFiles(DragFileList fileList);
     virtual std::string& getDraggingFilename();
+    std::string nativeDraggingPath() override;
+    bool cancelNativeSourceDrag() override;
+    bool isDraggingStarted() override;
     void startNativeFile(std::shared_ptr<const barrier::NativeFile> file) override;
     virtual const std::string& getDropTarget() const;
     virtual void        setDropTarget(const std::string&);
@@ -135,6 +138,8 @@ protected:
 
 private:
     MSWindowsNativeDrag m_nativeDrag;
+    bool m_nativeCaptureAttempted = false;
+    std::string m_nativeSourcePath;
     // initialization and shutdown operations
     HCURSOR                createBlankCursor() const;
     void                destroyCursor(HCURSOR cursor) const;

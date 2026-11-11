@@ -2182,7 +2182,7 @@ std::string OSXScreen::nativeDraggingPath()
     }
 }
 
-void OSXScreen::cancelNativeSourceDrag()
+bool OSXScreen::cancelNativeSourceDrag()
 {
     CGEventRef position = CGEventCreate(nullptr);
     CGPoint point = CGEventGetLocation(position);
@@ -2198,4 +2198,5 @@ void OSXScreen::cancelNativeSourceDrag()
         }
     }
     m_draggingStarted = false;
+    return true;
 }

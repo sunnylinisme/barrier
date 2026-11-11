@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "platform/MSWindowsNativeDrag.h"
+#include "platform/MSWindowsNativeSource.h"
 #include "platform/MSWindowsNativeFileOffer.h"
 #include "arch/Arch.h"
 #include "arch/win32/ArchMiscWindows.h"
@@ -9,6 +10,8 @@
 #include <cstring>
 #include <shellapi.h>
 #include <vector>
+#include <algorithm>
+#include <UIAutomation.h>
 
 static bool received = false;
 static const std::string payload("network snapshot\n\x00\x01\xff", 20);
@@ -172,6 +175,97 @@ static bool explorerDrop(std::shared_ptr<const barrier::NativeFile> file, bool m
     std::cout << (passed ? "PASS" : "FAIL") << ": real Explorer window creates matching file\n";
     return passed;
 }
+static std::string utf8(const wchar_t* text) {
+    int size = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, text, -1, nullptr, 0, nullptr, nullptr);
+    std::vector<char> buffer(size);
+    if (!size || !WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, text, -1, buffer.data(), size, nullptr, nullptr)) return {};
+    return buffer.data();
+}
+static void key(WORD code, bool up = false) {
+    INPUT input = {}; input.type = INPUT_KEYBOARD; input.ki.wVk = code;
+    input.ki.dwFlags = up ? KEYEVENTF_KEYUP : 0; SendInput(1, &input, sizeof(input));
+}
+static bool itemPoint(HWND window, POINT& point) {
+    IUIAutomation* automation = nullptr;
+    IUIAutomationElement* root = nullptr;
+    if (FAILED(CoCreateInstance(CLSID_CUIAutomation, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&automation)))) return false;
+    automation->ElementFromHandle(window, &root);
+    bool found = false;
+    if (root) for (const wchar_t* name : {L"跨機來源測試.txt", L"跨機來源測試"}) {
+        VARIANT value; VariantInit(&value); value.vt = VT_BSTR; value.bstrVal = SysAllocString(name);
+        IUIAutomationCondition* condition = nullptr;
+        IUIAutomationElement* item = nullptr;
+        if (SUCCEEDED(automation->CreatePropertyCondition(UIA_NamePropertyId, value, &condition))) {
+            root->FindFirst(TreeScope_Descendants, condition, &item);
+            if (item) {
+                RECT area = {};
+                if (SUCCEEDED(item->get_CurrentBoundingRectangle(&area)) && area.right > area.left && area.bottom > area.top) {
+                    point.x = area.left + (std::min)(40L, (area.right - area.left) / 2);
+                    point.y = (area.top + area.bottom) / 2; found = true;
+                }
+                item->Release();
+            }
+            condition->Release();
+        }
+        VariantClear(&value);
+        if (found) break;
+    }
+    if (root) root->Release(); automation->Release(); return found;
+}
+static bool writeSource(const std::wstring& path) {
+    HANDLE file = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, 0, nullptr);
+    if (file == INVALID_HANDLE_VALUE) return false;
+    DWORD count = 0;
+    bool ok = WriteFile(file, payload.data(), static_cast<DWORD>(payload.size()), &count, nullptr) && count == payload.size();
+    CloseHandle(file); return ok;
+}
+static bool explorerSource(const wchar_t* folder, bool serverMode) {
+    const std::wstring path = std::wstring(folder) + L"\\跨機來源測試.txt";
+    const std::wstring second = std::wstring(folder) + L"\\second.txt";
+    if (!writeSource(path)) return false;
+    auto opened = reinterpret_cast<INT_PTR>(ShellExecuteW(nullptr, L"open", folder, nullptr, nullptr, SW_SHOWNORMAL));
+    ExplorerSearch search{PathFindFileNameW(folder)};
+    auto deadline = GetTickCount64() + 15000;
+    while (opened > 32 && !search.window && GetTickCount64() < deadline) {
+        EnumWindows(findExplorer, reinterpret_cast<LPARAM>(&search)); pump(100);
+    }
+    bool passed = search.window != nullptr;
+    if (search.window) {
+        SetWindowPos(search.window, HWND_TOPMOST, 20, 20, 900, 650, SWP_SHOWWINDOW);
+        SetForegroundWindow(search.window); pump(1000);
+        for (bool multiple : {false, true}) {
+            if (serverMode && multiple) break;
+            if (multiple) { passed = writeSource(second) && passed; key(VK_F5); key(VK_F5, true); pump(500); }
+            key(VK_CONTROL); key('A'); key('A', true); key(VK_CONTROL, true); pump(100);
+            POINT point = {};
+            if (!itemPoint(search.window, point)) { std::cerr << "FAIL: source item not found by UI Automation\n"; passed = false; break; }
+            SetCursorPos(point.x, point.y); pump(100);
+            mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0); pump(100);
+            SetCursorPos(point.x + 40, point.y + 20); pump(300);
+            if (serverMode) {
+                // Ordinary input (no private tag) must travel through the real server hooks.
+                mouse_event(MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE, 65535,
+                            static_cast<DWORD>((point.y + 20) * 65535.0 / (GetSystemMetrics(SM_CYSCREEN) - 1)), 0, 0);
+                pump(2000);
+                mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0); pump(300);
+            } else {
+                auto captured = barrier::captureWindowsNativeDrag();
+                bool correct = multiple ? captured.empty() : captured == utf8(path.c_str());
+                std::cout << (correct ? "PASS" : "FAIL") << ": Explorer source capture, multiple=" << multiple << "\n";
+                passed = correct && passed;
+                passed = barrier::cancelWindowsNativeDrag() && passed; pump(300);
+            }
+            try { passed = barrier::readNativeFile(utf8(path.c_str()))->bytes == payload && passed; }
+            catch (...) { passed = false; }
+        }
+        if (!passed) saveScreen(L"explorer-source.bmp");
+        mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0);
+        PostMessageW(search.window, WM_CLOSE, 0, 0); pump(300);
+    }
+    DeleteFileW(path.c_str()); DeleteFileW(second.c_str());
+    std::cout << (passed ? "PASS" : "FAIL") << ": actual Explorer source drag preserves original bytes\n";
+    return passed;
+}
 int main(int argc, char** argv)
 {
     ArchMiscWindows::setInstanceWin32(GetModuleHandle(nullptr));
@@ -186,6 +280,19 @@ int main(int argc, char** argv)
             std::cout << "test: Explorer remote drag, move pointer=" << move << "\n";
             passed = explorerDrop(file, move) && passed;
         }
+        OleUninitialize(); return passed ? 0 : 1;
+    }
+    if (argc > 1 && (std::strcmp(argv[1], "--source") == 0 || std::strcmp(argv[1], "--server-source") == 0)) {
+        wchar_t folder[MAX_PATH] = {}, temp[MAX_PATH];
+        bool serverMode = std::strcmp(argv[1], "--server-source") == 0;
+        if (serverMode) {
+            if (argc != 3 || !MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, argv[2], -1, folder, MAX_PATH)) return 1;
+        } else {
+            if (!GetTempPathW(MAX_PATH, temp) || !GetTempFileNameW(temp, L"bws", 0, folder)) return 1;
+            DeleteFileW(folder); if (!CreateDirectoryW(folder, nullptr)) return 1;
+        }
+        bool passed = explorerSource(folder, serverMode);
+        if (!serverMode) RemoveDirectoryW(folder);
         OleUninitialize(); return passed ? 0 : 1;
     }
     WNDCLASSW wc = {}; wc.hInstance = GetModuleHandle(nullptr); wc.lpfnWndProc = DefWindowProcW; wc.lpszClassName = L"BarrierDropContract";
