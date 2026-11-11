@@ -4,6 +4,7 @@
 #include "common/DataDirectories.h"
 #include "base/Log.h"
 #include <shellapi.h>
+#include <shlobj.h>
 #include <objbase.h>
 #include <fstream>
 #include <cstring>

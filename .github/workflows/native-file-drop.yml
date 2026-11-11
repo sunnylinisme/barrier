@@ -80,11 +80,32 @@ jobs:
         run: python tools/native-file-drop/windows-server-network-test.py build/bin/Release
       - name: Bidirectional file clipboard and actual Explorer paste
         run: python tools/native-file-drop/windows-clipboard-network-test.py build/bin/Release
+      - name: Build desktop launcher
+        shell: pwsh
+        run: |
+          & "$env:WINDIR/Microsoft.NET/Framework64/v4.0.30319/csc.exe" /nologo /target:winexe /platform:x64 /codepage:65001 /reference:System.Windows.Forms.dll /reference:System.Drawing.dll /reference:System.Xml.Linq.dll /win32manifest:tools/native-file-drop/utf8.manifest /out:build/bin/Release/BarrierShare.exe tools/native-file-drop/BarrierShare.cs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          New-Item -ItemType Directory build/gui-test | Out-Null
+          $test = Start-Process build/bin/Release/BarrierShare.exe -ArgumentList '--self-test', "$PWD/build/gui-test" -PassThru
+          if (-not $test.WaitForExit(60000)) { $test.Kill(); throw 'Desktop self-test timed out' }
+          if ($test.ExitCode -ne 0) { Get-Content build/gui-test/FAIL.txt; throw 'Desktop self-test failed' }
+          Get-Content build/gui-test/PASS.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: clipboard-gui-test
+          path: |
+            build/gui-test/*.png
+            build/gui-test/*.txt
+            explorer-*.bmp
+          if-no-files-found: ignore
+          retention-days: 7
       - name: Package
         shell: pwsh
         run: |
           New-Item -ItemType Directory build/package | Out-Null
-          Copy-Item build/bin/Release/barrierc.exe, build/bin/Release/barriers.exe, build/bin/Release/barrier-pair.exe build/package/
+          Copy-Item build/bin/Release/barrierc.exe, build/bin/Release/barriers.exe, build/bin/Release/barrier-pair.exe, build/bin/Release/BarrierShare.exe build/package/
+          Copy-Item tools/native-file-drop/GUI-README.txt build/package/
           Copy-Item tools/native-file-drop/Start-Windows.cmd, tools/native-file-drop/Start-Windows-Server.cmd, tools/native-file-drop/README.md, LICENSE build/package/
           Copy-Item -Recurse tools/native-file-drop/licenses build/package/
           Copy-Item C:/vcpkg/installed/x64-windows-static/share/openssl/copyright build/package/licenses/OpenSSL.txt
