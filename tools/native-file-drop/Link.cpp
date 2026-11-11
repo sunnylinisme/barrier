@@ -226,7 +226,10 @@ static void runSession(State& state, SSL_CTX* context, Socket accepted, Peer pee
             emit("CONNECT\t" + peer.fingerprint + '\t' + peer.name + '\t' + peer.ip);
         }
     } catch (const std::exception& error) {
-        if (!resume && !state.stopping) emit("ERROR\t" + base64(error.what()));
+        if (!state.stopping) {
+            if (!resume) emit("ERROR\t" + base64(error.what()));
+            else if (!incoming) emit("UNAVAILABLE\t" + peer.fingerprint + '\t' + base64(error.what()));
+        }
     }
     if (!requestId.empty()) emit("CLOSED\t" + requestId);
     { std::lock_guard<std::mutex> lock(state.mutex); state.approvalId.clear(); state.decision = 0; }

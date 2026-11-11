@@ -44,7 +44,7 @@ class Impostor:
         self.udp=socket.socket(socket.AF_INET,socket.SOCK_DGRAM); self.udp.bind(('127.0.0.1',own))
         self.tcp=socket.socket(); self.tcp.bind(('127.0.0.1',own)); self.tcp.listen(4)
         self.context=ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER); self.context.load_cert_chain(str(pem)); self.context.load_verify_locations(str(host_pem)); self.context.verify_mode=ssl.CERT_REQUIRED
-        self.claimed=claimed; self.stopped=False; self.handshakes=0
+        self.claimed=claimed; self.stopped=False; self.handshakes=0; self.accepted=0; self.errors=[]
         def serve():
             while not self.stopped:
                 ready,_,_=select.select([self.udp,self.tcp],[],[],.1)
@@ -53,13 +53,13 @@ class Impostor:
                     if len(fields)==2 and fields[0]=='BSEARCH1':
                         self.udp.sendto(('BHERE1\tR\t'+base64.b64encode('偽裝電腦'.encode()).decode()+'\t'+self.claimed+'\t'+fields[1]).encode(),remote)
                 if self.tcp in ready:
-                    raw,_=self.tcp.accept(); raw.settimeout(3)
+                    raw,_=self.tcp.accept(); self.accepted+=1; raw.settimeout(3)
                     try:
                         with self.context.wrap_socket(raw,server_side=True) as connection:
                             self.handshakes+=1
                             try: connection.recv(512)
                             except ssl.SSLError: pass
-                    except (ssl.SSLError,OSError): raw.close()
+                    except (ssl.SSLError,OSError) as error: self.errors.append(str(error)); raw.close()
         self.thread=threading.Thread(target=serve,daemon=True); self.thread.start()
     def stop(self):
         self.stopped=True; self.thread.join(5); self.udp.close(); self.tcp.close()
@@ -96,8 +96,9 @@ def run():
             impostor=Impostor(b,rf,rogue/'SSL/Barrier.pem',hp/'SSL/Barrier.pem')
             try:
                 host=Agent(hp,'host',a,b); assert host.wait('DEVICE')[1]==rf
-                time.sleep(6)
-                assert impostor.handshakes>0, 'Impostor TLS endpoint was never reached'
+                failure=host.wait('UNAVAILABLE')
+                assert 'identity changed' in base64.b64decode(failure[2]).decode(), (failure,impostor.errors)
+                assert impostor.accepted>0, 'Impostor TLS endpoint was never reached'
                 assert not any(e[0] in ('CONNECT','VERIFY','PAIRED') for e in host.history), 'Forged discovery established trust'
                 assert (hp/'SSL/Fingerprints/TrustedClients.txt').read_text().strip()==rf
                 print('PASS: forged discovery with different TLS identity cannot reconnect or replace trust',flush=True)

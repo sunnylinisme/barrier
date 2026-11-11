@@ -4,6 +4,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
+using System.Drawing.Drawing2D;
 using System.IO;
 using System.Linq;
 using System.Net;
@@ -134,6 +135,44 @@ static class ShareSettings
     }
 }
 
+static class ShareStyle
+{
+    public static readonly Color Background = Color.FromArgb(244, 246, 250), Ink = Color.FromArgb(24, 37, 57), Muted = Color.FromArgb(109, 122, 141), Blue = Color.FromArgb(47, 101, 235);
+    public static GraphicsPath Rounded(RectangleF r, float radius) {
+        var path = new GraphicsPath(); float d = radius * 2;
+        path.AddArc(r.X, r.Y, d, d, 180, 90); path.AddArc(r.Right-d, r.Y, d, d, 270, 90); path.AddArc(r.Right-d, r.Bottom-d, d, d, 0, 90); path.AddArc(r.X, r.Bottom-d, d, d, 90, 90); path.CloseFigure(); return path;
+    }
+}
+sealed class ShareCard : Panel
+{
+    public ShareCard() { DoubleBuffered = true; BackColor = ShareStyle.Background; }
+    protected override void OnPaint(PaintEventArgs e) {
+        base.OnPaint(e); e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+        using (var path = ShareStyle.Rounded(new RectangleF(0.5F,0.5F,Width-1,Height-1),16)) using (var fill = new SolidBrush(Color.White)) using (var border = new Pen(Color.FromArgb(228,233,242))) { e.Graphics.FillPath(fill,path); e.Graphics.DrawPath(border,path); }
+    }
+}
+sealed class ShareButton : Button
+{
+    public bool Primary;
+    bool hover;
+    public ShareButton() { FlatStyle = FlatStyle.Flat; FlatAppearance.BorderSize = 0; Cursor = Cursors.Hand; SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer,true); }
+    protected override void OnMouseEnter(EventArgs e) { hover=true; Invalidate(); base.OnMouseEnter(e); }
+    protected override void OnMouseLeave(EventArgs e) { hover=false; Invalidate(); base.OnMouseLeave(e); }
+    protected override void OnPaint(PaintEventArgs e) {
+        e.Graphics.Clear(BackColor); e.Graphics.SmoothingMode=SmoothingMode.AntiAlias;
+        var fill = !Enabled ? Color.FromArgb(238,241,246) : Primary ? (hover ? Color.FromArgb(36,84,206) : ShareStyle.Blue) : (hover ? Color.FromArgb(226,233,246) : Color.FromArgb(239,243,250));
+        using (var path = ShareStyle.Rounded(new RectangleF(0,0,Width-1,Height-1),10)) using (var brush = new SolidBrush(fill)) { e.Graphics.FillPath(brush,path); if (Focused && ShowFocusCues) using (var pen = new Pen(ShareStyle.Blue)) e.Graphics.DrawPath(pen,path); }
+        TextRenderer.DrawText(e.Graphics,Text,Font,ClientRectangle,!Enabled ? Color.FromArgb(155,165,181) : Primary ? Color.White : ShareStyle.Ink,TextFormatFlags.HorizontalCenter|TextFormatFlags.VerticalCenter);
+    }
+}
+sealed class ComputerMark : Control
+{
+    protected override void OnPaint(PaintEventArgs e) {
+        e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+        using (var path = ShareStyle.Rounded(new RectangleF(0,0,Width-1,Height-1),12)) using (var brush = new SolidBrush(Color.FromArgb(232,239,255))) e.Graphics.FillPath(brush,path);
+        using (var pen = new Pen(ShareStyle.Blue,2)) { e.Graphics.DrawRectangle(pen,12,12,28,20); e.Graphics.DrawLine(pen,8,37,44,37); e.Graphics.DrawLine(pen,22,32,22,36); e.Graphics.DrawLine(pen,30,32,30,36); }
+    }
+}
 sealed class NearbyDevice
 {
     public string Fingerprint, Name, Address;
@@ -142,42 +181,53 @@ sealed class NearbyDevice
 sealed class ShareWindow : Form
 {
     readonly ComboBox role = new ComboBox(), position = new ComboBox(), nearby = new ComboBox();
-    readonly Label positionHint = new Label(), status = new Label(), peerLabel = new Label();
+    readonly Label positionHint = new Label(), status = new Label(), peerLabel = new Label(), emptyNearby = new Label();
     readonly TextBox address = new TextBox(), details = new TextBox();
-    readonly Button start = new Button(), stop = new Button(), search = new Button(), pair = new Button(), forget = new Button(), clear = new Button();
+    readonly ShareButton start = new ShareButton(), stop = new ShareButton(), search = new ShareButton(), pair = new ShareButton { Primary = true }, forget = new ShareButton(), clear = new ShareButton();
     readonly NotifyIcon tray = new NotifyIcon();
     readonly Dictionary<string, NearbyDevice> devices = new Dictionary<string, NearbyDevice>();
     readonly System.Windows.Forms.Timer retry = new System.Windows.Forms.Timer { Interval = 3000 };
     readonly bool testing;
     Process backend, link;
-    Form consent;
+    Form consent, diagnostics;
     string consentId, connectedAddress = "", savedPeer = "";
     bool closing, loading = true, enabled = true;
     bool Host { get { return role.SelectedIndex == 0; } }
-    void At(Control c, int x, int y, int width, int height) { c.SetBounds(x, y, width, height); Controls.Add(c); }
+    void At(Control c, int x, int y, int width, int height) { c.SetBounds(x, y, width, height); Controls.Add(c); c.BringToFront(); }
     void LabelAt(string text, int x, int y, int width) { At(new Label { Text = text }, x, y, width, 26); }
     public ShareWindow(bool selfTest = false)
     {
-        testing = selfTest; Text = "Barrier Share · 附近電腦";
-        Font = new Font("Microsoft JhengHei UI", 10F); ClientSize = new Size(720, 640);
+        testing = selfTest; Text = "Barrier Share";
+        Font = new Font("Microsoft JhengHei UI", 10F); ClientSize = new Size(840, 710); BackColor = ShareStyle.Background; ForeColor = ShareStyle.Ink;
         FormBorderStyle = FormBorderStyle.FixedSingle; MaximizeBox = false; StartPosition = FormStartPosition.CenterScreen; Icon = SystemIcons.Application;
-        LabelAt("選擇附近電腦，配對後自動連線", 24, 20, 670);
-        LabelAt("這台電腦", 24, 63, 120); At(role, 150, 58, 542, 32); role.DropDownStyle = ComboBoxStyle.DropDownList;
-        role.Items.AddRange(new object[] { "主控端 — 滑鼠與鍵盤接在這台", "接收端 — 同意邀請後即可使用" });
-        LabelAt("附近電腦", 24, 110, 120); At(nearby, 150, 104, 410, 32); nearby.DropDownStyle = ComboBoxStyle.DropDownList;
-        search.Text = "重新搜尋"; At(search, 570, 101, 122, 36);
-        LabelAt("接收端位置", 24, 157, 120); At(position, 150, 151, 542, 32); position.DropDownStyle = ComboBoxStyle.DropDownList;
-        position.Items.AddRange(new object[] { "主控端右方", "主控端左方", "主控端上方", "主控端下方" }); position.SelectedIndex = 0;
-        positionHint.Text = "由主控端設定"; At(positionHint, 150, 157, 542, 26);
-        At(peerLabel, 24, 204, 668, 45); At(status, 24, 254, 668, 50); status.ForeColor = Color.FromArgb(20, 80, 145);
-        pair.Text = "邀請配對"; start.Text = "恢復連線"; stop.Text = "暫停"; forget.Text = "解除配對"; clear.Text = "清除檔案暫存";
-        At(pair, 24, 314, 150, 40); At(start, 186, 314, 136, 40); At(stop, 334, 314, 100, 40); At(forget, 446, 314, 116, 40); At(clear, 574, 314, 118, 40);
-        LabelAt("首次配對：核對兩邊的 6 位數短碼，雙方同意後記住這台電腦。", 24, 378, 670);
-        LabelAt("之後兩台開啟程式便會自動重連，IP 改變也不必重新輸入。", 24, 407, 670);
-        LabelAt("雙向複製檔案／資料夾；等另一台顯示收到檔案後，再貼上。", 24, 436, 670);
-        LabelAt("Windows：Ctrl+C／V　Mac：⌘C／V　大檔案分段傳送。", 24, 465, 670);
-        At(details, 24, 505, 668, 110); details.Multiline = true; details.ReadOnly = true; details.ScrollBars = ScrollBars.Vertical;
-        details.Font = new Font("Consolas", 8); details.BackColor = Color.FromArgb(247, 248, 250);
+        At(new Label { Text = "Barrier Share", Font = new Font("Segoe UI", 26F, FontStyle.Bold), ForeColor = ShareStyle.Ink }, 32, 24, 550, 48);
+        At(new Label { Text = "同一張桌面，連上兩台電腦。", ForeColor = ShareStyle.Muted }, 34, 77, 600, 26);
+        At(new Label { Text = "●  區域網路", ForeColor = ShareStyle.Blue, TextAlign = ContentAlignment.MiddleRight }, 650, 38, 158, 30);
+        foreach (var bounds in new[] { new Rectangle(32,118,776,112), new Rectangle(32,250,468,250), new Rectangle(520,250,288,250), new Rectangle(32,520,776,94) }) At(new ShareCard(),bounds.X,bounds.Y,bounds.Width,bounds.Height);
+        At(new ComputerMark { BackColor = Color.White },52,151,52,52);
+        At(new Label { Text = "這台電腦", BackColor = Color.White, ForeColor = ShareStyle.Muted, Font = new Font(Font.FontFamily,9F) },120,139,260,24);
+        At(new Label { Text = Environment.MachineName, BackColor = Color.White, Font = new Font(Font.FontFamily,16F,FontStyle.Bold), AutoEllipsis = true },120,167,274,36);
+        At(new Label { Text = "角色", BackColor = Color.White, ForeColor = ShareStyle.Muted },416,138,340,26);
+        At(role,416,169,370,34); role.DropDownStyle = ComboBoxStyle.DropDownList; role.FlatStyle = FlatStyle.Flat;
+        role.Items.AddRange(new object[] { "主控端 · 鍵盤滑鼠在這台", "接收端 · 等待主控端邀請" });
+        At(new Label { Text = "附近電腦", BackColor = Color.White, Font = new Font(Font.FontFamily,14F,FontStyle.Bold) },52,272,300,32);
+        search.Text = "重新搜尋"; search.BackColor = Color.White; At(search,376,268,104,34);
+        At(nearby,52,328,428,36); nearby.DropDownStyle = ComboBoxStyle.DropDownList; nearby.FlatStyle = FlatStyle.Flat; nearby.Font = new Font(Font.FontFamily,12F);
+        emptyNearby.Text = "正在尋找附近的電腦…\r\n在另一台開啟程式，並選擇另一個角色。"; emptyNearby.BackColor=Color.White; emptyNearby.ForeColor=ShareStyle.Muted; At(emptyNearby,52,325,428,62);
+        At(new Label { Text = "首次核對短碼，對方同意後即可連線。", BackColor = Color.White, ForeColor = ShareStyle.Muted },52,397,428,28);
+        pair.Text = "邀請配對  →"; pair.BackColor=Color.White; pair.Font = new Font(Font.FontFamily,11F,FontStyle.Bold); At(pair,52,440,428,40);
+        At(new Label { Text = "連線狀態", BackColor = Color.White, Font = new Font(Font.FontFamily,14F,FontStyle.Bold) },540,272,248,32);
+        status.BackColor = Color.White; status.ForeColor = ShareStyle.Blue; status.Font = new Font(Font.FontFamily,12F,FontStyle.Bold); At(status,540,321,248,70);
+        peerLabel.BackColor=Color.White; peerLabel.ForeColor=ShareStyle.Muted; peerLabel.AutoEllipsis=true; peerLabel.Font=new Font(Font.FontFamily,9F); At(peerLabel,540,394,248,42);
+        start.Text = "恢復連線"; stop.Text = "暫停"; start.BackColor=stop.BackColor=Color.White; At(start,540,446,142,34); At(stop,692,446,96,34);
+        At(new Label { Text="螢幕位置", BackColor=Color.White, Font=new Font(Font.FontFamily,13F,FontStyle.Bold) },52,551,140,32);
+        At(position,220,549,566,34); position.DropDownStyle=ComboBoxStyle.DropDownList; position.FlatStyle=FlatStyle.Flat;
+        position.Items.AddRange(new object[] { "接收端在右邊  →", "接收端在左邊  ←", "接收端在上方  ↑", "接收端在下方  ↓" }); position.SelectedIndex=0;
+        positionHint.Text="由主控端設定兩台螢幕的相對位置"; positionHint.BackColor=Color.White; positionHint.ForeColor=ShareStyle.Muted; At(positionHint,220,553,566,32);
+        forget.Text="解除配對"; clear.Text="清除暫存"; forget.BackColor=clear.BackColor=ShareStyle.Background; At(forget,32,634,116,34); At(clear,160,634,116,34);
+        var diagnosticButton = new ShareButton { Text="診斷紀錄", BackColor=ShareStyle.Background }; At(diagnosticButton,680,634,128,34); diagnosticButton.Click += delegate { ShowDiagnostics(); };
+        At(new Label { Text="複製 → 換到另一台 → 等接收完成後貼上", ForeColor=ShareStyle.Muted, Font=new Font(Font.FontFamily,9F) },34,682,740,24);
+        details.Multiline=true; details.ReadOnly=true; details.ScrollBars=ScrollBars.Vertical; details.Font=new Font("Consolas",9F); details.BackColor=Color.FromArgb(249,251,255); details.BorderStyle=BorderStyle.None;
         var menu = new ContextMenuStrip(); menu.Items.Add("開啟視窗", null, delegate { Show(); WindowState = FormWindowState.Normal; Activate(); });
         menu.Items.Add("結束", null, delegate { closing = true; Close(); }); tray.Icon = Icon; tray.Text = "Barrier Share"; tray.ContextMenuStrip = menu; tray.Visible = !testing;
         tray.DoubleClick += delegate { Show(); WindowState = FormWindowState.Normal; Activate(); };
@@ -211,6 +261,7 @@ sealed class ShareWindow : Form
     void UpdateControls()
     {
         start.Enabled = !enabled || link == null; stop.Enabled = enabled;
+        nearby.Visible = nearby.Items.Count > 0; emptyNearby.Visible = !nearby.Visible; pair.Text = Host ? "邀請配對  →" : "等待主控端邀請";
         search.Enabled = link != null; pair.Enabled = Host && link != null && nearby.SelectedItem != null && consent == null;
         forget.Enabled = link != null && savedPeer.Length != 0; clear.Enabled = !enabled && backend == null;
     }
@@ -264,25 +315,26 @@ sealed class ShareWindow : Form
             foreach (var value in devices.Values) nearby.Items.Add(value);
             if (devices.ContainsKey(selected)) nearby.SelectedItem = devices[selected]; else if (nearby.Items.Count > 0) nearby.SelectedIndex = 0;
         } else if (f[0] == "GONE" && f.Length == 2) { NearbyDevice device; if (devices.TryGetValue(f[1], out device)) { nearby.Items.Remove(device); devices.Remove(f[1]); } }
-        else if ((f[0] == "SAVED" || f[0] == "PAIRED") && f.Length == 3) { if (f[0] == "PAIRED") StopBackend(); savedPeer = f[1]; peerLabel.Text = "已配對：" + Decode(f[2]) + "\r\n開啟程式後會自動搜尋並驗證這台電腦。"; }
+        else if ((f[0] == "SAVED" || f[0] == "PAIRED") && f.Length == 3) { if (f[0] == "PAIRED") StopBackend(); savedPeer = f[1]; peerLabel.Text = "已配對 · " + Decode(f[2]) + "\r\n重新開啟後會自動連線"; }
         else if ((f[0] == "VERIFY" || f[0] == "REQUEST") && f.Length == 5) ShowConsent(f);
         else if (f[0] == "CLOSED" && f.Length == 2 && f[1] == consentId) CloseConsent();
         else if (f[0] == "CONNECT" && f.Length == 4) {
             if (f[1] == savedPeer && (backend == null || (!Host && connectedAddress != f[3]))) { StopBackend(); address.Text = f[3]; Save(); StartBackend(); }
         } else if (f[0] == "REMOVED") { StopBackend(); savedPeer = ""; peerLabel.Text = "已解除配對。"; status.Text = Host ? "可以選擇接收端重新邀請。" : "等待新的配對邀請。"; }
-        else if ((f[0] == "ERROR" || f[0] == "FATAL") && f.Length == 2) { status.Text = Decode(f[1]); LogLine(status.Text); }
+        else if (f[0] == "UNAVAILABLE" && f.Length == 3 && backend == null) { status.Text = "正在重新尋找並驗證已配對的電腦…"; LogLine(Decode(f[2])); }
+        else if ((f[0] == "ERROR" || f[0] == "FATAL") && f.Length == 2) { if (f[0] == "FATAL") StopLink(); status.Text = Decode(f[1]); LogLine(status.Text); }
         UpdateControls();
     }
     void ShowConsent(string[] message)
     {
         CloseConsent(); Show(); Activate(); consentId = message[1]; string id = consentId;
-        var dialog = new Form { Text = message[0] == "REQUEST" ? "收到配對邀請" : "核對配對碼", ClientSize = new Size(500, 280), Font = Font, FormBorderStyle = FormBorderStyle.FixedDialog, StartPosition = FormStartPosition.CenterParent, MaximizeBox = false, MinimizeBox = false };
+        var dialog = new Form { Text = message[0] == "REQUEST" ? "收到配對邀請" : "核對配對碼", ClientSize = new Size(500, 310), BackColor = Color.White, ForeColor = ShareStyle.Ink, Font = Font, FormBorderStyle = FormBorderStyle.FixedDialog, StartPosition = FormStartPosition.CenterParent, MaximizeBox = false, MinimizeBox = false };
         consent = dialog;
         var explanation = new Label { Text = Decode(message[2]) + "\r\n請確認另一台顯示相同的 6 位數配對碼。", Bounds = new Rectangle(24, 18, 452, 58) };
-        var code = new Label { Text = message[4], Font = new Font("Consolas", 30F, FontStyle.Bold), Bounds = new Rectangle(24, 82, 452, 60), TextAlign = ContentAlignment.MiddleCenter };
+        var code = new Label { Text = message[4], ForeColor = ShareStyle.Blue, Font = new Font("Consolas", 34F, FontStyle.Bold), Bounds = new Rectangle(24, 82, 452, 60), TextAlign = ContentAlignment.MiddleCenter };
         var permission = new Label { Text = "同意後允許共用鍵盤滑鼠及雙向同步剪貼簿。\r\n配對會被記住，之後自動連線。", Bounds = new Rectangle(24, 150, 452, 55) };
-        var reject = new Button { Text = "拒絕", Bounds = new Rectangle(170, 224, 110, 36), DialogResult = DialogResult.Cancel };
-        var accept = new Button { Text = "相同，同意", Bounds = new Rectangle(292, 224, 182, 36), DialogResult = DialogResult.OK };
+        var reject = new ShareButton { Text = "拒絕", BackColor=Color.White, Bounds = new Rectangle(24, 248, 140, 40), DialogResult = DialogResult.Cancel };
+        var accept = new ShareButton { Text = "相同，同意", Primary=true, BackColor=Color.White, Bounds = new Rectangle(176, 248, 300, 40), DialogResult = DialogResult.OK };
         dialog.Controls.AddRange(new Control[] { explanation, code, permission, reject, accept }); dialog.CancelButton = reject; dialog.AcceptButton = reject;
         UpdateControls(); var result = dialog.ShowDialog(this);
         if (consentId == id) { Send((result == DialogResult.OK ? "ACCEPT\t" : "REJECT\t") + id); consent = null; consentId = null; status.Text = result == DialogResult.OK ? "已同意，等待對方確認…" : "已拒絕配對。"; }
@@ -315,8 +367,18 @@ sealed class ShareWindow : Form
         if (line.Contains("WARNING") && line.Contains("file clipboard:")) status.Text = "檔案複製未完成；請查看下方原因。";
         if (line.Contains("disconnected") || line.Contains("server is dead")) status.Text = "連線中斷，正在自動重連…";
     }
+    void ShowDiagnostics()
+    {
+        if (diagnostics == null) {
+            diagnostics = new Form { Text="Barrier Share · 診斷紀錄", ClientSize=new Size(760,400), Font=Font, StartPosition=FormStartPosition.CenterParent, Padding=new Padding(18), BackColor=Color.White };
+            details.Dock=DockStyle.Fill; diagnostics.Controls.Add(details);
+            diagnostics.FormClosing += delegate(object sender, FormClosingEventArgs e) { if (!closing) { e.Cancel=true; diagnostics.Hide(); } };
+        }
+        diagnostics.Show(this); diagnostics.Activate();
+    }
     internal void TestDiscovery(string directory)
     {
+        role.SelectedIndex = 0;
         string fp = "v2:sha256:" + new string('a', 64), name = Convert.ToBase64String(Encoding.UTF8.GetBytes("另一台電腦"));
         LinkLine("DEVICE\t" + fp + "\t" + name + "\t192.168.1.2\t24801\tR");
         LinkLine("DEVICE\t" + fp + "\t" + name + "\t192.168.1.3\t24801\tR");
@@ -332,6 +394,9 @@ sealed class ShareWindow : Form
         }
         if (consent != null || consentId != null) throw new Exception("Expired pairing dialog remained open");
         LinkLine("GONE\t" + fp); if (nearby.Items.Count != 0) throw new Exception("Offline peer remained listed");
+        // Render the available-peer state without starting any input capture or network service.
+        link = new Process(); savedPeer=""; LinkLine("DEVICE\t" + fp + "\t" + name + "\t192.168.1.3\t24801\tR");
+        peerLabel.Text="對方同意後，會記住這台電腦。"; status.Text="找到附近電腦\r\n可以發出配對邀請";
     }
     void ClearCache()
     {
