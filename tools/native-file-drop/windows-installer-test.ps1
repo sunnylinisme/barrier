@@ -148,14 +148,18 @@ function Wait-Until([scriptblock]$Condition, [string]$Failure, [int]$Seconds = 2
 }
 function Test-AppRunning { $mutex = $null; $open = [Threading.Mutex]::TryOpenExisting('Local\BarrierShare.Desktop', [ref]$mutex); if ($mutex) { $mutex.Dispose() }; return $open }
 $app = Join-Path $installDir 'BarrierShare.exe'
+function Step([string]$Text) { Write-Output "::notice title=Installer step::$Text" }
 $runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
 if ($null -ne (Get-ItemProperty -LiteralPath $runKey -Name BarrierShare -ErrorAction SilentlyContinue)) { throw 'Refusing to alter an existing launch-at-sign-in entry.' }
 Invoke-TestProcess $InstallerPath ($arguments + "/LOG=$(Join-Path $TestRoot 'install-for-update.log')")
 $first = Start-Process -FilePath $app -ArgumentList '--background' -PassThru
+Step "started background copy $($first.Id)"
 Wait-Until { Test-AppRunning } 'Installed app did not start in the background.'
 Start-Sleep -Seconds 2
 $updateLog = Join-Path $TestRoot 'update-running.log'
 Invoke-TestProcess $InstallerPath ($arguments + "/LOG=$updateLog")
+Step ("update finished; first exited=$($first.HasExited); log: " + ((Select-String -LiteralPath $updateLog -Pattern 'quit|taskkill|Run entry|BarrierShare.exe' | ForEach-Object { $_.Line.Substring([Math]::Min(24, $_.Line.Length)) }) -join ' | '))
+Step ("processes: " + ((Get-Process BarrierShare -ErrorAction SilentlyContinue | ForEach-Object { "$($_.Id) $($_.Path)" }) -join ' | '))
 if (-not $first.WaitForExit(1000)) { throw 'Setup replaced files without closing the running copy.' }
 if ((Get-Content -LiteralPath $updateLog -Raw).Contains('did not quit on request')) { throw 'Running copy ignored the quit signal and had to be killed.' }
 Wait-Until { @(Get-Process BarrierShare -ErrorAction SilentlyContinue | Where-Object { $_.Id -ne $first.Id -and $_.Path -ieq $app }).Count -eq 1 } 'Setup did not start the updated copy again.'

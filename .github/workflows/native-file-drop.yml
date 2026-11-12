@@ -154,7 +154,9 @@ jobs:
             & tools/native-file-drop/windows-installer-test.ps1 -InstallerPath "$PWD/build/BarrierShare-Setup-0.3.9-x64.exe" -PackageDir "$PWD/build/package" -TestRoot "$PWD/build/installer-test"
           } catch {
             # Annotations are readable on the checks page without signing in; logs and artifacts are not.
-            Write-Output "::error title=Installer test::$($_.Exception.Message) (line $($_.InvocationInfo.ScriptLineNumber))"
+            $reason = ("$($_.Exception.Message) (line $($_.InvocationInfo.ScriptLineNumber))" -replace "`r?`n", ' ')
+            Write-Output "::error title=Installer test::$reason"
+            Write-Output "::notice title=Installer failure::$reason"
             foreach ($log in Get-ChildItem build/installer-test -Filter *.log -ErrorAction SilentlyContinue) {
               $tail = (Get-Content -LiteralPath $log.FullName -Tail 12) -join '%0A'
               Write-Output "::notice title=$($log.Name)::$tail"

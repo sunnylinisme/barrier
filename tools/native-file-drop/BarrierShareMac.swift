@@ -8,6 +8,51 @@ struct ShareOptions: Codable {
     var host = true
     var address = ""
     var position = "right"
+    var advanced = ShareAdvanced()
+    init() {}
+    // Settings saved by older versions lack newer keys; keep their defaults.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        host = try c.decodeIfPresent(Bool.self, forKey: .host) ?? true
+        address = try c.decodeIfPresent(String.self, forKey: .address) ?? ""
+        position = try c.decodeIfPresent(String.self, forKey: .position) ?? "right"
+        advanced = (try? c.decodeIfPresent(ShareAdvanced.self, forKey: .advanced)) ?? ShareAdvanced()
+    }
+}
+// Host-side Barrier options from the advanced settings dialog.
+struct ShareAdvanced: Codable, Equatable {
+    var switchDelay = 0, doubleTap = 0, cornerSize = 16
+    var corners = false, swapModifiers = false, relativeMouse = false, screenSaver = true, switchKeys = true, lockKey = false
+    var extra = "", targets = ""
+    init() {}
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self), d = ShareAdvanced()
+        switchDelay = try min(5000, max(0, c.decodeIfPresent(Int.self, forKey: .switchDelay) ?? d.switchDelay))
+        doubleTap = try min(2000, max(0, c.decodeIfPresent(Int.self, forKey: .doubleTap) ?? d.doubleTap))
+        cornerSize = try min(500, max(0, c.decodeIfPresent(Int.self, forKey: .cornerSize) ?? d.cornerSize))
+        corners = try c.decodeIfPresent(Bool.self, forKey: .corners) ?? d.corners
+        swapModifiers = try c.decodeIfPresent(Bool.self, forKey: .swapModifiers) ?? d.swapModifiers
+        relativeMouse = try c.decodeIfPresent(Bool.self, forKey: .relativeMouse) ?? d.relativeMouse
+        screenSaver = try c.decodeIfPresent(Bool.self, forKey: .screenSaver) ?? d.screenSaver
+        switchKeys = try c.decodeIfPresent(Bool.self, forKey: .switchKeys) ?? d.switchKeys
+        lockKey = try c.decodeIfPresent(Bool.self, forKey: .lockKey) ?? d.lockKey
+        extra = try c.decodeIfPresent(String.self, forKey: .extra) ?? ""
+        targets = try c.decodeIfPresent(String.self, forKey: .targets) ?? ""
+    }
+    // Extra lines go into the options section; section boundaries would break the generated file.
+    func extraLines() throws -> [String] {
+        try extra.components(separatedBy: .newlines).map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty && !$0.hasPrefix("#") }.map { (line: String) throws -> String in
+            if line.lowercased().hasPrefix("section") || line.lowercased() == "end" { throw ShareError.message("額外設定不可包含 section 或 end：\(line)") }
+            return line
+        }
+    }
+    // Comma separated IPv4 addresses or computer names outside the local network.
+    func targetList() throws -> String {
+        let items = targets.components(separatedBy: CharacterSet(charactersIn: ", ;\r\n")).filter { !$0.isEmpty }
+        for item in items where item.count > 253 || item.range(of: "^[A-Za-z0-9.-]+$", options: .regularExpression) == nil { throw ShareError.message("請輸入 IPv4 位址或電腦名稱，以逗號分隔：\(item)") }
+        if items.count > 16 { throw ShareError.message("最多輸入 16 個位址。") }
+        return items.joined(separator: ",")
+    }
 }
 enum ShareError: Error, LocalizedError {
     case message(String)
@@ -44,10 +89,22 @@ final class ShareSettings {
         if !directions.contains(options.position) { options.position = "right" }
         return options
     }
-    static func config(_ direction: String) throws -> String {
+    static func config(_ direction: String, _ a: ShareAdvanced = ShareAdvanced()) throws -> String {
         guard let index = directions.firstIndex(of: direction) else { throw ShareError.message("請選擇有效的螢幕位置。") }
         let opposite = ["left", "right", "down", "up"][index]
-        return "section: screens\n windows-host:\n windows:\nend\nsection: links\n windows-host:\n  \(direction) = windows\n windows:\n  \(opposite) = windows-host\nend\nsection: options\n clipboardSharing = true\n" + hotkeys(direction, opposite) + "end\n"
+        var text = "section: screens\n windows-host:\n windows:\n"
+        // Swap on the receiving screen: Ctrl acts as Command/Windows there and the other way round.
+        if a.swapModifiers { text += "  ctrl = super\n  super = ctrl\n" }
+        text += "end\nsection: links\n windows-host:\n  \(direction) = windows\n windows:\n  \(opposite) = windows-host\nend\nsection: options\n clipboardSharing = true\n"
+        if a.switchDelay > 0 { text += " switchDelay = \(a.switchDelay)\n" }
+        if a.doubleTap > 0 { text += " switchDoubleTap = \(a.doubleTap)\n" }
+        if a.corners { text += " switchCorners = all\n switchCornerSize = \(a.cornerSize)\n" }
+        if a.relativeMouse { text += " relativeMouseMoves = true\n" }
+        text += " screenSaverSync = \(a.screenSaver ? "true" : "false")\n"
+        if a.switchKeys { text += hotkeys(direction, opposite) }
+        if a.lockKey { text += " keystroke(Control+Alt+L) = lockCursorToScreen(toggle)\n" }
+        for line in try a.extraLines() { text += " \(line)\n" }
+        return text + "end\n"
     }
     // Control+Option+arrow toward the other screen switches without reaching the edge; only the configured axis is bound.
     static func hotkeys(_ direction: String, _ opposite: String) -> String {
@@ -59,7 +116,7 @@ final class ShareSettings {
         var args = ["-f", "--no-tray", "--file-clipboard", "--profile-dir", p.path, "--log", p.appendingPathComponent(options.host ? "server.log" : "mac.log").path, "--name", options.host ? "windows-host" : "windows"]
         if options.host {
             let path = p.appendingPathComponent("screens.conf")
-            try config(options.position).write(to: path, atomically: true, encoding: .utf8)
+            try config(options.position, options.advanced).write(to: path, atomically: true, encoding: .utf8)
             args += ["-c", path.path]
         } else {
             var ip = in_addr()
@@ -233,7 +290,8 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         positionHint.stringValue="由主控端設定兩台螢幕的相對位置"; positionHint.textColor=muted; at(positionHint,220,553,566,32)
         clear.title="清除暫存"; for (button,x,action) in [(forget,CGFloat(28),#selector(forgetPeer)),(clear,156,#selector(clearCache))] { button.bezelStyle = .rounded; button.target=self; button.action=action; at(button,x,632,124,38) }
         let permissions = NSButton(title:"權限設定",target:self,action:#selector(openPermissions)); permissions.bezelStyle = .rounded; at(permissions,284,632,124,38)
-        autostart.target = self; autostart.action = #selector(toggleLogin); autostart.state = !test && ShareLogin.enabled ? .on : .off; at(autostart,424,640,240,22)
+        autostart.target = self; autostart.action = #selector(toggleLogin); autostart.state = !test && ShareLogin.enabled ? .on : .off; at(autostart,418,640,150,22)
+        let advancedButton = NSButton(title:"進階設定",target:self,action:#selector(showAdvanced)); advancedButton.bezelStyle = .rounded; at(advancedButton,566,632,106,38)
         let records = NSButton(title:"診斷紀錄",target:self,action:#selector(showDiagnostics)); records.bezelStyle = .rounded; at(records,676,632,136,38)
         label("複製 → 換到另一台 → 等接收完成後貼上",34,682,740,12,color:muted)
         details.isEditable=false; details.font = .monospacedSystemFont(ofSize:12,weight:.regular); details.isVerticallyResizable=true; details.autoresizingMask = [.width]
@@ -282,6 +340,57 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         updateURL = found.url
         update.attributedTitle = NSAttributedString(string: "有新版 \(found.version)，前往下載 ↗", attributes: [.font: NSFont.systemFont(ofSize: 13, weight: .semibold), .foregroundColor: blue, .underlineStyle: NSUnderlineStyle.single.rawValue])
     }
+    func sendTargets() { do { let list = try options.advanced.targetList(); if !list.isEmpty || link != nil { send("TARGETS\t" + list) } } catch { showError(error) } }
+    // Host-side Barrier options plus direct addresses for computers on another subnet or VPN.
+    func buildAdvanced(_ a: ShareAdvanced) -> (NSAlert, () -> ShareAdvanced) {
+        let alert = NSAlert(); alert.messageText = "進階設定"
+        alert.informativeText = options.host ? "以下切換設定由這台（主控端）套用到兩台。" : "切換設定只在主控端生效；這台目前是接收端。"
+        let view = FlippedView(frame: NSRect(x: 0, y: 0, width: 500, height: 520)); var y: CGFloat = 0
+        func number(_ title: String, _ value: Int) -> NSTextField {
+            let label = NSTextField(labelWithString: title); label.frame = NSRect(x: 0, y: y + 3, width: 380, height: 20); view.addSubview(label)
+            let field = NSTextField(string: String(value)); field.frame = NSRect(x: 390, y: y, width: 100, height: 24); field.alignment = .right; view.addSubview(field); y += 34; return field
+        }
+        func check(_ title: String, _ value: Bool) -> NSButton {
+            let box = NSButton(checkboxWithTitle: title, target: nil, action: nil); box.state = value ? .on : .off; box.frame = NSRect(x: 0, y: y, width: 490, height: 22); view.addSubview(box); y += 30; return box
+        }
+        let delay = number("游標停在邊緣多久才切換（毫秒，0 = 立即）", a.switchDelay)
+        let tap = number("輕敲兩下邊緣才切換（兩次間隔毫秒，0 = 關閉）", a.doubleTap)
+        let corners = check("螢幕四個角落不切換", a.corners)
+        let cornerSize = number("　角落範圍（像素）", a.cornerSize)
+        let swap = check("接收端的 Control 與 Command／Windows 鍵對調（Mac 與 Windows 混用時）", a.swapModifiers)
+        let relative = check("相對滑鼠移動（全螢幕遊戲用）", a.relativeMouse)
+        let saver = check("螢幕保護程式同步", a.screenSaver)
+        let keys = check("Control+Option+方向鍵切換到另一台", a.switchKeys)
+        let lock = check("Control+Option+L 把游標鎖在目前這台（再按一次解除）", a.lockKey)
+        let targetsLabel = NSTextField(labelWithString: "其他網段或 VPN 的電腦（IP 或名稱，以逗號分隔）"); targetsLabel.frame = NSRect(x: 0, y: y, width: 490, height: 20); view.addSubview(targetsLabel); y += 24
+        let targets = NSTextField(string: a.targets); targets.frame = NSRect(x: 0, y: y, width: 490, height: 24); view.addSubview(targets); y += 34
+        let extraLabel = NSTextField(labelWithString: "額外設定（Barrier 設定檔 options 語法，例如自訂快捷鍵）"); extraLabel.frame = NSRect(x: 0, y: y, width: 490, height: 20); view.addSubview(extraLabel); y += 24
+        let scroll = NSScrollView(frame: NSRect(x: 0, y: y, width: 490, height: 80)); scroll.hasVerticalScroller = true; scroll.borderType = .bezelBorder
+        let extra = NSTextView(frame: scroll.bounds); extra.string = a.extra; extra.font = .monospacedSystemFont(ofSize: 12, weight: .regular); extra.isRichText = false; extra.autoresizingMask = [.width]
+        scroll.documentView = extra; view.addSubview(scroll); y += 88
+        view.frame.size.height = y; alert.accessoryView = view
+        alert.addButton(withTitle: "儲存並套用"); alert.addButton(withTitle: "取消")
+        let read = { () -> ShareAdvanced in
+            var v = ShareAdvanced()
+            v.switchDelay = min(5000, max(0, delay.integerValue)); v.doubleTap = min(2000, max(0, tap.integerValue)); v.cornerSize = min(500, max(0, cornerSize.integerValue))
+            v.corners = corners.state == .on; v.swapModifiers = swap.state == .on; v.relativeMouse = relative.state == .on; v.screenSaver = saver.state == .on
+            v.switchKeys = keys.state == .on; v.lockKey = lock.state == .on; v.targets = targets.stringValue.trimmingCharacters(in: .whitespaces); v.extra = extra.string
+            return v
+        }
+        return (alert, read)
+    }
+    @objc func showAdvanced() {
+        let (alert, read) = buildAdvanced(options.advanced)
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let value = read()
+        do {
+            _ = try value.targetList(); _ = try value.extraLines()
+            options.advanced = value; try ShareSettings.save(options); sendTargets()
+            // The host core reads options at start; the saved pairing reconnects it right away.
+            if options.host && core != nil { stopBackend() }
+            status.stringValue = "已儲存進階設定。"
+        } catch { showError(error) }
+    }
     @objc func openUpdate() { if let url = updateURL { NSWorkspace.shared.open(url) } }
     @objc func roleChanged() { guard !loading else { return }; stopLink(); stopBackend(); options.host = role.indexOfSelectedItem == 0; do { try refreshRole(); if enabled { startLink() } } catch { showError(error) } }
     @objc func positionChanged() { guard !loading else { return }; options.position = ShareSettings.directions[position.indexOfSelectedItem]; do { try ShareSettings.save(options); if core != nil { stopBackend() } } catch { showError(error) } }
@@ -329,7 +438,7 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func decoded(_ text: String) -> String { Data(base64Encoded: text).map { String(decoding: $0, as: UTF8.self) } ?? "未知電腦" }
     func linkLine(_ line: String) {
         let f = line.components(separatedBy: "\t")
-        if f[0] == "READY" { log("區網搜尋已啟動 · UDP/TCP 24801"); status.stringValue = options.host ? "正在搜尋接收端…" : "可被搜尋，等待主控端邀請…" }
+        if f[0] == "READY" { log("區網搜尋已啟動 · UDP/TCP 24801"); sendTargets(); status.stringValue = options.host ? "正在搜尋接收端…" : "可被搜尋，等待主控端邀請…" }
         else if f[0] == "DEVICE" && f.count == 6 {
             let index = nearby.indexOfSelectedItem, selected = nearby.indexOfSelectedItem >= 0 && nearby.indexOfSelectedItem < computers.count ? computers[index].fingerprint : ""
             computers.removeAll { $0.fingerprint == f[1] }; computers.append(NearbyComputer(fingerprint: f[1], name: decoded(f[2]), address: f[3])); computers.sort { $0.name < $1.name }
@@ -446,6 +555,19 @@ func selfTest(_ directory: URL) throws {
         if !configuration.contains("\(direction) = windows\n") || !configuration.contains("\(opposite) = windows-host\n") { throw ShareError.message("Invalid screen topology") }
         if !configuration.contains("= switchInDirection(\(direction))\n") || !configuration.contains("= switchInDirection(\(opposite))\n") || configuration.components(separatedBy: "keystroke").count != 3 { throw ShareError.message("Switch hotkeys missing for \(direction)") }
     }
+    var full = ShareAdvanced(); full.switchDelay = 250; full.doubleTap = 300; full.corners = true; full.cornerSize = 24; full.swapModifiers = true; full.relativeMouse = true; full.screenSaver = false; full.lockKey = true
+    full.targets = "10.8.0.5, office-pc.local"; full.extra = "# comment\nkeystroke(Control+Alt+F12) = switchToScreen(windows)\n"
+    let fullConfig = try ShareSettings.config("right", full)
+    for expected in [" windows:\n  ctrl = super\n  super = ctrl\n", " switchDelay = 250\n", " switchDoubleTap = 300\n", " switchCorners = all\n switchCornerSize = 24\n", " relativeMouseMoves = true\n", " screenSaverSync = false\n", " keystroke(Control+Alt+L) = lockCursorToScreen(toggle)\n", " keystroke(Control+Alt+F12) = switchToScreen(windows)\nend\n"] where !fullConfig.contains(expected) {
+        throw ShareError.message("Advanced option missing from config: \(expected)")
+    }
+    guard !fullConfig.contains("# comment"), try full.targetList() == "10.8.0.5,office-pc.local" else { throw ShareError.message("Advanced extras were not normalized") }
+    for bad in ["end", "section: links"] { var a = ShareAdvanced(); a.extra = bad; if (try? a.extraLines()) != nil { throw ShareError.message("Section boundary accepted: \(bad)") } }
+    var badTarget = ShareAdvanced(); badTarget.targets = "1.2.3.4 & calc"; if (try? badTarget.targetList()) != nil { throw ShareError.message("Invalid direct address accepted") }
+    var withAdvanced = ShareOptions(); withAdvanced.advanced = full; try ShareSettings.save(withAdvanced)
+    guard try ShareSettings.load().advanced == full else { throw ShareError.message("Advanced settings roundtrip failed") }
+    try Data(#"{"host":false,"address":"192.168.1.9","position":"up"}"#.utf8).write(to: ShareSettings.root.appendingPathComponent("settings.json"))
+    let legacy = try ShareSettings.load(); guard !legacy.host && legacy.position == "up" && legacy.advanced == ShareAdvanced() else { throw ShareError.message("Settings from 0.3.8 did not load") }
     guard try ShareSettings.config("right").contains(" keystroke(Control+Alt+Right) = switchInDirection(right)\n keystroke(Control+Alt+Left) = switchInDirection(left)\nend\n") else { throw ShareError.message("Hotkey syntax changed") }
     var meter = ShareProgress(); meter.reset(); let t0 = Date()
     let first = meter.describe("[2026-11-12T10:00:00] INFO: file clipboard: progress sent 1048576 bytes", now: t0.addingTimeInterval(1))
