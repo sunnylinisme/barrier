@@ -89,11 +89,13 @@ struct SocketOwner {
     Socket release() { auto result = value; value = invalidSocket; return result; }
     SocketOwner(const SocketOwner&) = delete;
 };
-struct Peer { std::string fingerprint, name, ip; unsigned port = 24801; char role = 'R'; Clock::time_point seen; };
+struct Peer { std::string fingerprint, name, ip; unsigned port = 24801; char role = 'R'; Clock::time_point seen, resumed; };
 struct State {
     fs::path profile; bool host; std::string name, fingerprint; unsigned port;
     std::atomic<bool> stopping{false}, busy{false}, search{true};
-    std::mutex mutex; std::map<std::string, Peer> devices; Peer saved, requested;
+    // A host keeps every paired receiver; a receiver keeps only its one host.
+    std::mutex mutex; std::map<std::string, Peer> devices; std::vector<Peer> saved; Peer requested;
+    Peer* find(const std::string& fingerprint) { for (auto& p : saved) if (p.fingerprint == fingerprint) return &p; return nullptr; }
     bool request = false; std::string approvalId; int decision = 0; unsigned generation = 0;
     // Addresses or names outside the local broadcast domain (other subnets, VPN) that are searched directly.
     std::vector<std::string> targets; bool targetsChanged = false;
@@ -108,12 +110,26 @@ static void atomicWrite(const fs::path& path, const std::string& value) {
     fs::rename(temporary, path);
 #endif
 }
+// Peer.txt holds fingerprint/name line pairs (one pair before 0.3.9).
 static void loadSaved(State& state) {
     std::ifstream input; barrier::open_utf8_path(input, state.profile / "Peer.txt", std::ios::binary);
-    Peer peer; std::getline(input, peer.fingerprint); std::getline(input, peer.name);
-    if (!validFingerprint(peer.fingerprint) || !validName(peer.name)) return;
     barrier::FingerprintDatabase db; db.read(state.trustPath());
-    if (db.is_trusted(barrier::FingerprintDatabase::parse_db_line(peer.fingerprint))) state.saved = peer;
+    Peer peer;
+    while (std::getline(input, peer.fingerprint) && std::getline(input, peer.name)) {
+        if (!peer.fingerprint.empty() && peer.fingerprint.back() == '\r') peer.fingerprint.pop_back();
+        if (!peer.name.empty() && peer.name.back() == '\r') peer.name.pop_back();
+        if (!validFingerprint(peer.fingerprint) || !validName(peer.name) || state.find(peer.fingerprint)) continue;
+        if (db.is_trusted(barrier::FingerprintDatabase::parse_db_line(peer.fingerprint))) state.saved.push_back(peer);
+        if (!state.host) break;
+    }
+}
+// Writes the trust list and Peer.txt for the current saved peers; call with the mutex held.
+static void storeSaved(State& state) {
+    std::string trust, peers;
+    for (const auto& p : state.saved) { trust += p.fingerprint + '\n'; peers += p.fingerprint + '\n' + p.name + '\n'; }
+    atomicWrite(state.trustPath(), trust);
+    if (state.saved.empty()) { std::error_code error; fs::remove(state.profile / "Peer.txt", error); require(!error, "Cannot remove saved pairing"); }
+    else atomicWrite(state.profile / "Peer.txt", peers);
 }
 static bool active(State& state, unsigned generation) { std::lock_guard<std::mutex> lock(state.mutex); return !state.stopping && state.generation == generation; }
 static void waitSocket(Socket socket, bool write) {
@@ -195,7 +211,7 @@ static void runSession(State& state, SSL_CTX* context, Socket accepted, Peer pee
             auto hello = fields(session.read());
             require(hello.size() == 3 && hello[0] == "BPAIR1" && (hello[1] == "PAIR" || hello[1] == "RESUME") && validName(hello[2]), "Invalid pairing invitation");
             peer.fingerprint = fingerprint; peer.name = hello[2]; resume = hello[1] == "RESUME";
-            if (resume) { std::lock_guard<std::mutex> lock(state.mutex); require(state.saved.fingerprint == fingerprint, "This computer is not paired; send a new invitation"); }
+            if (resume) { std::lock_guard<std::mutex> lock(state.mutex); require(state.find(fingerprint) != nullptr, "This computer is not paired; send a new invitation"); }
             session.write("BREADY1\t" + state.name);
         } else {
             require(fingerprint == peer.fingerprint, "Computer identity changed; search again");
@@ -219,12 +235,14 @@ static void runSession(State& state, SSL_CTX* context, Socket accepted, Peer pee
         if (!resume) {
             std::lock_guard<std::mutex> lock(state.mutex);
             require(state.generation == generation && !state.stopping, "Pairing cancelled");
-            atomicWrite(state.trustPath(), peer.fingerprint + '\n');
-            atomicWrite(state.profile / "Peer.txt", peer.fingerprint + '\n' + peer.name + '\n'); state.saved = peer;
+            // A receiver follows one host; a host adds the receiver to its list.
+            if (!state.host) state.saved.clear();
+            if (auto existing = state.find(peer.fingerprint)) *existing = peer; else state.saved.push_back(peer);
+            storeSaved(state);
         }
         session.write("SAVED"); require(session.read() == "SAVED", "Peer did not finish saving pairing");
         { std::lock_guard<std::mutex> lock(state.mutex);
-            require(state.generation == generation, "Pairing cancelled"); state.saved.ip = peer.ip;
+            require(state.generation == generation, "Pairing cancelled"); if (auto existing = state.find(peer.fingerprint)) existing->ip = peer.ip;
             if (!resume) emit("PAIRED\t" + peer.fingerprint + '\t' + peer.name);
             emit("CONNECT\t" + peer.fingerprint + '\t' + peer.name + '\t' + peer.ip);
         }
@@ -361,9 +379,13 @@ static void network(State& state, const std::string& testTarget) {
                     if (now - it->second.seen > std::chrono::seconds(12)) { emit("GONE\t" + it->first); it = state.devices.erase(it); } else ++it;
                 }
                 if (!state.busy && state.request) { pending = state.requested; state.request = false; start = true; }
-                else if (!state.busy && state.host && !state.saved.fingerprint.empty() && now - lastResume > std::chrono::seconds(5)) {
-                    auto found = state.devices.find(state.saved.fingerprint);
-                    if (found != state.devices.end()) { pending = found->second; start = true; automatic = true; }
+                else if (!state.busy && state.host && !state.saved.empty() && now - lastResume > std::chrono::milliseconds(500)) {
+                    // Each paired receiver that is online is resumed at most every 5 seconds, one at a time.
+                    for (auto& p : state.saved) {
+                        auto found = state.devices.find(p.fingerprint);
+                        if (found == state.devices.end() || now - p.resumed < std::chrono::seconds(5)) continue;
+                        p.resumed = now; pending = found->second; start = true; automatic = true; break;
+                    }
                 }
             }
             if (start) { lastResume = now; launch(invalidSocket, pending, automatic); }
@@ -385,7 +407,7 @@ int main(int argc, char** argv) {
         std::string name = argv[3]; if (name.size() > 128) name.resize(128); name.erase(std::remove_if(name.begin(), name.end(), [](unsigned char c){ return c < 32 || c == 127; }), name.end()); if (name.empty()) name = "Computer";
         state.name = base64(name); state.port = argc == 6 ? static_cast<unsigned>(std::stoul(argv[4])) : 24801;
         state.fingerprint = barrier::FingerprintDatabase::to_db_line(barrier::get_pem_file_cert_fingerprint((state.profile / "SSL" / "Barrier.pem").u8string(), barrier::SHA256)); loadSaved(state);
-        if (!state.saved.fingerprint.empty()) emit("SAVED\t" + state.saved.fingerprint + '\t' + state.saved.name);
+        for (const auto& p : state.saved) emit("SAVED\t" + p.fingerprint + '\t' + p.name);
         std::thread service(network, std::ref(state), argc == 6 ? argv[5] : "");
         std::string line;
         while (std::getline(std::cin, line)) {
@@ -408,8 +430,11 @@ int main(int argc, char** argv) {
                 } else if (f.size() == 2 && (f[0] == "ACCEPT" || f[0] == "REJECT")) {
                     std::lock_guard<std::mutex> lock(state.mutex); if (state.approvalId == f[1]) state.decision = f[0] == "ACCEPT" ? 1 : -1;
                 } else if (f[0] == "FORGET") {
-                    std::lock_guard<std::mutex> lock(state.mutex); ++state.generation; state.decision = -1; state.request = false; state.saved = Peer{};
-                    atomicWrite(state.trustPath(), ""); std::error_code error; fs::remove(state.profile / "Peer.txt", error); require(!error, "Cannot remove saved pairing"); state.saved = Peer{}; emit("REMOVED");
+                    // FORGET removes every pairing; FORGET <fingerprint> removes one receiver.
+                    std::lock_guard<std::mutex> lock(state.mutex); ++state.generation; state.decision = -1; state.request = false;
+                    if (f.size() == 2) { state.saved.erase(std::remove_if(state.saved.begin(), state.saved.end(), [&](const Peer& p) { return p.fingerprint == f[1]; }), state.saved.end()); }
+                    else state.saved.clear();
+                    storeSaved(state); emit(f.size() == 2 ? "REMOVED\t" + f[1] : std::string("REMOVED"));
                 }
             } catch (const std::exception& error) { emit("ERROR\t" + base64(error.what())); }
         }

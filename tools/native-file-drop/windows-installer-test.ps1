@@ -142,7 +142,7 @@ $pem = [Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $serviceProf
 $config = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes("section: screens`n windows-host:`n windows:`nend`nsection: links`n windows-host:`n  right = windows`n windows:`n  left = windows-host`nend`nsection: options`n clipboardSharing = true`nend`n"))
 $console = (Get-CimInstance Win32_Process -Filter "Name='explorer.exe'" | Select-Object -First 1).SessionId
 Write-Output "::notice title=Service session::test session $((Get-Process -Id $PID).SessionId), explorer session $console"
-$reply = Invoke-Service "START`thost`t-`t$pem`t`t$config"
+$reply = Invoke-Service "START`thost`t-`t$pem`t`t$config`twindows-host"
 if ($reply[0] -ne 'OK') { throw "Service refused START: $($reply -join ' ')" }
 $deadline = [DateTime]::UtcNow.AddSeconds(15)
 while (@(Get-ServiceCore).Count -eq 0 -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 200 }
@@ -161,7 +161,7 @@ $reply = Invoke-Service 'STOP'
 if ($reply[0] -ne 'OK' -or $reply[1] -ne '0') { throw "Service did not stop the core: $($reply -join ' ')" }
 Start-Sleep -Seconds 1
 if (@(Get-ServiceCore).Count -ne 0) { throw 'Core kept running after STOP.' }
-$reply = Invoke-Service "START`thost`t-`tbm90IGEga2V5`t`t$config"
+$reply = Invoke-Service "START`thost`t-`tbm90IGEga2V5`t`t$config`twindows-host"
 if ($reply[0] -ne 'ERROR') { throw 'Service accepted pairing data without a private key.' }
 
 $startupRoot = Join-Path $TestRoot '已安裝啟動 startup'

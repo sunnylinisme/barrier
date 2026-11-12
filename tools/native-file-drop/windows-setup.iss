@@ -183,7 +183,9 @@ var
   Binary: String;
 begin
   if CurStep <> ssPostInstall then exit;
-  Binary := '"' + ExpandConstant('{app}\barrier-service.exe') + '"';
+  { sc takes binPath= as one argument; the quotes the service manager needs around a path with
+    spaces are escaped inside it. }
+  Binary := '\"' + ExpandConstant('{app}\barrier-service.exe') + '\"';
   if Sc('create BarrierShare binPath= "' + Binary + '" start= auto DisplayName= "Barrier Share"') <> 0 then
     Sc('config BarrierShare binPath= "' + Binary + '" start= auto');
   Sc('description BarrierShare "Lets the paired computer control the sign-in screen, lock screen and UAC prompts."');

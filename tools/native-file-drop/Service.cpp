@@ -14,7 +14,7 @@
 //   console session and the sign-in screen can be controlled from the other computer.
 //
 // Pipe protocol (\\.\pipe\BarrierShare.Service, one request per connection, UTF-8):
-//   START \t host|receiver \t address \t base64(Barrier.pem) \t base64(trusted) \t base64(config)
+//   START \t host|receiver \t address \t base64(Barrier.pem) \t base64(trusted) \t base64(config) \t screen name
 //   STOP
 //   STATUS
 // Reply: OK \t running(0|1) \t log path   or   ERROR \t message
@@ -42,7 +42,7 @@ HANDLE stopEvent = nullptr;
 std::atomic<bool> stopping{false};
 
 struct Command {
-    bool host = true; std::wstring sid, address, directory, log;
+    bool host = true; std::wstring sid, address, directory, log, name;
 };
 std::mutex mutex;
 bool wanted = false; Command command;
@@ -165,7 +165,7 @@ void startCore(DWORD session) {
     stopCore();
     std::wstring bin = moduleDirectory(), profile = command.directory;
     std::wstring line = quote(bin + (command.host ? L"\\barriers.exe" : L"\\barrierc.exe")) + L" -f --no-tray --file-clipboard --profile-dir " + quote(profile) +
-        L" --log " + quote(command.log) + L" --name " + (command.host ? L"windows-host" : L"windows");
+        L" --log " + quote(command.log) + L" --name " + command.name;
     line += command.host ? L" -c " + quote(profile + L"\\windows-windows.conf") : L" " + command.address;
     HANDLE token = winlogonToken(session);
     STARTUPINFOW startup{sizeof(startup)}; startup.lpDesktop = const_cast<wchar_t*>(L"winsta0\\default");
@@ -213,12 +213,13 @@ std::string handle(HANDLE pipe, const std::string& request) {
     auto reply = [&]() { return "OK\t" + std::string(wanted && coreRunning() ? "1" : "0") + '\t' + narrow(command.log); };
     if (f[0] == "STATUS") return reply();
     if (f[0] == "STOP") { wanted = false; stopCore(); return reply(); }
-    if (f[0] != "START" || f.size() != 6 || (f[1] != "host" && f[1] != "receiver")) throw std::runtime_error("Invalid request");
+    if (f[0] != "START" || f.size() != 7 || (f[1] != "host" && f[1] != "receiver")) throw std::runtime_error("Invalid request");
+    if (f[6].empty() || f[6].size() > 32 || f[6].find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-") != std::string::npos) throw std::runtime_error("Invalid screen name");
     bool host = f[1] == "host";
     if (!host && !validIPv4(f[2])) throw std::runtime_error("Invalid host address");
     auto pem = base64Decode(f[3]), trusted = base64Decode(f[4]), config = base64Decode(f[5]);
     if (pem.find("PRIVATE KEY") == std::string::npos || (host && config.find("section: screens") == std::string::npos)) throw std::runtime_error("Incomplete pairing data");
-    Command next; next.host = host; next.address = widen(f[2]); next.sid = clientSid(pipe);
+    Command next; next.host = host; next.address = widen(f[2]); next.name = widen(f[6]); next.sid = clientSid(pipe);
     std::wstring state = moduleDirectory() + L"\\state";
     secureDirectory(state, L""); secureDirectory(state + L"\\" + next.sid, next.sid);
     next.directory = state + L"\\" + next.sid + (host ? L"\\profile-server" : L"\\profile");

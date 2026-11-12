@@ -60,14 +60,15 @@ static class ShareSettings
     public static void Save(bool host, string address)
     {
         Directory.CreateDirectory(Root);
-        var document = new XDocument(new XElement("settings", new XAttribute("host", host), new XAttribute("address", address), new XAttribute("position", Position), Advanced.ToXml()));
+        var document = new XDocument(new XElement("settings", new XAttribute("host", host), new XAttribute("address", address), new XAttribute("position", Position), Advanced.ToXml(),
+            new XElement("layout", Layout.Select(item => new XElement("screen", new XAttribute("fingerprint", item.Key), new XAttribute("x", item.Value.X), new XAttribute("y", item.Value.Y))))));
         string path = Path.Combine(Root, "settings.xml"), temporary = path + ".new";
         document.Save(temporary);
         if (File.Exists(path)) File.Replace(temporary, path, null); else File.Move(temporary, path);
     }
     public static void Load(out bool host, out string address)
     {
-        host = true; address = ""; Position = "right"; Advanced = new ShareAdvanced();
+        host = true; address = ""; Position = "right"; Advanced = new ShareAdvanced(); Layout = new Dictionary<string, Point>();
         string path = Path.Combine(Root, "settings.xml");
         if (!File.Exists(path)) return;
         var root = XDocument.Load(path).Root;
@@ -75,8 +76,45 @@ static class ShareSettings
         string position = (string)root.Attribute("position");
         Position = Directions.Contains(position) ? position : "right";
         Advanced = ShareAdvanced.FromXml(root.Element("advanced"));
+        var layout = root.Element("layout");
+        if (layout != null) foreach (var screen in layout.Elements("screen")) {
+            int x, y; string fp = (string)screen.Attribute("fingerprint");
+            if (fp != null && Int32.TryParse((string)screen.Attribute("x"), out x) && Int32.TryParse((string)screen.Attribute("y"), out y) && Math.Abs(x) <= 2 && Math.Abs(y) <= 2) Layout[fp] = new Point(x, y);
+        }
     }
     public static ShareAdvanced Advanced = new ShareAdvanced();
+    // Paired receivers (host role) in pairing order, and where each sits relative to this host (0,0)
+    // on a 5x5 grid; x grows to the right and y downwards.
+    public static List<string> Receivers = new List<string>();
+    public static Dictionary<string, Point> Layout = new Dictionary<string, Point>();
+    public static string OwnFingerprint;
+    public const string HostName = "windows-host";
+    // Core screen name of a receiver; unique per computer so several can connect at once.
+    public static string ScreenName(string fingerprint) { return "r-" + fingerprint.Substring(10, 16); }
+    static readonly Point[] Steps = { new Point(1, 0), new Point(-1, 0), new Point(0, -1), new Point(0, 1) };
+    public static Point Step(string direction) { return Steps[Array.IndexOf(Directions, direction)]; }
+    // Screen name -> grid cell. Without paired receivers this is the classic host + "windows" pair.
+    public static Dictionary<string, Point> Cells()
+    {
+        var cells = new Dictionary<string, Point> { { HostName, Point.Empty } };
+        if (Receivers.Count == 0) { cells["windows"] = Step(Position); return cells; }
+        // Free spots: the chosen side, the opposite side, above, below, then further out.
+        var order = new List<Point> { Step(Position), Step(Opposite(Position)), new Point(0, -1), new Point(0, 1), new Point(1, 0), new Point(-1, 0) };
+        foreach (int ring in new[] { 1, 2 }) for (int y = -ring; y <= ring; ++y) for (int x = -ring; x <= ring; ++x) if (Math.Max(Math.Abs(x), Math.Abs(y)) == ring) order.Add(new Point(x, y));
+        for (int i = 0; i < Receivers.Count; ++i) {
+            Point cell; string fp = Receivers[i];
+            if (!Layout.TryGetValue(fp, out cell) || cells.ContainsValue(cell)) cell = i == 0 && !cells.ContainsValue(Step(Position)) ? Step(Position) : order.First(c => !cells.ContainsValue(c) && c != Point.Empty);
+            cells[ScreenName(fp)] = cell;
+        }
+        return cells;
+    }
+    // Directions in which some screen has a neighbour, the primary direction first.
+    static IEnumerable<string> UsedDirections(Dictionary<string, Point> cells)
+    {
+        var ordered = new List<string> { Position, Opposite(Position) }; ordered.AddRange(Directions.Where(d => !ordered.Contains(d)));
+        return ordered.Where(d => cells.Values.Any(c => cells.ContainsValue(new Point(c.X + Step(d).X, c.Y + Step(d).Y))));
+    }
+    public static string Opposite(string direction) { return new[] { "left", "right", "down", "up" }[Array.IndexOf(Directions, direction)]; }
     static void CopyTree(string source, string target)
     {
         Directory.CreateDirectory(target);
@@ -120,32 +158,39 @@ static class ShareSettings
     public static string Config(bool clipboard)
     {
         if (!Directions.Contains(Position)) throw new IOException("請選擇有效的螢幕位置。");
-        string opposite = new[] { "left", "right", "down", "up" }[Array.IndexOf(Directions, Position)];
-        var a = Advanced; var b = new StringBuilder("section: screens\n windows-host:\n windows:\n");
-        // Swap on the receiving screen: Ctrl acts as Command/Windows there and the other way round.
-        if (a.SwapModifiers) b.Append("  ctrl = super\n  super = ctrl\n");
-        b.Append("end\nsection: links\n windows-host:\n  " + Position + " = windows\n windows:\n  " + opposite + " = windows-host\nend\nsection: options\n clipboardSharing = " + (clipboard ? "true" : "false") + "\n");
+        var a = Advanced; var cells = Cells(); var b = new StringBuilder("section: screens\n");
+        foreach (var screen in cells.Keys) {
+            b.Append(" " + screen + ":\n");
+            // Swap on the receiving screens: Ctrl acts as Command/Windows there and the other way round.
+            if (a.SwapModifiers && screen != HostName) b.Append("  ctrl = super\n  super = ctrl\n");
+        }
+        // The first receiver also answers to "windows", the name receivers used before 0.3.9.
+        if (Receivers.Count > 0) b.Append("end\nsection: aliases\n " + ScreenName(Receivers[0]) + ":\n  windows\n");
+        b.Append("end\nsection: links\n");
+        foreach (var screen in cells) {
+            b.Append(" " + screen.Key + ":\n");
+            foreach (string d in new[] { Position, Opposite(Position) }.Concat(Directions).Distinct()) {
+                var next = new Point(screen.Value.X + Step(d).X, screen.Value.Y + Step(d).Y);
+                foreach (var other in cells) if (other.Value == next) b.Append("  " + d + " = " + other.Key + "\n");
+            }
+        }
+        b.Append("end\nsection: options\n clipboardSharing = " + (clipboard ? "true" : "false") + "\n");
         if (a.SwitchDelay > 0) b.Append(" switchDelay = " + a.SwitchDelay + "\n");
         if (a.DoubleTap > 0) b.Append(" switchDoubleTap = " + a.DoubleTap + "\n");
         if (a.Corners) b.Append(" switchCorners = all\n switchCornerSize = " + a.CornerSize + "\n");
         if (a.RelativeMouse) b.Append(" relativeMouseMoves = true\n");
         b.Append(" screenSaverSync = " + (a.ScreenSaver ? "true" : "false") + "\n");
-        if (a.SwitchKeys) b.Append(Hotkeys(Position, opposite));
+        if (a.SwitchKeys) foreach (string d in UsedDirections(cells)) b.Append(" keystroke(Control+Alt+" + Char.ToUpperInvariant(d[0]) + d.Substring(1) + ") = switchInDirection(" + d + ")\n");
         if (a.LockKey) b.Append(" keystroke(Control+Alt+L) = lockCursorToScreen(toggle)\n");
         foreach (string line in a.ExtraLines()) b.Append(" " + line + "\n");
         return b.Append("end\n").ToString();
     }
-    // Ctrl+Alt+arrow toward the other screen switches without reaching the edge; only the configured axis is bound.
-    public static string Hotkeys(string direction, string opposite)
-    {
-        Func<string, string> key = d => Char.ToUpperInvariant(d[0]) + d.Substring(1);
-        return " keystroke(Control+Alt+" + key(direction) + ") = switchInDirection(" + direction + ")\n keystroke(Control+Alt+" + key(opposite) + ") = switchInDirection(" + opposite + ")\n";
-    }
+    public static string ReceiverName { get { return OwnFingerprint != null ? ScreenName(OwnFingerprint) : "windows"; } }
     public static ProcessStartInfo Backend(bool host, string address)
     {
         string profile = Profile(host);
         var args = new List<string> { "-f", "--no-tray", "--file-clipboard", "--profile-dir", profile,
-            "--log", Path.Combine(profile, host ? "server.log" : "windows.log"), "--name", host ? "windows-host" : "windows" };
+            "--log", Path.Combine(profile, host ? "server.log" : "windows.log"), "--name", host ? HostName : ReceiverName };
         if (host) {
             string config = Path.Combine(profile, "windows-windows.conf");
             File.WriteAllText(config, Config(true), new UTF8Encoding(false)); args.Add("-c"); args.Add(config);
@@ -263,7 +308,8 @@ static class ShareService
     public static string StartCommand(bool host, string address)
     {
         return String.Join("\t", new[] { "START", host ? "host" : "receiver", host ? "-" : address, File64(Path.Combine(ShareSettings.Profile(host), "SSL", "Barrier.pem")),
-            File64(ShareSettings.TrustedPath(host)), host ? Convert.ToBase64String(new UTF8Encoding(false).GetBytes(ShareSettings.Config(true))) : "" });
+            File64(ShareSettings.TrustedPath(host)), host ? Convert.ToBase64String(new UTF8Encoding(false).GetBytes(ShareSettings.Config(true))) : "",
+            host ? ShareSettings.HostName : ShareSettings.ReceiverName });
     }
 }
 
@@ -414,7 +460,10 @@ sealed class ShareWindow : Form
     // Set while the service runs the core; its log file is followed instead of the process output.
     string serviceLog; long serviceOffset; readonly System.Windows.Forms.Timer serviceTail = new System.Windows.Forms.Timer { Interval = 500 };
     Form consent, diagnostics;
-    string consentId, connectedAddress = "", savedPeer = "";
+    string consentId, connectedAddress = "";
+    // Paired computers: every receiver for a host, the one host for a receiver (fingerprint -> name).
+    readonly Dictionary<string, string> peers = new Dictionary<string, string>();
+    readonly ShareButton arrange = new ShareButton();
     bool closing, loading = true, enabled = true, discoveryReady, started, transferring, keepServiceCore;
     readonly CheckBox autostart = new CheckBox();
     readonly ShareProgress progress = new ShareProgress();
@@ -470,9 +519,10 @@ sealed class ShareWindow : Form
         start.Text = "恢復連線"; stop.Text = "暫停"; start.BackColor=stop.BackColor=Color.White; At(start,504,422,148,34); At(stop,664,422,92,34); start.TabIndex=0; stop.TabIndex=1;
         At(new Label { Text="螢幕位置", BackColor=Color.White, Font=new Font(Font.FontFamily,13F,FontStyle.Bold) },44,511,184,30);
         At(new Label { Text="游標從哪一側移過去", BackColor=Color.White, ForeColor=ShareStyle.Muted, Font=new Font(Font.FontFamily,10F) },44,544,200,24);
-        At(position,260,516,492,42); position.AccessibleName="接收端的螢幕位置"; position.TabIndex=0;
+        At(position,260,516,340,42); position.AccessibleName="接收端的螢幕位置"; position.TabIndex=0;
+        arrange.Text="排列螢幕…"; arrange.BackColor=Color.White; arrange.Font=new Font(Font.FontFamily,10F); arrange.TabIndex=1; At(arrange,612,516,140,42); arrange.Click += delegate { ShowLayout(); };
         position.Items.AddRange(new object[] { "接收端在右邊  →", "接收端在左邊  ←", "接收端在上方  ↑", "接收端在下方  ↓" }); position.SelectedIndex=0;
-        positionHint.Text="由主控端設定兩台螢幕的相對位置"; positionHint.BackColor=Color.White; positionHint.ForeColor=ShareStyle.Muted; At(positionHint,260,522,492,42);
+        positionHint.Text="由主控端設定兩台螢幕的相對位置"; positionHint.BackColor=Color.White; positionHint.ForeColor=ShareStyle.Muted; At(positionHint,260,522,340,42);
         forget.Text="解除配對"; clear.Text="清除暫存"; forget.BackColor=clear.BackColor=ShareStyle.Background; forget.Font=clear.Font=new Font(Font.FontFamily,10F); At(forget,24,602,108,36); At(clear,144,602,108,36); forget.TabIndex=4; clear.TabIndex=5;
         var diagnosticButton = new ShareButton { Text="診斷紀錄", BackColor=ShareStyle.Background, Font=new Font(Font.FontFamily,10F), TabIndex=6 }; At(diagnosticButton,656,602,120,36); diagnosticButton.Click += delegate { ShowDiagnostics(); };
         autostart.Text="登入時自動啟動"; autostart.BackColor=ShareStyle.Background; autostart.Font=new Font(Font.FontFamily,10F); autostart.TabIndex=5; At(autostart,272,602,170,36);
@@ -492,12 +542,23 @@ sealed class ShareWindow : Form
         search.Click += delegate { Send("SEARCH"); status.Text = "正在搜尋同一區網的電腦…"; };
         pair.Click += delegate { var peer = nearby.SelectedItem as NearbyDevice; if (peer != null) { StopBackend(); Send("PAIR\t" + peer.Fingerprint); status.Text = "正在發出邀請…"; } };
         forget.Click += delegate {
-            if (MessageBox.Show(this, "解除後不會自動連線，需要重新邀請並經對方同意。", "解除配對", MessageBoxButtons.OKCancel) != DialogResult.OK) return;
-            StopBackend(); Send("FORGET");
+            if (peers.Count > 1) {
+                // Several receivers: choose one, or all of them.
+                var choices = new ContextMenuStrip();
+                foreach (var peer in peers.ToList()) { string fp = peer.Key; choices.Items.Add("解除「" + peer.Value + "」", null, delegate { Forget("FORGET\t" + fp, "解除與「" + peers[fp] + "」的配對？"); }); }
+                choices.Items.Add(new ToolStripSeparator()); choices.Items.Add("全部解除", null, delegate { Forget("FORGET", "解除所有配對？"); });
+                choices.Show(forget, new Point(0, forget.Height)); return;
+            }
+            Forget("FORGET", "解除後不會自動連線，需要重新邀請並經對方同意。");
         };
         clear.Click += delegate { ClearCache(); };
         role.SelectedIndexChanged += delegate { if (!loading) { try { StopLink(); StopBackend(); RefreshRole(); if (enabled) StartLink(); } catch (Exception e) { Error(e); } } };
-        position.SelectedIndexChanged += delegate { if (!loading && position.SelectedIndex >= 0) { ShareSettings.Position = ShareSettings.Directions[position.SelectedIndex]; Save(); if (backend != null) StopBackend(); } };
+        position.SelectedIndexChanged += delegate {
+            if (loading || position.SelectedIndex < 0) return;
+            // The simple choice places the only receiver; a custom arrangement of it is dropped.
+            ShareSettings.Position = ShareSettings.Directions[position.SelectedIndex]; foreach (string fp in peers.Keys) ShareSettings.Layout.Remove(fp);
+            Save(); if (backend != null) StopBackend();
+        };
         nearby.SelectedIndexChanged += delegate { UpdateControls(); };
         retry.Tick += delegate { if (enabled && link == null && !testing && !closing) StartLink(); };
         updateTimer.Tick += delegate { CheckUpdate(); };
@@ -593,12 +654,12 @@ sealed class ShareWindow : Form
         emptyNearby.Text = !enabled ? "搜尋已暫停\r\n恢復連線後，會重新尋找附近電腦。" : Host ? "正在尋找接收端…\r\n請在另一台選擇「接收端」，保持程式開啟。" : "尚未找到主控端。\r\n請在另一台選擇「主控端」，發出配對邀請。";
         nearby.Visible = nearby.Items.Count > 0; emptyNearby.Visible = !nearby.Visible; pair.Text = Host ? "邀請配對  →" : "等待主控端邀請";
         search.Enabled = link != null; pair.Enabled = Host && link != null && nearby.SelectedItem != null && consent == null;
-        forget.Enabled = link != null && savedPeer.Length != 0; clear.Enabled = !enabled && backend == null;
+        forget.Enabled = link != null && peers.Count != 0; clear.Enabled = !enabled && backend == null;
     }
     void RefreshRole()
     {
-        position.Visible = Host; positionHint.Visible = !Host; savedPeer = ""; devices.Clear(); nearby.Items.Clear(); Save();
-        ShareSettings.Init(Host); peerLabel.Text = Host ? "選擇接收端，按「邀請配對」。" : "等待主控端邀請；首次需要你同意。";
+        peers.Clear(); PeersChanged(); devices.Clear(); nearby.Items.Clear(); Save();
+        ShareSettings.Init(Host);
         status.Text = enabled ? "正在啟用區網搜尋…" : "已暫停"; UpdateControls();
     }
     void StartLink()
@@ -637,7 +698,7 @@ sealed class ShareWindow : Form
     void LinkLine(string line)
     {
         string[] f = line.Split('\t');
-        if (f[0] == "READY") { LogLine("區網搜尋已啟動 · UDP/TCP 24801"); discoveryReady = true; SendTargets(); status.Text = Host ? "正在搜尋接收端…" : "可被搜尋，等待主控端邀請…"; }
+        if (f[0] == "READY") { LogLine("區網搜尋已啟動 · UDP/TCP 24801"); discoveryReady = true; if (f.Length == 2) ShareSettings.OwnFingerprint = f[1]; SendTargets(); status.Text = Host ? "正在搜尋接收端…" : "可被搜尋，等待主控端邀請…"; }
         else if (f[0] == "DEVICE" && f.Length == 6) {
             NearbyDevice device; string selected = nearby.SelectedItem is NearbyDevice ? ((NearbyDevice)nearby.SelectedItem).Fingerprint : "";
             if (!devices.TryGetValue(f[1], out device)) { device = new NearbyDevice { Fingerprint = f[1] }; devices[f[1]] = device; }
@@ -645,12 +706,20 @@ sealed class ShareWindow : Form
             foreach (var value in devices.Values) nearby.Items.Add(value);
             if (devices.ContainsKey(selected)) nearby.SelectedItem = devices[selected]; else if (nearby.Items.Count > 0) nearby.SelectedIndex = 0;
         } else if (f[0] == "GONE" && f.Length == 2) { NearbyDevice device; if (devices.TryGetValue(f[1], out device)) { nearby.Items.Remove(device); devices.Remove(f[1]); } }
-        else if ((f[0] == "SAVED" || f[0] == "PAIRED") && f.Length == 3) { if (f[0] == "PAIRED") StopBackend(); savedPeer = f[1]; peerLabel.Text = "已配對 · " + Decode(f[2]) + "\r\n重新開啟後會自動連線"; }
+        else if ((f[0] == "SAVED" || f[0] == "PAIRED") && f.Length == 3) {
+            // A receiver has one host; a host's new receiver needs the core restarted with the new screen list.
+            if (f[0] == "PAIRED") { StopBackend(); if (!Host) peers.Clear(); }
+            peers[f[1]] = Decode(f[2]); PeersChanged();
+        }
         else if ((f[0] == "VERIFY" || f[0] == "REQUEST") && f.Length == 5) ShowConsent(f);
         else if (f[0] == "CLOSED" && f.Length == 2 && f[1] == consentId) CloseConsent();
         else if (f[0] == "CONNECT" && f.Length == 4) {
-            if (f[1] == savedPeer && (backend == null || (!Host && connectedAddress != f[3]))) { StopBackend(); address.Text = f[3]; Save(); StartBackend(); }
-        } else if (f[0] == "REMOVED") { StopBackend(); savedPeer = ""; peerLabel.Text = "已解除配對。"; status.Text = Host ? "可以選擇接收端重新邀請。" : "等待新的配對邀請。"; }
+            if (peers.ContainsKey(f[1]) && (backend == null || (!Host && connectedAddress != f[3]))) { StopBackend(); address.Text = f[3]; Save(); StartBackend(); }
+        } else if (f[0] == "REMOVED") {
+            StopBackend(); if (f.Length == 2) { peers.Remove(f[1]); ShareSettings.Layout.Remove(f[1]); } else peers.Clear();
+            PeersChanged(); if (peers.Count == 0) peerLabel.Text = "已解除配對。"; Save();
+            status.Text = peers.Count > 0 ? "已解除一台；其餘的會自動重新連線。" : Host ? "可以選擇接收端重新邀請。" : "等待新的配對邀請。";
+        }
         else if (f[0] == "UNAVAILABLE" && f.Length == 3 && backend == null) { status.Text = "正在重新尋找並驗證已配對的電腦…"; LogLine(Decode(f[2])); }
         else if ((f[0] == "ERROR" || f[0] == "FATAL") && f.Length == 2) { if (f[0] == "FATAL") StopLink(); status.Text = Decode(f[1]); LogLine(status.Text); }
         UpdateControls();
@@ -771,7 +840,7 @@ sealed class ShareWindow : Form
         }
         if (consent != null || consentId != null) throw new Exception("Expired pairing dialog remained open");
         LinkLine("GONE\t" + fp); if (nearby.Items.Count != 0) throw new Exception("Offline peer remained listed");
-        savedPeer=""; LinkLine("DEVICE\t" + fp + "\t" + name + "\t192.168.1.3\t24801\tR");
+        peers.Clear(); PeersChanged(); LinkLine("DEVICE\t" + fp + "\t" + name + "\t192.168.1.3\t24801\tR");
         peerLabel.Text="對方同意後，會記住這台電腦。"; status.Text="找到附近電腦\r\n可以發出配對邀請";
         if (!nearby.Visible || emptyNearby.Visible || !pair.Enabled) throw new Exception("Available peer cannot be invited");
         capture("gui-available.png");
@@ -804,6 +873,32 @@ sealed class ShareWindow : Form
                 foreach (string line in Encoding.UTF8.GetString(bytes, 0, end + 1).Split('\n')) { string text = line.TrimEnd('\r'); if (text.Length > 0) LogLine(text); }
             }
         } catch (IOException) { } catch (UnauthorizedAccessException) { }
+    }
+    void Forget(string command, string question)
+    {
+        if (MessageBox.Show(this, question, "解除配對", MessageBoxButtons.OKCancel) != DialogResult.OK) return;
+        StopBackend(); Send(command);
+    }
+    // Keeps the screen list, the paired label and the position controls in step with the paired computers.
+    void PeersChanged()
+    {
+        ShareSettings.Receivers = Host ? peers.Keys.ToList() : new List<string>();
+        var names = peers.Values.ToList();
+        if (names.Count == 1) peerLabel.Text = "已配對 · " + names[0] + "\r\n重新開啟後會自動連線";
+        else if (names.Count > 1) peerLabel.Text = "已配對 " + names.Count + " 台 · " + String.Join("、", names);
+        else peerLabel.Text = Host ? "選擇接收端，按「邀請配對」。" : "等待主控端邀請；首次需要你同意。";
+        position.Visible = Host && peers.Count <= 1; arrange.Visible = Host; positionHint.Visible = !position.Visible;
+        positionHint.Text = Host ? "已配對 " + peers.Count + " 台；按「排列螢幕」調整位置" : "由主控端設定螢幕的相對位置";
+        UpdateControls();
+    }
+    internal ShareLayoutEditor BuildLayout() { return new ShareLayoutEditor(peers, Font); }
+    void ShowLayout()
+    {
+        using (var editor = BuildLayout()) {
+            if (editor.ShowDialog(this) != DialogResult.OK) return;
+            foreach (var item in editor.Placement) ShareSettings.Layout[item.Key] = item.Value;
+            Save(); if (backend != null) StopBackend(); status.Text = "已儲存螢幕排列。";
+        }
     }
     void SendTargets() { try { string list = ShareSettings.Advanced.TargetList(); if (list.Length > 0 || link != null) Send("TARGETS\t" + list); } catch (Exception e) { Error(e); } }
     // Host-side Barrier options plus direct addresses for computers on another subnet or VPN.
@@ -862,6 +957,89 @@ sealed class ShareWindow : Form
             foreach (bool host in new[] { true, false }) foreach (string name in new[] { "ClipboardCache", "FileClipboardCache" }) { string cache = Path.Combine(ShareSettings.Profile(host), name); if (Directory.Exists(cache)) Directory.Delete(cache, true); }
             status.Text = "已清除接收檔案暫存。";
         } catch (Exception e) { Error(e); }
+    }
+}
+
+// Drag the paired receivers around this host on a 5x5 grid. Neighbouring cells are linked edges;
+// every screen must touch the group, or the cursor could never reach it.
+sealed class ShareLayoutEditor : Form
+{
+    const int Cell = 112, Tall = 68, Span = 2;
+    public readonly Dictionary<string, Point> Placement = new Dictionary<string, Point>();
+    readonly Dictionary<string, string> names = new Dictionary<string, string>();
+    readonly Panel canvas = new Panel();
+    readonly Label warning = new Label();
+    readonly ShareButton save = new ShareButton { Text = "儲存排列", Primary = true };
+    string dragging; Point pointer;
+    public ShareLayoutEditor(Dictionary<string, string> peers, Font font)
+    {
+        Text = "排列螢幕"; Font = new Font(font.FontFamily, 10F); BackColor = Color.White; ForeColor = ShareStyle.Ink;
+        FormBorderStyle = FormBorderStyle.FixedDialog; StartPosition = FormStartPosition.CenterParent; MaximizeBox = MinimizeBox = false;
+        AutoScaleDimensions = new SizeF(96F, 96F); AutoScaleMode = AutoScaleMode.Dpi;
+        int width = Cell * (Span * 2 + 1), height = Tall * (Span * 2 + 1);
+        ClientSize = new Size(width + 48, height + 168);
+        Controls.Add(new Label { Text = "拖曳電腦到這台的上下左右；相鄰的邊就是游標可以移過去的地方。", Bounds = new Rectangle(24, 16, width, 40), ForeColor = ShareStyle.Muted });
+        canvas.Bounds = new Rectangle(24, 60, width, height); canvas.BackColor = ShareStyle.Background;
+        typeof(Panel).GetProperty("DoubleBuffered", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic).SetValue(canvas, true, null);
+        Controls.Add(canvas);
+        warning.Bounds = new Rectangle(24, 64 + height, width, 40); warning.ForeColor = Color.FromArgb(180, 60, 40); Controls.Add(warning);
+        var cancel = new ShareButton { Text = "取消", BackColor = Color.White, Bounds = new Rectangle(24, 110 + height, 140, 38), DialogResult = DialogResult.Cancel };
+        save.BackColor = Color.White; save.Bounds = new Rectangle(176, 110 + height, width - 152, 38); save.DialogResult = DialogResult.OK;
+        Controls.Add(cancel); Controls.Add(save); CancelButton = cancel;
+        var cells = ShareSettings.Cells();
+        foreach (var peer in peers) {
+            names[peer.Key] = peer.Value;
+            Point cell; if (cells.TryGetValue(ShareSettings.ScreenName(peer.Key), out cell)) Placement[peer.Key] = cell;
+        }
+        canvas.Paint += (sender, e) => Draw(e.Graphics);
+        canvas.MouseDown += (sender, e) => { dragging = Placement.Where(p => CellBounds(p.Value).Contains(e.Location)).Select(p => p.Key).FirstOrDefault(); pointer = e.Location; };
+        canvas.MouseMove += (sender, e) => { if (dragging != null) { pointer = e.Location; canvas.Invalidate(); } };
+        canvas.MouseUp += (sender, e) => {
+            if (dragging == null) return;
+            var target = new Point(e.X / Cell - Span, e.Y / Tall - Span);
+            if (Math.Abs(target.X) <= Span && Math.Abs(target.Y) <= Span && target != Point.Empty && !Placement.Any(p => p.Key != dragging && p.Value == target)) Placement[dragging] = target;
+            dragging = null; Check(); canvas.Invalidate();
+        };
+        Check();
+    }
+    Rectangle CellBounds(Point cell) { return new Rectangle((cell.X + Span) * Cell + 6, (cell.Y + Span) * Tall + 6, Cell - 12, Tall - 12); }
+    // Every receiver must be connected to the host through neighbouring cells.
+    public bool Reachable()
+    {
+        var seen = new HashSet<Point> { Point.Empty }; var queue = new Queue<Point>(seen); var all = new HashSet<Point>(Placement.Values);
+        while (queue.Count > 0) {
+            var c = queue.Dequeue();
+            foreach (var n in new[] { new Point(c.X + 1, c.Y), new Point(c.X - 1, c.Y), new Point(c.X, c.Y + 1), new Point(c.X, c.Y - 1) })
+                if (all.Contains(n) && seen.Add(n)) queue.Enqueue(n);
+        }
+        return all.All(seen.Contains);
+    }
+    void Check()
+    {
+        bool ok = Reachable(); save.Enabled = ok;
+        warning.Text = ok ? "" : "有電腦沒有和其他螢幕相鄰，游標到不了；請把它移到相鄰的位置。";
+    }
+    void Draw(Graphics g)
+    {
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+        using (var grid = new Pen(ShareStyle.Border) { DashStyle = DashStyle.Dash })
+            for (int y = -Span; y <= Span; ++y) for (int x = -Span; x <= Span; ++x) g.DrawRectangle(grid, CellBounds(new Point(x, y)));
+        Action<Rectangle, string, bool> tile = (r, text, host) => {
+            using (var path = ShareStyle.Rounded(r, 10)) using (var fill = new SolidBrush(host ? ShareStyle.Blue : Color.White)) using (var edge = new Pen(ShareStyle.Blue, 1.5F)) { g.FillPath(fill, path); g.DrawPath(edge, path); }
+            TextRenderer.DrawText(g, text, Font, r, host ? Color.White : ShareStyle.Ink, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.WordBreak | TextFormatFlags.EndEllipsis);
+        };
+        tile(CellBounds(Point.Empty), "這台（主控端）", true);
+        foreach (var p in Placement) {
+            var r = CellBounds(p.Value);
+            if (p.Key == dragging) r.Offset(pointer.X - r.X - r.Width / 2, pointer.Y - r.Y - r.Height / 2);
+            tile(r, names[p.Key], false);
+        }
+    }
+    // Test hook: place a receiver as a drag would.
+    internal bool Place(string fingerprint, Point cell)
+    {
+        if (cell == Point.Empty || Placement.Any(p => p.Key != fingerprint && p.Value == cell)) return false;
+        Placement[fingerprint] = cell; Check(); canvas.Invalidate(); return true;
     }
 }
 
@@ -950,6 +1128,18 @@ static class ShareProgram
             }
             bool badTarget = false; try { new ShareAdvanced { Targets = "1.2.3.4 & calc" }.TargetList(); } catch (IOException) { badTarget = true; }
             if (!badTarget) throw new Exception("Invalid direct address accepted");
+            // Three receivers: one in the default spot, one placed on the grid, one placed automatically.
+            string fa = "v2:sha256:" + new string('a', 64), fb = "v2:sha256:" + new string('b', 64), fc = "v2:sha256:" + new string('c', 64);
+            ShareSettings.Receivers = new List<string> { fa, fb, fc }; ShareSettings.Layout = new Dictionary<string, Point> { { fb, new Point(0, -1) } };
+            string multi = ShareSettings.Config(true); string na = ShareSettings.ScreenName(fa), nb = ShareSettings.ScreenName(fb), nc = ShareSettings.ScreenName(fc);
+            foreach (string expected in new[] { " windows-host:\n  right = " + na + "\n  left = " + nc + "\n  up = " + nb + "\n", " " + na + ":\n  left = windows-host\n", " " + nb + ":\n  down = windows-host\n",
+                "section: aliases\n " + na + ":\n  windows\nend\n", " " + nb + ":\n  ctrl = super\n  super = ctrl\n", "switchInDirection(up)", "switchInDirection(down)" })
+                if (!multi.Contains(expected)) throw new Exception("Multi-screen config missing: " + expected + "\n" + multi);
+            ShareSettings.Save(true, ""); ShareSettings.Load(out host, out address);
+            if (ShareSettings.Layout.Count != 1 || ShareSettings.Layout[fb] != new Point(0, -1)) throw new Exception("Screen layout roundtrip failed");
+            ShareSettings.OwnFingerprint = fc;
+            if (!String.Join(" ", ShareSettings.Backend(false, "192.168.1.2").Arguments).Contains("--name \"" + nc + "\"")) throw new Exception("Receiver does not use its own screen name");
+            ShareSettings.OwnFingerprint = null;
             using (var core = Process.Start(ShareSettings.Backend(true, ""))) {
                 Thread.Sleep(1500);
                 if (core.HasExited) throw new Exception("Hidden backend failed: " + core.StandardError.ReadToEnd());
@@ -984,6 +1174,16 @@ static class ShareProgram
                     using (var bitmap = new Bitmap(advanced.Width, advanced.Height)) { advanced.DrawToBitmap(bitmap, new Rectangle(Point.Empty, advanced.Size)); bitmap.Save(Path.Combine(directory, "gui-advanced.png")); }
                     advanced.Close();
                 }
+                ShareSettings.Receivers = new List<string> { fa, fb, fc }; ShareSettings.Layout = new Dictionary<string, Point> { { fb, new Point(0, -1) } };
+                using (var layout = new ShareLayoutEditor(new Dictionary<string, string> { { fa, "書房 Windows" }, { fb, "MacBook Air" }, { fc, "客廳電腦" } }, window.Font)) {
+                    layout.Show(); Application.DoEvents();
+                    if (!layout.Reachable() || layout.Placement[fb] != new Point(0, -1)) throw new Exception("Layout editor did not start from the saved arrangement");
+                    if (layout.Place(fc, new Point(1, 0)) || !layout.Place(fc, new Point(2, 2)) || layout.Reachable()) throw new Exception("Layout editor accepted an occupied cell or a detached screen");
+                    if (!layout.Place(fc, new Point(-1, 0)) || !layout.Reachable()) throw new Exception("Layout editor rejected a valid arrangement");
+                    using (var bitmap = new Bitmap(layout.Width, layout.Height)) { layout.DrawToBitmap(bitmap, new Rectangle(Point.Empty, layout.Size)); bitmap.Save(Path.Combine(directory, "gui-layout.png")); }
+                    layout.Close();
+                }
+                ShareSettings.Receivers = new List<string>(); ShareSettings.Layout = new Dictionary<string, Point>();
                 window.ShowUpdate(null);
                 using (var bitmap = new Bitmap(window.Width, window.Height)) { window.DrawToBitmap(bitmap, new Rectangle(Point.Empty, window.Size)); bitmap.Save(Path.Combine(directory, "gui.png")); }
                 window.Close();
