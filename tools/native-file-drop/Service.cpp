@@ -1,7 +1,12 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-// Barrier Share service (Windows). Runs the keyboard/mouse core with the session's
-// winlogon token so it keeps working on the sign-in screen, the lock screen and UAC
-// prompts, which a normal user process cannot reach.
+// Barrier Share service (Windows). Keeps the keyboard/mouse core running in the console
+// session and raises it only when needed, like Barrier's elevate-as-needed mode:
+// - On the normal desktop the core runs as the signed-in user, so the clipboard (including
+//   files copied in Explorer), file access and the cursor scheme are the user's own.
+// - When the input desktop is a secure one (sign-in, lock screen, UAC prompt), or nobody is
+//   signed in, it runs with the session's winlogon token (SYSTEM), which can reach those screens.
+// A small watcher (this exe with --desk-watch, run with the winlogon token in the session)
+// reports the input desktop; switching restarts the core, which reconnects within a second.
 //
 // Security model:
 // - Only the user of the active console session may control it, over a local-only pipe.
@@ -14,13 +19,18 @@
 //   console session and the sign-in screen can be controlled from the other computer.
 //
 // Pipe protocol (\\.\pipe\BarrierShare.Service, one request per connection, UTF-8):
-//   START \t host|receiver \t address \t base64(Barrier.pem) \t base64(trusted) \t base64(config) \t screen name
+//   START \t host|receiver \t address \t base64(Barrier.pem) \t base64(trusted) \t base64(config) \t screen name \t user profile folder
 //   STOP
 //   STATUS
+//   DESKTOP \t <name>|auto   (tests: act as if the input desktop were <name>)
+// The user profile folder is used only by the core that runs as that user, so it grants nothing.
 // Reply: OK \t running(0|1) \t log path   or   ERROR \t message
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <sddl.h>
+#include <userenv.h>
+#include <wtsapi32.h>
+#include <algorithm>
 #include <tlhelp32.h>
 
 #include <aclapi.h>
@@ -42,13 +52,17 @@ HANDLE stopEvent = nullptr;
 std::atomic<bool> stopping{false};
 
 struct Command {
-    bool host = true; std::wstring sid, address, directory, log, name;
+    bool host = true; std::wstring sid, address, directory, log, name, userProfile, userLog;
 };
 std::mutex mutex;
 bool wanted = false; Command command;
 PROCESS_INFORMATION core{};
 DWORD coreSession = 0xFFFFFFFF;
+bool coreSystem = false;
 unsigned failures = 0;
+// Input desktop reported by the watcher, and a test override.
+PROCESS_INFORMATION watcher{}; HANDLE watcherOutput = nullptr; DWORD watcherSession = 0xFFFFFFFF;
+std::string watcherBuffer, inputDesktop, forcedDesktop;
 
 std::wstring widen(const std::string& text) {
     if (text.empty()) return {};
@@ -153,7 +167,47 @@ HANDLE winlogonToken(DWORD session) {
     DWORD uiAccess = 1; SetTokenInformation(result, TokenUIAccess, &uiAccess, sizeof(uiAccess));
     return result;
 }
-bool coreRunning() { DWORD code = 0; return core.hProcess && GetExitCodeProcess(core.hProcess, &code) && code == STILL_ACTIVE; }
+HANDLE userToken(DWORD session) {
+    HANDLE token = nullptr, primary = nullptr;
+    if (!WTSQueryUserToken(session, &token)) return nullptr;
+    DuplicateTokenEx(token, MAXIMUM_ALLOWED, nullptr, SecurityImpersonation, TokenPrimary, &primary);
+    CloseHandle(token); return primary;
+}
+bool running(const PROCESS_INFORMATION& p) { DWORD code = 0; return p.hProcess && GetExitCodeProcess(p.hProcess, &code) && code == STILL_ACTIVE; }
+bool coreRunning() { return running(core); }
+void stopWatcher() {
+    if (watcher.hProcess) { if (running(watcher)) TerminateProcess(watcher.hProcess, 0); CloseHandle(watcher.hProcess); CloseHandle(watcher.hThread); watcher = PROCESS_INFORMATION{}; }
+    if (watcherOutput) { CloseHandle(watcherOutput); watcherOutput = nullptr; }
+    watcherSession = 0xFFFFFFFF; watcherBuffer.clear(); inputDesktop.clear();
+}
+// Runs "barrier-service.exe --desk-watch" with the winlogon token, which may read the input desktop.
+void startWatcher(DWORD session) {
+    stopWatcher();
+    SECURITY_ATTRIBUTES inherit{sizeof(inherit), nullptr, TRUE}; HANDLE read = nullptr, write = nullptr;
+    if (!CreatePipe(&read, &write, &inherit, 0)) throw std::runtime_error("Cannot create watcher pipe");
+    SetHandleInformation(read, HANDLE_FLAG_INHERIT, 0);
+    std::wstring line = quote(moduleDirectory() + L"\\barrier-service.exe") + L" --desk-watch";
+    std::vector<wchar_t> buffer(line.begin(), line.end()); buffer.push_back(0);
+    STARTUPINFOW startup{sizeof(startup)}; startup.lpDesktop = const_cast<wchar_t*>(L"winsta0\\default");
+    startup.dwFlags = STARTF_USESTDHANDLES; startup.hStdOutput = startup.hStdError = write;
+    HANDLE token = winlogonToken(session);
+    BOOL ok = CreateProcessAsUserW(token, nullptr, buffer.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW, nullptr, moduleDirectory().c_str(), &startup, &watcher);
+    DWORD error = GetLastError(); CloseHandle(token); CloseHandle(write);
+    if (!ok) { CloseHandle(read); throw std::runtime_error("Cannot start desktop watcher (error " + std::to_string(error) + ")"); }
+    watcherOutput = read; watcherSession = session;
+}
+void readWatcher() {
+    DWORD available = 0;
+    while (watcherOutput && PeekNamedPipe(watcherOutput, nullptr, 0, nullptr, &available, nullptr) && available) {
+        char chunk[256]; DWORD got = 0;
+        if (!ReadFile(watcherOutput, chunk, (std::min)(available, static_cast<DWORD>(sizeof(chunk))), &got, nullptr) || !got) break;
+        watcherBuffer.append(chunk, got);
+        for (size_t end; (end = watcherBuffer.find('\n')) != std::string::npos; watcherBuffer.erase(0, end + 1)) {
+            auto lineText = watcherBuffer.substr(0, end); if (!lineText.empty() && lineText.back() == '\r') lineText.pop_back();
+            if (lineText.size() < 64) inputDesktop = lineText;
+        }
+    }
+}
 void stopCore() {
     if (core.hProcess) {
         if (coreRunning()) { TerminateProcess(core.hProcess, 0); WaitForSingleObject(core.hProcess, 5000); }
@@ -161,37 +215,52 @@ void stopCore() {
     }
     coreSession = 0xFFFFFFFF;
 }
-void startCore(DWORD session) {
+// asSystem: the winlogon token and the service's protected state folder; otherwise the
+// signed-in user's token and that user's own profile folder (what the app uses without the service).
+void startCore(DWORD session, bool asSystem, const std::string& why) {
     stopCore();
-    std::wstring bin = moduleDirectory(), profile = command.directory;
+    HANDLE token = asSystem ? winlogonToken(session) : userToken(session);
+    if (!token) throw std::runtime_error("No signed-in user in the console session");
+    std::wstring bin = moduleDirectory(), profile = asSystem ? command.directory : command.userProfile, log = asSystem ? command.log : command.userLog;
     std::wstring line = quote(bin + (command.host ? L"\\barriers.exe" : L"\\barrierc.exe")) + L" -f --no-tray --file-clipboard --profile-dir " + quote(profile) +
-        L" --log " + quote(command.log) + L" --name " + command.name;
+        L" --log " + quote(log) + L" --name " + command.name;
     line += command.host ? L" -c " + quote(profile + L"\\windows-windows.conf") : L" " + command.address;
-    HANDLE token = winlogonToken(session);
     STARTUPINFOW startup{sizeof(startup)}; startup.lpDesktop = const_cast<wchar_t*>(L"winsta0\\default");
     std::vector<wchar_t> buffer(line.begin(), line.end()); buffer.push_back(0);
-    BOOL ok = CreateProcessAsUserW(token, nullptr, buffer.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT, nullptr, bin.c_str(), &startup, &core);
-    DWORD error = GetLastError(); CloseHandle(token);
+    void* environment = nullptr; if (!asSystem) CreateEnvironmentBlock(&environment, token, FALSE);
+    BOOL ok = CreateProcessAsUserW(token, nullptr, buffer.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT, environment, bin.c_str(), &startup, &core);
+    DWORD error = GetLastError(); CloseHandle(token); if (environment) DestroyEnvironmentBlock(environment);
     if (!ok) throw std::runtime_error("Cannot start core (error " + std::to_string(error) + ")");
-    coreSession = session;
-    logLine(profile, "started " + std::string(command.host ? "host" : "receiver") + " core in session " + std::to_string(session));
+    coreSession = session; coreSystem = asSystem;
+    logLine(command.directory, "core now runs as " + std::string(asSystem ? "SYSTEM" : "the signed-in user") + " (" + why + "), " + (command.host ? "host" : "receiver") + ", session " + std::to_string(session) + ", log " + narrow(log));
 }
-// Keeps the core running in the active console session, including the sign-in screen.
-void monitor() {
-    while (WaitForSingleObject(stopEvent, 1000) == WAIT_TIMEOUT) {
-        std::lock_guard<std::mutex> lock(mutex);
-        if (!wanted) { if (core.hProcess) stopCore(); continue; }
-        DWORD session = WTSGetActiveConsoleSessionId();
-        if (session == 0xFFFFFFFF) continue;
-        if (coreRunning() && session == coreSession) { failures = 0; continue; }
-        static ULONGLONG retryAt = 0;
-        if (GetTickCount64() < retryAt) continue;
-        try { startCore(session); }
+// Starts or switches the core to match the console session and its input desktop; mutex held.
+void apply() {
+    DWORD session = WTSGetActiveConsoleSessionId();
+    if (session == 0xFFFFFFFF) return;
+    if (!running(watcher) || watcherSession != session) {
+        try { startWatcher(session); } catch (const std::exception& e) { if (wanted) logLine(command.directory, std::string("desktop watcher: ") + e.what()); }
+    }
+    readWatcher();
+    if (!wanted) { if (core.hProcess) stopCore(); return; }
+    std::string desktop = forcedDesktop.empty() ? inputDesktop : forcedDesktop;
+    HANDLE user = userToken(session); bool signedIn = user != nullptr; if (user) CloseHandle(user);
+    bool secure = !desktop.empty() && _stricmp(desktop.c_str(), "Default") != 0;
+    bool asSystem = !signedIn || secure;
+    if (coreRunning() && session == coreSession && asSystem == coreSystem) { failures = 0; return; }
+    static ULONGLONG retryAt = 0;
+    if (coreRunning() || GetTickCount64() >= retryAt) {
+        try { startCore(session, asSystem, !signedIn ? "nobody signed in" : secure ? "input desktop " + desktop : "input desktop " + (desktop.empty() ? std::string("Default") : desktop)); }
         catch (const std::exception& e) {
             ++failures; retryAt = GetTickCount64() + 1000ull * (failures < 5 ? failures * 2 : 10);
             logLine(command.directory, std::string("start failed: ") + e.what());
         }
     }
+}
+// Keeps the core running in the active console session, including the sign-in screen,
+// and follows desktop switches four times a second.
+void monitor() {
+    while (WaitForSingleObject(stopEvent, 250) == WAIT_TIMEOUT) { std::lock_guard<std::mutex> lock(mutex); apply(); }
 }
 std::wstring clientSid(HANDLE pipe) {
     if (!ImpersonateNamedPipeClient(pipe)) throw std::runtime_error("Cannot identify caller");
@@ -213,7 +282,12 @@ std::string handle(HANDLE pipe, const std::string& request) {
     auto reply = [&]() { return "OK\t" + std::string(wanted && coreRunning() ? "1" : "0") + '\t' + narrow(command.log); };
     if (f[0] == "STATUS") return reply();
     if (f[0] == "STOP") { wanted = false; stopCore(); return reply(); }
-    if (f[0] != "START" || f.size() != 7 || (f[1] != "host" && f[1] != "receiver")) throw std::runtime_error("Invalid request");
+    if (f[0] == "DESKTOP" && f.size() == 2 && !f[1].empty() && f[1].size() < 32 && f[1].find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ") == std::string::npos) {
+        forcedDesktop = f[1] == "auto" ? "" : f[1]; apply(); return reply();
+    }
+    if (f[0] != "START" || f.size() != 8 || (f[1] != "host" && f[1] != "receiver")) throw std::runtime_error("Invalid request");
+    // The user profile folder is only handed to the core that runs as that same user.
+    if (f[7].size() < 4 || f[7].size() > 1024 || f[7].find('"') != std::string::npos || !(f[7][1] == ':' || f[7].compare(0, 2, "\\\\") == 0)) throw std::runtime_error("Invalid profile folder");
     if (f[6].empty() || f[6].size() > 32 || f[6].find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-") != std::string::npos) throw std::runtime_error("Invalid screen name");
     bool host = f[1] == "host";
     // Receiver: the host's IPv4 address, optionally with :port (used by the tests).
@@ -225,6 +299,8 @@ std::string handle(HANDLE pipe, const std::string& request) {
     auto pem = base64Decode(f[3]), trusted = base64Decode(f[4]), config = base64Decode(f[5]);
     if (pem.find("PRIVATE KEY") == std::string::npos || (host && config.find("section: screens") == std::string::npos)) throw std::runtime_error("Incomplete pairing data");
     Command next; next.host = host; next.address = widen(f[2]); next.name = widen(f[6]); next.sid = clientSid(pipe);
+    next.userProfile = widen(f[7]); while (!next.userProfile.empty() && next.userProfile.back() == L'\\') next.userProfile.pop_back();
+    next.userLog = next.userProfile + (host ? L"\\server.log" : L"\\windows.log");
     std::wstring state = moduleDirectory() + L"\\state";
     secureDirectory(state, L""); secureDirectory(state + L"\\" + next.sid, next.sid);
     next.directory = state + L"\\" + next.sid + (host ? L"\\profile-server" : L"\\profile");
@@ -235,7 +311,7 @@ std::string handle(HANDLE pipe, const std::string& request) {
     if (host) writeFile(next.directory + L"\\windows-windows.conf", config);
     next.log = next.directory + (host ? L"\\server.log" : L"\\windows.log");
     stopCore(); command = next; wanted = true; failures = 0;
-    try { startCore(WTSGetActiveConsoleSessionId()); } catch (const std::exception& e) { logLine(command.directory, std::string("start failed: ") + e.what()); }
+    apply();
     return reply();
 }
 void serve() {
@@ -289,19 +365,39 @@ DWORD WINAPI control(DWORD code, DWORD, LPVOID, LPVOID) {
 }
 void run() {
     stopEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
-    std::thread watcher(monitor), server(serve);
+    std::thread follower(monitor), server(serve);
     if (statusHandle) report(SERVICE_RUNNING);
-    server.join(); watcher.join();
-    { std::lock_guard<std::mutex> lock(mutex); stopCore(); }
+    server.join(); follower.join();
+    { std::lock_guard<std::mutex> lock(mutex); stopCore(); stopWatcher(); }
 }
 void WINAPI serviceMain(DWORD, LPWSTR*) {
     statusHandle = RegisterServiceCtrlHandlerExW(kServiceName, control, nullptr);
     if (!statusHandle) return;
     run(); report(SERVICE_STOPPED);
 }
+
+// Watcher mode: print the input desktop's name whenever it changes (exits when the service goes away).
+int watchDesktop() {
+    std::string last;
+    for (;;) {
+        std::string name = "Winlogon";
+        if (HDESK desk = OpenInputDesktop(0, FALSE, DESKTOP_READOBJECTS)) {
+            wchar_t buffer[64] = {};
+            if (GetUserObjectInformationW(desk, UOI_NAME, buffer, sizeof(buffer) - sizeof(wchar_t), nullptr)) name = narrow(buffer);
+            CloseDesktop(desk);
+        }
+        if (name != last) {
+            auto line = name + "\n"; DWORD written = 0;
+            if (!WriteFile(GetStdHandle(STD_OUTPUT_HANDLE), line.data(), static_cast<DWORD>(line.size()), &written, nullptr)) return 0;
+            last = name;
+        }
+        Sleep(200);
+    }
+}
 }
 
 int wmain(int argc, wchar_t** argv) {
+    if (argc == 2 && std::wstring(argv[1]) == L"--desk-watch") return watchDesktop();
     // --console runs the same loop in the foreground for testing as an administrator.
     if (argc == 2 && std::wstring(argv[1]) == L"--console") { SetConsoleCtrlHandler([](DWORD) -> BOOL { stopping = true; SetEvent(stopEvent); return TRUE; }, TRUE); run(); return 0; }
     SERVICE_TABLE_ENTRYW table[] = { { const_cast<wchar_t*>(kServiceName), serviceMain }, { nullptr, nullptr } };

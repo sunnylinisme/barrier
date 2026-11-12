@@ -310,7 +310,9 @@ static class ShareService
     {
         return String.Join("\t", new[] { "START", host ? "host" : "receiver", host ? "-" : address, File64(Path.Combine(ShareSettings.Profile(host), "SSL", "Barrier.pem")),
             File64(ShareSettings.TrustedPath(host)), host ? Convert.ToBase64String(new UTF8Encoding(false).GetBytes(ShareSettings.Config(true))) : "",
-            host ? ShareSettings.HostName : ShareSettings.ReceiverName });
+            host ? ShareSettings.HostName : ShareSettings.ReceiverName,
+            // Used only by the core that runs as this user on the normal desktop.
+            Path.GetFullPath(ShareSettings.Profile(host)) });
     }
 }
 
@@ -459,7 +461,10 @@ sealed class ShareWindow : Form
     readonly List<ShareCard> cards = new List<ShareCard>();
     Process backend, link;
     // Set while the service runs the core; its log file is followed instead of the process output.
-    string serviceLog; long serviceOffset; readonly System.Windows.Forms.Timer serviceTail = new System.Windows.Forms.Timer { Interval = 500 };
+    // While the service runs the core: its log as the signed-in user (own profile), as SYSTEM
+    // (service state folder) and the service's notes on which one runs; all three are followed.
+    string serviceLog; readonly Dictionary<string, long> serviceOffsets = new Dictionary<string, long>();
+    readonly System.Windows.Forms.Timer serviceTail = new System.Windows.Forms.Timer { Interval = 500 };
     Form consent, diagnostics;
     string consentId, connectedAddress = "";
     // Paired computers: every receiver for a host, the one host for a receiver (fingerprint -> name).
@@ -754,9 +759,12 @@ sealed class ShareWindow : Form
             try {
                 ShareSettings.Backend(Host, address.Text); // validates the address and settings
                 var reply = ShareService.Request(ShareService.StartCommand(Host, address.Text), 5000);
-                backend = new Process(); serviceLog = reply[2]; serviceOffset = 0;
-                try { serviceOffset = new FileInfo(serviceLog).Length; } catch (Exception) { }
-                serviceTail.Start(); LogLine("背景服務已啟動核心（登入畫面與 UAC 也可使用）· " + serviceLog);
+                backend = new Process(); serviceLog = reply[2]; serviceOffsets.Clear();
+                foreach (string path in new[] { Path.Combine(ShareSettings.Profile(Host), Host ? "server.log" : "windows.log"), serviceLog, Path.Combine(Path.GetDirectoryName(serviceLog), "service.log") }) {
+                    long length = 0; try { length = new FileInfo(path).Length; } catch (Exception) { }
+                    serviceOffsets[path] = length;
+                }
+                serviceTail.Start(); LogLine("背景服務已啟動核心：平常以你的身分執行，登入、鎖定、UAC 畫面時改用系統身分 · " + Path.GetDirectoryName(serviceLog));
                 connectedAddress = address.Text; status.Text = "配對已驗證，正在連線…"; UpdateControls();
                 return;
             } catch (Exception e) { backend = null; serviceLog = null; LogLine("背景服務無法使用，改由這個程式啟動：" + e.Message); }
@@ -892,17 +900,23 @@ sealed class ShareWindow : Form
     void FollowServiceLog()
     {
         if (serviceLog == null) return;
-        try {
-            using (var stream = new FileStream(serviceLog, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete)) {
-                if (stream.Length < serviceOffset) serviceOffset = 0;
-                stream.Seek(serviceOffset, SeekOrigin.Begin);
-                var bytes = new byte[Math.Min(1 << 20, stream.Length - serviceOffset)]; int read = stream.Read(bytes, 0, bytes.Length);
-                int end = Array.LastIndexOf(bytes, (byte)'\n', Math.Max(0, read - 1));
-                if (read == 0 || end < 0) return;
-                serviceOffset += end + 1;
-                foreach (string line in Encoding.UTF8.GetString(bytes, 0, end + 1).Split('\n')) { string text = line.TrimEnd('\r'); if (text.Length > 0) LogLine(text); }
-            }
-        } catch (IOException) { } catch (UnauthorizedAccessException) { }
+        foreach (string path in serviceOffsets.Keys.ToList()) {
+            try {
+                using (var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete)) {
+                    long offset = serviceOffsets[path]; if (stream.Length < offset) offset = 0;
+                    stream.Seek(offset, SeekOrigin.Begin);
+                    var bytes = new byte[Math.Min(1 << 20, stream.Length - offset)]; int read = stream.Read(bytes, 0, bytes.Length);
+                    int end = Array.LastIndexOf(bytes, (byte)'\n', Math.Max(0, read - 1));
+                    if (read == 0 || end < 0) continue;
+                    serviceOffsets[path] = offset + end + 1;
+                    bool notes = path.EndsWith("service.log", StringComparison.OrdinalIgnoreCase);
+                    foreach (string line in Encoding.UTF8.GetString(bytes, 0, end + 1).Split('\n')) {
+                        string text = line.TrimEnd('\r');
+                        if (text.Length > 0) { if (notes) Diagnose("背景服務：" + text); else LogLine(text); }
+                    }
+                }
+            } catch (IOException) { } catch (UnauthorizedAccessException) { }
+        }
     }
     // Restarting the connection drops the partial copy on both sides.
     void CancelTransfer() { transferring = false; autoPaste.Clear(); popup.Dismiss(); StopBackend(); StartBackend(); status.Text = "已取消檔案傳送，正在重新連線…"; }

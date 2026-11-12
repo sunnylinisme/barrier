@@ -266,7 +266,7 @@ for role, direction, via_service in runs:
                     import base64
                     data = lambda path: base64.b64encode(path.read_bytes()).decode()
                     reply = service_request("START", "receiver", "127.0.0.1:" + str(port), data(client_profile / "SSL/Barrier.pem"),
-                                            data(client_profile / "SSL/Fingerprints/TrustedServers.txt"), "", "windows")
+                                            data(client_profile / "SSL/Fingerprints/TrustedServers.txt"), "", "windows", str(client_profile))
                     service_log = pathlib.Path(reply[2])
                 else:
                     core = subprocess.Popen(args, stdout=console, stderr=subprocess.STDOUT)

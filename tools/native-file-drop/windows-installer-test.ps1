@@ -142,27 +142,43 @@ $pem = [Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $serviceProf
 $config = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes("section: screens`n windows-host:`n windows:`nend`nsection: links`n windows-host:`n  right = windows`n windows:`n  left = windows-host`nend`nsection: options`n clipboardSharing = true`nend`n"))
 $console = (Get-CimInstance Win32_Process -Filter "Name='explorer.exe'" | Select-Object -First 1).SessionId
 Write-Output "::notice title=Service session::test session $((Get-Process -Id $PID).SessionId), explorer session $console"
-$reply = Invoke-Service "START`thost`t-`t$pem`t`t$config`twindows-host"
-if ($reply[0] -ne 'OK') { throw "Service refused START: $($reply -join ' ')" }
-$deadline = [DateTime]::UtcNow.AddSeconds(15)
-while (@(Get-ServiceCore).Count -eq 0 -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 200 }
-$core = Get-ServiceCore
+# The core runs as the signed-in user from that user's own profile on the normal desktop, and as
+# SYSTEM from the service's state folder on a secure desktop (simulated here: CI cannot lock or show UAC).
+[IO.File]::WriteAllText((Join-Path $serviceProfile 'windows-windows.conf'), [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($config)))
 $stateRoot = Join-Path $installDir 'state'
-if ($core.Count -ne 1) {
-    $notes = Get-ChildItem -LiteralPath $stateRoot -Recurse -Filter service.log -ErrorAction SilentlyContinue | ForEach-Object { Get-Content -LiteralPath $_.FullName -Raw }
-    throw "Service did not start the core: $notes"
+$me = [Environment]::UserName
+function Wait-Core([string]$Owner, [string]$Log, [string]$Why) {
+    $deadline = [DateTime]::UtcNow.AddSeconds(20); $found = $null
+    while ([DateTime]::UtcNow -lt $deadline) {
+        $core = Get-ServiceCore
+        if ($core.Count -eq 1) { $owner = Invoke-CimMethod -InputObject $core[0] -MethodName GetOwner; if ($owner.User -eq $Owner) { $found = $core[0]; break } }
+        Start-Sleep -Milliseconds 250
+    }
+    $notes = (Get-ChildItem -LiteralPath $stateRoot -Recurse -Filter service.log -ErrorAction SilentlyContinue | ForEach-Object { Get-Content -LiteralPath $_.FullName -Raw }) -join ' '
+    if (-not $found) { throw "Service core is not running as $Owner ($Why): $notes" }
+    if ($found.SessionId -ne (Get-Process -Id $PID).SessionId) { throw "Service core runs in session $($found.SessionId), not the signed-in session." }
+    $deadline = [DateTime]::UtcNow.AddSeconds(10)
+    while (-not ((Test-Path -LiteralPath $Log) -and (Get-Content -LiteralPath $Log -Raw).Contains('started server')) -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 250 }
+    if (-not ((Test-Path -LiteralPath $Log) -and (Get-Content -LiteralPath $Log -Raw).Contains('started server'))) { throw "Server did not start as $Owner; log $Log" }
+    Write-Output "::notice title=Service core::$Why -> $Owner, session $($found.SessionId), log $Log"
 }
-$owner = Invoke-CimMethod -InputObject $core[0] -MethodName GetOwner
-Write-Output "::notice title=Service core::owner $($owner.Domain)\$($owner.User), session $($core[0].SessionId), log $($reply[2])"
-if ($owner.User -ne 'SYSTEM' -or $core[0].SessionId -ne (Get-Process -Id $PID).SessionId) { throw 'Service core is not a SYSTEM process in the signed-in session.' }
-Start-Sleep -Seconds 2
-if (-not (Test-Path -LiteralPath $reply[2]) -or -not (Get-Content -LiteralPath $reply[2] -Raw).Contains('started server')) { throw 'Service core log is missing or the server did not start.' }
+$reply = Invoke-Service "START`thost`t-`t$pem`t`t$config`twindows-host`t$serviceProfile"
+if ($reply[0] -ne 'OK') { throw "Service refused START: $($reply -join ' ')" }
+Wait-Core $me (Join-Path $serviceProfile 'server.log') 'normal desktop'
+$reply = Invoke-Service "DESKTOP`tWinlogon"
+Wait-Core 'SYSTEM' $reply[2] 'secure desktop'
+$reply = Invoke-Service "DESKTOP`tauto"
+Wait-Core $me (Join-Path $serviceProfile 'server.log') 'back on the normal desktop'
+$switches = (Get-Content -LiteralPath (Join-Path (Split-Path $reply[2]) 'service.log') -Raw)
+if (-not ($switches.Contains('core now runs as SYSTEM') -and $switches.Contains('core now runs as the signed-in user'))) { throw "Service log does not record the switches: $switches" }
 $reply = Invoke-Service 'STOP'
 if ($reply[0] -ne 'OK' -or $reply[1] -ne '0') { throw "Service did not stop the core: $($reply -join ' ')" }
 Start-Sleep -Seconds 1
 if (@(Get-ServiceCore).Count -ne 0) { throw 'Core kept running after STOP.' }
-$reply = Invoke-Service "START`thost`t-`tbm90IGEga2V5`t`t$config`twindows-host"
+$reply = Invoke-Service "START`thost`t-`tbm90IGEga2V5`t`t$config`twindows-host`t$serviceProfile"
 if ($reply[0] -ne 'ERROR') { throw 'Service accepted pairing data without a private key.' }
+$reply = Invoke-Service "START`thost`t-`t$pem`t`t$config`twindows-host`trelative\path"
+if ($reply[0] -ne 'ERROR') { throw 'Service accepted a relative profile folder.' }
 
 $startupRoot = Join-Path $TestRoot '已安裝啟動 startup'
 Invoke-TestProcess $shortcuts[0] @('--startup-test', $startupRoot) 45 $true
@@ -222,5 +238,5 @@ if (-not $second.WaitForExit(1000)) { throw 'Uninstall left the app running.' }
 if ($null -ne (Get-ItemProperty -LiteralPath $runKey -Name BarrierShare -ErrorAction SilentlyContinue)) { throw 'Uninstall left the launch-at-sign-in entry.' }
 if (Test-Path -LiteralPath $app) { throw 'Uninstall could not remove the app that was running.' }
 
-Set-Content -LiteralPath (Join-Path $TestRoot 'INSTALLER-PASS.txt') -Value 'Administrator silent installation with the Barrier Share service (runs a SYSTEM core in the signed-in session on request and stops it; rejects incomplete data) to a Unicode path with spaces; payload hashes and shortcuts match; installed Start Menu shortcut startup passes; repeat installation and uninstall preserve an existing profile; uninstall removes payload, shortcuts and registration; updating over a running background copy closes it through the quit signal and starts it again; uninstall closes a running copy and removes the launch-at-sign-in entry. This is a same-version reinstall, not an old-release migration test.' -Encoding utf8
+Set-Content -LiteralPath (Join-Path $TestRoot 'INSTALLER-PASS.txt') -Value 'Administrator silent installation with the Barrier Share service (runs the core as the signed-in user, switches to SYSTEM for a secure desktop and back, stops it; rejects incomplete data) to a Unicode path with spaces; payload hashes and shortcuts match; installed Start Menu shortcut startup passes; repeat installation and uninstall preserve an existing profile; uninstall removes payload, shortcuts and registration; updating over a running background copy closes it through the quit signal and starts it again; uninstall closes a running copy and removes the launch-at-sign-in entry. This is a same-version reinstall, not an old-release migration test.' -Encoding utf8
 Get-Content -LiteralPath (Join-Path $TestRoot 'INSTALLER-PASS.txt')
