@@ -2,12 +2,12 @@ Barrier Share — Windows／Mac 雙向複製通用測試版
 
 支援 Windows 10（1903 以上）／11 x64，以及 Apple Silicon Mac（macOS 15 以上）。
 一次連接兩台，可自由搭配作主控端或接收端；兩台使用搜尋配對版，並在同一區網。
-Windows 0.3.5 調整視窗排版與控制項，可搭配既有 Mac 0.3.4，配對可沿用。
+Windows 0.3.6 修正跨畫面時游標在邊界來回彈跳，可搭配既有 Mac 0.3.4，配對可沿用。
 Mac 固定簽章更新與 Windows 視窗更新相互獨立，無須每次同時更新兩台。
 
 搜尋與配對
 1. 停止舊版連線程式，再開啟新版。
-   Windows：開啟 BarrierShare-Setup-0.3.5-x64.exe 安裝，再從開始功能表開啟 Barrier Share。
+   Windows：開啟 BarrierShare-Setup-0.3.6-x64.exe 安裝，再從開始功能表開啟 Barrier Share。
    更新前先從系統匣選「結束」；安裝程式會沿用同一位置，保留配對及設定。
    也可使用可攜 ZIP，解壓後雙擊 BarrierShare.exe。
    Mac：解壓縮後將 Barrier Share.app 放到「應用程式」，再開啟。
@@ -22,6 +22,11 @@ Mac 固定簽章更新與 Windows 視窗更新相互獨立，無須每次同時�
 5. Mac 首次需允許「區域網路」、「輔助使用」及「輸入監控」。若系統列出 barriers／barrierc，也需允許。
    按「權限設定」可開啟設定；必要時重開程式。
    Windows 防火牆若詢問，允許 barrier-link.exe 和 barriers.exe 使用私人網路。
+
+0.3.6 更新（Windows）
+修正游標跨到另一台時，手稍微往回動就被切回原畫面，造成在兩台邊界來回彈跳。
+現在游標進入另一台時會稍微內縮，刻意往回移動仍會正常切回。修正在主控端，接收端不需更新即可改善。
+Mac 當主控端時需等 Mac 版更新才會套用。
 
 0.3.5 更新（Windows）
 提供單一 EXE 安裝包，安裝到目前使用者的程式資料夾，不需要管理員權限；解除安裝保留配對及設定。

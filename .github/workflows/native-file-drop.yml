@@ -145,7 +145,7 @@ jobs:
           if (-not (Test-Path $compiler)) { throw 'Inno Setup compiler is missing from the Windows image' }
           & $compiler /Qp "/DPackageDir=$PWD\build\package" "/DOutputDir=$PWD\build" "$PWD\tools\native-file-drop\windows-setup.iss"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          & tools/native-file-drop/windows-installer-test.ps1 -InstallerPath "$PWD/build/BarrierShare-Setup-0.3.5-x64.exe" -PackageDir "$PWD/build/package" -TestRoot "$PWD/build/installer-test"
+          & tools/native-file-drop/windows-installer-test.ps1 -InstallerPath "$PWD/build/BarrierShare-Setup-0.3.6-x64.exe" -PackageDir "$PWD/build/package" -TestRoot "$PWD/build/installer-test"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -159,7 +159,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: barriershare-windows-setup
-          path: build/BarrierShare-Setup-0.3.5-x64.exe
+          path: build/BarrierShare-Setup-0.3.6-x64.exe
           if-no-files-found: error
           retention-days: 30
       - uses: actions/upload-artifact@v4

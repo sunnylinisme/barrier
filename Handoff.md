@@ -13,7 +13,7 @@
 
 ## 目前版本
 
-- Windows 0.3.5：單一 EXE 安裝包（per-user，Inno Setup，`windows-setup.iss`）。
+- Windows 0.3.6（含跨畫面彈跳修正）：單一 EXE 安裝包（per-user，Inno Setup，`windows-setup.iss`）。
 - Mac 0.3.4：固定簽章；打包需設定 `BARRIER_CODESIGN_IDENTITY`，更新前用 `verify-macos-update.py` 驗證。
 
 ## 最近的工作
@@ -29,7 +29,7 @@
 
 1. ~~確認 `ec4d8249` 的 CI 通過~~：已通過（run 43144214817，Windows 和 macOS 都成功）。
 2. 實機驗收：Windows → Windows，主控端多螢幕，四個方向都要慢慢貼邊來回移動，確認不再彈跳、刻意切回仍正常。
-3. 通過後發 Windows 0.3.6，並更新 `GUI-README.txt` 的版本紀錄。這次修改在核心，Mac 的 `barriers` 也會受益；如果 Mac 當主控端，需要另外打包 Mac 版。
+3. ~~發 Windows 0.3.6~~：已升版，安裝檔由 CI 產生（artifact `barriershare-windows-setup`）。這次修改在核心，Mac 當主控端時需要另外發 Mac 版才會套用。
 4. 已知限制（見 README）：一次只能連一台、只支援 IPv4 同網段、Mac App 未公證、自動測試不能取代兩台實機的驗收。
 
 ## 開發注意事項
