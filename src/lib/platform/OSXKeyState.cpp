@@ -262,8 +262,12 @@ OSXKeyState::mapKeyFromEvent(KeyIDs& ids,
         return mapVirtualKeyToKeyButton(vkCode);
     }
 
-    // get keyboard info
-    TISInputSourceRef currentKeyboardLayout = TISCopyCurrentKeyboardLayoutInputSource();
+    // get keyboard info. Use the ASCII-capable layout: with an input method such as
+    // Zhuyin the current layout turns letter keys into Bopomofo symbols, which a
+    // Windows screen has no key for, so nothing could be typed there until the
+    // Mac was switched back to ABC. For ASCII layouts (US, French, ...) this is
+    // the same layout as before.
+    TISInputSourceRef currentKeyboardLayout = TISCopyCurrentASCIICapableKeyboardLayoutInputSource();
 
     if (currentKeyboardLayout == NULL) {
         return kKeyNone;
