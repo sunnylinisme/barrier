@@ -236,3 +236,36 @@ jobs:
             gh release create "$mirror" $files --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --latest=false \
               --title "Barrier Share $version（${platform}）" --notes "與 $TAG 相同的版本，供 0.3.8 以前的程式偵測新版。完整說明：$url"
           done
+  test-build:
+    # Every passing Windows build of this repository's PR branch replaces the files of the
+    # "test-build" pre-release, so testers download the installer as an EXE instead of a ZIP
+    # artifact. Pre-releases are skipped by the apps' update notice, so nobody is prompted.
+    if: (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) || (github.event_name == 'workflow_dispatch' && !startsWith(github.ref, 'refs/tags/'))
+    needs: [windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          path: release
+          pattern: '{barriershare-windows-setup,barrier-cross-drop-windows-x64}'
+          merge-multiple: true
+      - name: Replace the test-build pre-release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          version=$(sed -n 's/^#define AppVersion "\(.*\)"/\1/p' tools/native-file-drop/windows-setup.iss)
+          test -f "release/BarrierShare-Setup-$version-x64.exe"
+          mv release/barrier-cross-drop-windows-x64.zip "release/BarrierShare-$version-x64-portable.zip"
+          printf '測試版，不是正式發布：%s（commit %s）。\n\n只給驗收用，程式的新版通知不會提示這個版本。\n- Windows：下載 BarrierShare-Setup-%s-x64.exe 直接執行（安裝版），或可攜 ZIP。\n- Mac 測試版在 Mac 本機用固定簽章建置，不放在這裡。\n\nCI：%s\n' \
+            "$version" "${SHA:0:8}" "$version" "$RUN" > notes.txt
+          gh release delete test-build --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes 2>/dev/null || true
+          gh release create test-build "release/BarrierShare-Setup-$version-x64.exe" "release/BarrierShare-$version-x64-portable.zip" \
+            --repo "$GITHUB_REPOSITORY" --target "$SHA" --prerelease --latest=false \
+            --title "Barrier Share $version 測試版（${SHA:0:8}）" --notes-file notes.txt
