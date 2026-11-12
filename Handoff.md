@@ -65,6 +65,10 @@
   - Mac 用注音等輸入法時，字母鍵被轉成注音符號送出，Windows 打不出字，要按 Caps 切回 ABC 才行。`501810f6` 改用 ASCII 鍵盤配置轉換（`OSXKeyState.cpp`），已在實機確認可直接打字。
   - 剪貼簿被搶：RustDesk 的剪貼簿同步和 Barrier Share 互相搶剪貼簿，Windows 上 ⌘C／⌘V、跨台複製檔案都失效。關掉 RustDesk 後正常。程式沒改；之後可考慮讓主控端在內容和剛收到的相同時不搶擁有權。
   - Mac 鍵盤控制 Windows 時，Command 預設送 Windows 鍵；要用 ⌘C／⌘V 需開「進階設定」的 Ctrl／Command 對調。是否改成 Mac 配 Windows 時預設開啟，尚未決定（配對時目前不知道對方系統）。
+- 2026-11-12 晚間實機驗收（Mac mini 主控端 ↔ Windows 接收端）與修正：
+  - 已確認可用：Mac→Windows 大檔案（577 MB）、傳輸中按 ⌘V 傳完自動貼上（Windows 診斷紀錄有「自動貼上：已送出 Ctrl+V」）、注音輸入打字、只用「排列螢幕」、Mac 主控端快速返回游標落在邊緣。
+  - 修正：同一批檔案沿用 handle 不再重傳（`5c087e08`）；進度小視窗（Mac `f886a6c6`、Windows `599a5c30`）；只有按下貼上才跳窗、傳輸開始先清空接收端剪貼簿（`34dcd2b6`、`8a7f9fe0`）；Mac 主控端游標回到中間（`0601c304`）；服務模式下 Windows→Mac 檔案讀不到 Explorer 剪貼簿，改成平常用使用者 token、只在安全桌面才用 SYSTEM（`abfe3b80`，CI 修正到 `de576954`）。
+  - 待使用者實機測（test-build `de576954`）：服務模式下 Windows→Mac 檔案、Win+L 鎖定後從 Mac 解鎖、UAC 從 Mac 按「是」、登入時自動啟動、手動位址、多台接收端。
 - 0.3.9 尚未發布；發布前需兩台以上實機驗收：多台排列、登入畫面／鎖定畫面／UAC 跨台操作、手動位址跨網段、傳輸進度與取消、登入時自動啟動。
 
 0. 版本號統一：Windows 與 Mac 都在 0.3.8（2026-11-12 以 `windows-v0.3.8`、`mac-v0.3.8` 分開發布，是最後一次分開發布），視窗標題顯示版本（Windows 系統匣提示也會顯示；Mac 新增「關於 Barrier Share」選單）。
