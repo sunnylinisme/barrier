@@ -130,4 +130,11 @@ def run():
         finally:
             if host: host.stop()
             if receiver: receiver.stop()
-if __name__=='__main__': run()
+if __name__=='__main__':
+    try: run()
+    except BaseException as error:
+        # Annotations are readable on the checks page without signing in; logs are not.
+        import traceback
+        where = traceback.extract_tb(error.__traceback__)[-1]
+        print('::error title=LAN discovery test::%s: %s (line %d)' % (type(error).__name__, ' '.join(str(error).split())[:900], where.lineno), flush=True)
+        raise
