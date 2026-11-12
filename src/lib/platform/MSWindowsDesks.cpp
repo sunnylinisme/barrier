@@ -404,7 +404,10 @@ MSWindowsDesks::destroyClass(ATOM windowClass) const
 HWND
 MSWindowsDesks::createWindow(ATOM windowClass, const char* name) const
 {
-    HWND window = CreateWindowEx(WS_EX_TRANSPARENT |
+    // The primary hider must be hit-tested so its blank class cursor is
+    // used: Windows skips WS_EX_TRANSPARENT windows of other threads and
+    // the real cursor then stays visible over the foreground window.
+    HWND window = CreateWindowEx((m_isPrimary ? 0 : WS_EX_TRANSPARENT) |
                                     WS_EX_TOOLWINDOW,
                                 MAKEINTATOM(windowClass),
                                 name,
@@ -553,7 +556,9 @@ MSWindowsDesks::deskLeave(Desk* desk, HKL keyLayout)
         y = m_yCenter;
         w = 1;
         h = 1;
-        SetWindowPos(desk->m_window, HWND_TOP, x, y, w, h,
+        // Stay above windows that become foreground or always-on-top later;
+        // deskEnter's HWND_BOTTOM clears the topmost status again.
+        SetWindowPos(desk->m_window, HWND_TOPMOST, x, y, w, h,
                             SWP_NOACTIVATE | SWP_SHOWWINDOW);
 
         // since we're using low-level hooks, disable the foreground window
