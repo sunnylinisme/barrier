@@ -8,6 +8,7 @@
 #include <iostream>
 #include <stdexcept>
 #include <cstring>
+#include <cstdlib>
 #include <shellapi.h>
 #include <vector>
 #include <algorithm>
@@ -434,6 +435,35 @@ int main(int argc, char** argv)
             }
         }
         pump(500); OleUninitialize(); return 0;
+    }
+    // Host leaves for the receiver and comes straight back COUNT times, with motion still arriving
+    // during the switch. After each return the host cursor must sit near the entry edge: a mouse move
+    // processed late could otherwise warp it to the centre used while the cursor is away.
+    if (argc == 4 && std::strcmp(argv[1], "--fast-return") == 0) {
+        std::string direction = argv[2]; int count = std::atoi(argv[3]);
+        int w = GetSystemMetrics(SM_CXSCREEN), h = GetSystemMetrics(SM_CYSCREEN);
+        int sx = direction == "right" ? 1 : direction == "left" ? -1 : 0, sy = direction == "down" ? 1 : direction == "up" ? -1 : 0;
+        DWORD ax = direction == "right" ? 65535 : direction == "left" ? 0 : 30000, ay = direction == "down" ? 65535 : direction == "up" ? 0 : 30000;
+        // The centre is about half a screen from the edge; anything closer than a quarter counts as the edge.
+        int limit = (sx ? w : h) / 4, worst = 0; bool passed = true;
+        for (int i = 0; i < count && passed; ++i) {
+            mouse_event(MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE, ax, ay, 0, 0); pump(150);
+            for (int k = 0; k < 3; ++k) mouse_event(MOUSEEVENTF_MOVE, static_cast<DWORD>(8 * sx), static_cast<DWORD>(8 * sy), 0, 0);
+            // No pause: the return happens part-way through this burst, the rest lands on the host.
+            for (int k = 0; k < 6; ++k) mouse_event(MOUSEEVENTF_MOVE, static_cast<DWORD>(-24 * sx), static_cast<DWORD>(-24 * sy), 0, 0);
+            pump(150);
+            POINT p = {}; GetCursorPos(&p);
+            int distance = sx > 0 ? w - 1 - p.x : sx < 0 ? p.x : sy > 0 ? h - 1 - p.y : p.y;
+            worst = (std::max)(worst, distance);
+            if (distance > limit) {
+                passed = false;
+                std::cout << "FAIL: return " << (i + 1) << " left the host cursor at " << p.x << "," << p.y << " (" << distance << " px from the " << direction << " edge; centre " << w / 2 << "," << h / 2 << ")\n";
+                saveScreen(L"cursor-fast-return.bmp");
+            }
+        }
+        std::cout << "::notice::fast return " << direction << ": " << count << " returns, farthest " << worst << " px from the edge (limit " << limit << ")\n";
+        if (passed) std::cout << "PASS: " << count << " fast returns kept the host cursor at the " << direction << " edge\n";
+        OleUninitialize(); return passed ? 0 : 1;
     }
     if (argc == 2 && (std::strcmp(argv[1], "--cursor-hidden") == 0 || std::strcmp(argv[1], "--cursor-visible") == 0)) {
         bool wantHidden = std::strcmp(argv[1], "--cursor-hidden") == 0;

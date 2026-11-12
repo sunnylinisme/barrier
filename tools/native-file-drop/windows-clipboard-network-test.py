@@ -86,18 +86,19 @@ class Wire:
             self.send(b"CALV")
         return message
 
-    def drive(self, command):
+    def drive(self, command, counts=None, limit=25):
         # Explorer can take longer than the peer timeout. Keep servicing the wire
         # while its GUI driver runs, exactly as a real peer's event loop would.
+        # With counts, protocol traffic is tallied by code and dropped instead of queued.
         process = subprocess.Popen(command)
-        deadline, next_heartbeat = time.monotonic() + 25, 0
+        deadline, next_heartbeat = time.monotonic() + limit, 0
         old_timeout = self.connection.gettimeout()
         self.connection.settimeout(.1)
         try:
             while process.poll() is None:
                 now = time.monotonic()
                 if now >= deadline:
-                    raise subprocess.TimeoutExpired(command, 25)
+                    raise subprocess.TimeoutExpired(command, limit)
                 if now >= next_heartbeat:
                     self.send(b"CALV"); next_heartbeat = now + 1
                 if self.connection.pending() or select.select([self.connection], [], [], .1)[0]:
@@ -117,6 +118,8 @@ class Wire:
                     assert not (self.expect_no_leave and message == b"COUT"), "Small entry-edge movement switched back before intentional return"
                     if message == b"CALV":
                         if not self.server: self.send(b"CALV")
+                    elif counts is not None:
+                        counts[message[:4]] = counts.get(message[:4], 0) + 1
                     else:
                         assert len(self.pending) < 128, "GUI driver did not consume protocol traffic"
                         self.pending.append(message)
@@ -276,6 +279,11 @@ for role, direction in [(role, d) for role in ["server", "client"] for d in ["ri
                         wire.until(b"COUT")
                         driver("--cursor-visible")
                         driver("--clipboard-paste", destination, expected)
+                        # Fifty quick leave-and-return trips with motion still arriving during the switch;
+                        # the host cursor must come back to the entry edge every time, never the centre.
+                        counts = {}
+                        wire.drive([str(binary / "native-windows-drop-test.exe"), "--fast-return", direction, "50"], counts, 90)
+                        assert counts.get(b"CINN", 0) >= 50 and counts.get(b"COUT", 0) >= 50, "Fast-return trips did not all switch screens: %r" % counts
                     else:
                         wire.send(b"Barrier" + struct.pack("!HH", 1, 6))
                         assert wire.until(b"Barrier").endswith(b"windows")
@@ -297,7 +305,7 @@ for role, direction in [(role, d) for role in ["server", "client"] for d in ["ri
                         assert digest == hashlib.sha256(local_bytes).digest() and size == len(local_bytes)
                     assert (source / name).read_bytes() == local_bytes, "Source file changed"
                     assert (destination / name).read_bytes() == peer_bytes, "Paste contained stale or wrong bytes"
-                    print("PASS: real Windows " + role + " direction=" + direction + ", simulated TLS peer, bidirectional file clipboard, actual Explorer copy/paste, distinct peer bytes and original preserved" + (", native client edge entry/return verified" if role == "client" else ", ordinary edge jitter, hidden host cursor and intentional return verified"))
+                    print("PASS: real Windows " + role + " direction=" + direction + ", simulated TLS peer, bidirectional file clipboard, actual Explorer copy/paste, distinct peer bytes and original preserved" + (", native client edge entry/return verified" if role == "client" else ", ordinary edge jitter, hidden host cursor, intentional return and 50 fast returns to the edge verified"))
         finally:
             if core is not None:
                 if core.poll() is None: core.terminate()
