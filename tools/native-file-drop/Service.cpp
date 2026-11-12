@@ -216,7 +216,12 @@ std::string handle(HANDLE pipe, const std::string& request) {
     if (f[0] != "START" || f.size() != 7 || (f[1] != "host" && f[1] != "receiver")) throw std::runtime_error("Invalid request");
     if (f[6].empty() || f[6].size() > 32 || f[6].find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-") != std::string::npos) throw std::runtime_error("Invalid screen name");
     bool host = f[1] == "host";
-    if (!host && !validIPv4(f[2])) throw std::runtime_error("Invalid host address");
+    // Receiver: the host's IPv4 address, optionally with :port (used by the tests).
+    if (!host) {
+        auto colon = f[2].find(':'); auto port = colon == std::string::npos ? std::string("24800") : f[2].substr(colon + 1);
+        if (!validIPv4(f[2].substr(0, colon)) || port.empty() || port.size() > 5 || port.find_first_not_of("0123456789") != std::string::npos || std::stoi(port) == 0 || std::stoi(port) > 65535)
+            throw std::runtime_error("Invalid host address");
+    }
     auto pem = base64Decode(f[3]), trusted = base64Decode(f[4]), config = base64Decode(f[5]);
     if (pem.find("PRIVATE KEY") == std::string::npos || (host && config.find("section: screens") == std::string::npos)) throw std::runtime_error("Incomplete pairing data");
     Command next; next.host = host; next.address = widen(f[2]); next.name = widen(f[6]); next.sid = clientSid(pipe);

@@ -1,5 +1,6 @@
 """Production Windows server/client + mutual TLS + actual Explorer copy/paste."""
 import hashlib
+import os
 import collections
 import ctypes
 import select
@@ -195,14 +196,37 @@ class Wire:
         raise RuntimeError("Missing streaming file clipboard")
 
 
-for role, direction in [(role, d) for role in ["server", "client"] for d in ["right", "left", "up", "down"]]:
+# On CI one receiver run also goes through barrier-service.exe, which starts the core as SYSTEM
+# with the session's winlogon token, as the installed app does. It must still copy files from Explorer.
+SERVICE_RUN = os.environ.get("GITHUB_ACTIONS") == "true"
+SERVICE_PIPE = r"\\.\pipe\BarrierShare.Service"
+def service(*command):
+    subprocess.run(["sc.exe", *command], check=False, capture_output=True)
+def service_request(*fields):
+    deadline = time.monotonic() + 20
+    while True:
+        try:
+            with open(SERVICE_PIPE, "r+b", buffering=0) as pipe:
+                pipe.write("\t".join(fields).encode()); reply = pipe.read(65536).decode().split("\t")
+                if reply[0] != "OK": raise AssertionError("Service refused " + fields[0] + ": " + " ".join(reply))
+                return reply
+        except FileNotFoundError:
+            if time.monotonic() > deadline: raise
+            time.sleep(.3)
+runs = [(role, d, False) for role in ["server", "client"] for d in ["right", "left", "up", "down"]] + ([("client", "right", True)] if SERVICE_RUN else [])
+if SERVICE_RUN:
+    service("stop", "BarrierShare"); service("delete", "BarrierShare")
+    created = subprocess.run(["sc.exe", "create", "BarrierShare", "binPath=", '"' + str(binary / "barrier-service.exe") + '"', "start=", "demand"], capture_output=True, text=True)
+    assert created.returncode == 0, created.stdout + created.stderr
+    service("start", "BarrierShare")
+for role, direction, via_service in runs:
     with tempfile.TemporaryDirectory(prefix="barrier-clipboard-") as temporary:
         root = pathlib.Path(temporary)
         source, destination = root / "來源", root / "目的地"
         source.mkdir(); destination.mkdir()
         expected = root / "expected.bin"; expected.write_bytes(peer_bytes)
         local_expected = root / "local.bin"; local_expected.write_bytes(local_bytes)
-        core = None
+        core = None; service_log = None
         console = open(root / "console.log", "w", encoding="utf-8")
         try:
             def pair(*args):
@@ -237,7 +261,15 @@ for role, direction in [(role, d) for role in ["server", "client"] for d in ["ri
                     profile = client_profile
                 args[0] = str(binary / args[0])
                 args[1:1] = ["-f", "--no-tray", "--debug", "DEBUG1", "--file-clipboard", "--profile-dir", str(profile), "--log", str(root / "core.log")]
-                core = subprocess.Popen(args, stdout=console, stderr=subprocess.STDOUT)
+                if via_service:
+                    # The pairing identity and trust travel as data, exactly as BarrierShare.exe sends them.
+                    import base64
+                    data = lambda path: base64.b64encode(path.read_bytes()).decode()
+                    reply = service_request("START", "receiver", "127.0.0.1:" + str(port), data(client_profile / "SSL/Barrier.pem"),
+                                            data(client_profile / "SSL/Fingerprints/TrustedServers.txt"), "", "windows")
+                    service_log = pathlib.Path(reply[2])
+                else:
+                    core = subprocess.Popen(args, stdout=console, stderr=subprocess.STDOUT)
                 if role == "server":
                     deadline = time.monotonic() + 15
                     while True:
@@ -310,8 +342,13 @@ for role, direction in [(role, d) for role in ["server", "client"] for d in ["ri
                         assert digest == hashlib.sha256(local_bytes).digest() and size == len(local_bytes)
                     assert (source / name).read_bytes() == local_bytes, "Source file changed"
                     assert (destination / name).read_bytes() == peer_bytes, "Paste contained stale or wrong bytes"
-                    print("PASS: real Windows " + role + " direction=" + direction + ", simulated TLS peer, bidirectional file clipboard, actual Explorer copy/paste, distinct peer bytes and original preserved" + (", native client edge entry/return verified" if role == "client" else ", ordinary edge jitter, hidden host cursor, intentional return and 50 fast returns to the edge verified"))
+                    print("PASS: real Windows " + role + (" started by the service as SYSTEM" if via_service else "") + " direction=" + direction + ", simulated TLS peer, bidirectional file clipboard, actual Explorer copy/paste, distinct peer bytes and original preserved" + (", native client edge entry/return verified" if role == "client" else ", ordinary edge jitter, hidden host cursor, intentional return and 50 fast returns to the edge verified"))
         finally:
+            if via_service:
+                try: service_request("STOP")
+                except Exception as error: print("service stop failed:", error)
+                for path in [locals().get("service_log")] + ([service_log.parent / "service.log"] if locals().get("service_log") else []):
+                    if path and path.exists(): print(path.read_text(errors="replace")[-20000:])
             if core is not None:
                 if core.poll() is None: core.terminate()
                 core.wait(timeout=10)
@@ -319,3 +356,6 @@ for role, direction in [(role, d) for role in ["server", "client"] for d in ["ri
             for filename in ["core.log", "console.log"]:
                 path = root / filename
                 if path.exists(): print(path.read_text(errors="replace"))
+
+if SERVICE_RUN:
+    service("stop", "BarrierShare"); service("delete", "BarrierShare")

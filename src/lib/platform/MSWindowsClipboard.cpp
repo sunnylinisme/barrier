@@ -26,6 +26,8 @@
 #include "platform/MSWindowsClipboardFacade.h"
 #include "arch/win32/ArchMiscWindows.h"
 #include "base/Log.h"
+#include <cstdio>
+#include <string>
 
 //
 // MSWindowsClipboard
@@ -170,6 +172,18 @@ MSWindowsClipboard::has(EFormat format) const
         if (converter->getFormat() == format) {
             if (IsClipboardFormatAvailable(converter->getWin32Format())) {
                 return true;
+            }
+            if (format == kFile) {
+                // Diagnose copies that should carry files: list what the clipboard really
+                // offers and which process owns it (the clipboard is open here).
+                std::string formats; int count = 0;
+                for (UINT id = EnumClipboardFormats(0); id != 0 && count < 24; id = EnumClipboardFormats(id), ++count) {
+                    char name[96] = {};
+                    if (!GetClipboardFormatNameA(id, name, sizeof(name))) snprintf(name, sizeof(name), "#%u", id);
+                    formats += (formats.empty() ? "" : ", ") + std::string(name);
+                }
+                DWORD owner = 0; HWND window = GetClipboardOwner(); if (window) GetWindowThreadProcessId(window, &owner);
+                if (count) LOG((CLOG_INFO "file clipboard: no file list on the clipboard (owner pid %lu; formats: %s)", owner, formats.c_str()));
             }
         }
     }
