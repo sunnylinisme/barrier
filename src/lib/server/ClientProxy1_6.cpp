@@ -44,6 +44,15 @@ ClientProxy1_6::ClientProxy1_6(const std::string& name, barrier::IStream* stream
         auto info = new ClipboardInfo; info->m_id = id; info->m_sequenceNumber = sequence;
         m_events->addEvent(Event(m_events->forClipboard().clipboardChanged(), getEventTarget(), info));
     }, events));
+    // Empty the clipboard while the files arrive, so a paste meanwhile cannot paste older content.
+    m_files->onIncoming([this](ClipboardID id, uint32_t sequence) {
+        auto& target = m_clipboard[id];
+        target.m_clipboard.open(0); target.m_clipboard.empty(); target.m_clipboard.close();
+        target.m_sequenceNumber = sequence;
+        auto info = new ClipboardInfo; info->m_id = id; info->m_sequenceNumber = sequence;
+        m_events->addEvent(Event(m_events->forClipboard().clipboardChanged(), getEventTarget(), info));
+        LOG((CLOG_INFO "file clipboard: cleared local clipboard until the files arrive"));
+    });
     m_events->adoptHandler(m_events->forClipboard().clipboardSending(),
                                 this,
                                 new TMethodEventJob<ClientProxy1_6>(this,

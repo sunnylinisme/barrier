@@ -394,7 +394,7 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
     let autostart = NSButton(checkboxWithTitle: "登入時自動啟動", target: nil, action: nil)
     var transferring = false, progress = ShareProgress()
     lazy var transferPanel = ShareTransferPanel(target: self, cancelAction: #selector(resume))
-    var receiving = false, autoPaste = ShareAutoPaste(), pasteMonitor: Any?
+    var receiving = false, autoPaste = ShareAutoPaste(), pasteMonitor: Any?, lastProgress = ""
     let test: Bool
     init(test: Bool = false) { self.test = test; super.init() }
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -402,8 +402,12 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // ⌘V while files are still arriving: paste them as soon as they are complete.
         pasteMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self = self, self.receiving, event.keyCode == 9, event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command else { return }
-            self.autoPaste.pressed(front: NSWorkspace.shared.frontmostApplication?.processIdentifier)
-            self.transferPanel.note = "（傳完自動貼上）"; self.transferPanel.title.stringValue = "正在接收檔案…（傳完自動貼上）"
+            // The window only appears once the user asks for the files; until then they arrive quietly.
+            if self.autoPaste.target == nil {
+                self.autoPaste.pressed(front: NSWorkspace.shared.frontmostApplication?.processIdentifier)
+                self.transferPanel.begin("正在接收檔案…", showAfter: 0); self.transferPanel.note = "（傳完自動貼上）"
+                self.transferPanel.progress(self.lastProgress.isEmpty ? "正在接收檔案… 準備中" : self.lastProgress)
+            }
         }
     }
     // Sent to the app directly, not through the event tap, so it can never be forwarded to the other computer.
@@ -692,17 +696,17 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         details.string = String((details.string + line + "\n").suffix(20000)); details.scrollToEndOfDocument(nil)
         if line.contains("connected to server") || line.contains("has connected") { status.stringValue = "已連線 · 雙向複製貼上已啟用" }
         let was = transferring
-        if line.contains("file clipboard: sending") { status.stringValue = "正在傳送檔案… 可繼續操作滑鼠與鍵盤"; transferring = true; receiving = false; progress.reset(); transferPanel.begin("正在傳送檔案…") }
-        if line.contains("file clipboard: receiving") { status.stringValue = "正在接收檔案… 完成後即可貼上"; transferring = true; receiving = true; autoPaste.target = nil; progress.reset(); transferPanel.begin("正在接收檔案…") }
-        if let moved = progress.describe(line), transferring { status.stringValue = moved; transferPanel.progress(moved) }
-        if line.contains("file clipboard: sent ") { status.stringValue = "檔案已送出 · 可在另一台貼上"; transferring = false; transferPanel.finish("檔案已送出", detail: "可在另一台貼上") }
+        if line.contains("file clipboard: sending") { status.stringValue = "正在傳送檔案… 可繼續操作滑鼠與鍵盤"; transferring = true; receiving = false; progress.reset() }
+        if line.contains("file clipboard: receiving") { status.stringValue = "正在接收檔案… 完成後即可貼上"; transferring = true; receiving = true; autoPaste.target = nil; lastProgress = ""; progress.reset() }
+        if let moved = progress.describe(line), transferring { status.stringValue = moved; lastProgress = moved; transferPanel.progress(moved) }
+        if line.contains("file clipboard: sent ") { status.stringValue = "檔案已送出 · 可在另一台貼上"; transferring = false }
         if line.contains("received and verified") {
             receiving = false; transferring = false
             if let pid = autoPaste.ready(front: NSWorkspace.shared.frontmostApplication?.processIdentifier) {
                 // The core has already published the files; give the pasteboard a moment before pasting.
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in self?.paste(into: pid) }
                 status.stringValue = "已收到檔案並自動貼上"; transferPanel.finish("已收到檔案", detail: "已自動貼上")
-            } else { status.stringValue = "已收到檔案，可在 Finder 資料夾使用 ⌘V 貼上"; transferPanel.finish("已收到檔案", detail: "可在 Finder 資料夾按 ⌘V 貼上") }
+            } else { status.stringValue = "已收到檔案，可在 Finder 資料夾使用 ⌘V 貼上"; transferPanel.finish("已收到檔案", detail: "請在 Finder 資料夾再按一次 ⌘V") }
         }
         if line.contains("WARNING") && line.contains("file clipboard:") { status.stringValue = "檔案複製未完成；請查看下方原因。"; transferring = false; receiving = false; autoPaste.target = nil; transferPanel.finish("檔案複製未完成", detail: "詳情見「診斷紀錄」") }
         if line.contains("server is dead") || line.contains("disconnected") { status.stringValue = "連線中斷，正在自動重連…"; transferring = false; receiving = false; autoPaste.target = nil; transferPanel.finish("連線中斷", detail: "檔案沒有傳完，請重新複製") }

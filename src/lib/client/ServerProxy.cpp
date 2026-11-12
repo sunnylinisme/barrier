@@ -66,6 +66,11 @@ ServerProxy::ServerProxy(Client* client, barrier::IStream* stream, IEventQueue* 
         Clipboard clipboard; clipboard.open(0); clipboard.add(IClipboard::kFile, handle); clipboard.close();
         m_client->setClipboard(id, &clipboard);
     }, events));
+    m_files->onIncoming([this](ClipboardID id, uint32_t) {
+        Clipboard empty; empty.open(0); empty.empty(); empty.close();
+        m_client->setClipboard(id, &empty);
+        LOG((CLOG_INFO "file clipboard: cleared local clipboard until the files arrive"));
+    });
 
     // initialize modifier translation table
     for (KeyModifierID id = 0; id < kKeyModifierIDLast; ++id)

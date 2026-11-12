@@ -152,13 +152,23 @@ bool AsyncFileClipboardTransfer::receive(const unsigned char* code) {
     if (command == "FCBG") incoming_ = packetId(packet);
     if (command == "FCAB" && incoming_ == packetId(packet)) incoming_ = 0;
     if (command == "FCNO" && outgoing_ == packetId(packet)) outgoing_ = 0;
-    std::lock_guard<std::mutex> lock(state_->mutex);
-    if (!state_->available) {
-        if (command == "FCBG") { std::string reason = "File access is unavailable; restart Barrier Share"; ProtocolUtil::writef(stream_, "FCNO%4i%s", incoming_, &reason); incoming_ = 0; }
-        return true;
+    bool starting = false; ClipboardID clipboard = 0; uint32_t sequence = 0;
+    {
+        std::lock_guard<std::mutex> lock(state_->mutex);
+        if (!state_->available) {
+            if (command == "FCBG") { std::string reason = "File access is unavailable; restart Barrier Share"; ProtocolUtil::writef(stream_, "FCNO%4i%s", incoming_, &reason); incoming_ = 0; }
+            return true;
+        }
+        if (state_->jobs.size() >= queueLimit) return false;
+        if (command == "FCBG" && packet.size() >= 13) {
+            auto p = reinterpret_cast<const unsigned char*>(packet.data());
+            starting = true; clipboard = p[8];
+            sequence = (uint32_t(p[9]) << 24) | (uint32_t(p[10]) << 16) | (uint32_t(p[11]) << 8) | p[12];
+        }
+        state_->jobs.push_back({State::Job::Receive, state_->generation, std::move(packet)}); state_->wake.notify_one();
     }
-    if (state_->jobs.size() >= queueLimit) return false;
-    state_->jobs.push_back({State::Job::Receive, state_->generation, std::move(packet)}); state_->wake.notify_one(); return true;
+    if (starting && started_) started_(clipboard, sequence);
+    return true;
 }
 void AsyncFileClipboardTransfer::ready(const Event&, void*) { poll(); }
 void AsyncFileClipboardTransfer::poll() {

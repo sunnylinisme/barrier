@@ -99,9 +99,15 @@ int main(int argc, char** argv) {
         auto gateA = std::make_shared<Gate>(), gateB = std::make_shared<Gate>();
         auto makeHook = [mainThread](std::shared_ptr<Gate> gate) { return [mainThread, gate] { check(std::this_thread::get_id() != mainThread, "Disk work ran on input thread"); gate->touch(); }; };
         std::unique_ptr<AsyncFileClipboardTransfer> first, second;
+        int startedB = 0; bool startedBeforeData = false;
         auto buildPeers = [&] {
         first = std::make_unique<AsyncFileClipboardTransfer>(&a, [&](ClipboardID id, uint32_t sequence, const std::string& handle) { check(std::this_thread::get_id() == mainThread && id == 0, "Completion left input thread"); atA = handle; sequenceA = sequence; }, &events, root / "cache-a", makeHook(gateA));
         second = std::make_unique<AsyncFileClipboardTransfer>(&b, [&](ClipboardID id, uint32_t sequence, const std::string& handle) { check(std::this_thread::get_id() == mainThread && id == 0, "Completion left input thread"); atB = handle; sequenceB = sequence; }, &events, root / "cache-b", makeHook(gateB));
+        second->onIncoming([&](ClipboardID id, uint32_t sequence) {
+            check(std::this_thread::get_id() == mainThread && id == 0, "Incoming notice left input thread");
+            if (sequence == 42 && atB.empty()) startedBeforeData = true;
+            ++startedB;
+        });
         };
         buildPeers();
         std::string cancelledId;
@@ -125,6 +131,7 @@ int main(int argc, char** argv) {
         };
         first->start(registerClipboardFiles({large, source / "folder"}), 0, 42);
         waitFor([&] { pump(); return !atB.empty(); }, "Async forward transfer did not finish");
+        check(startedB >= 1 && startedBeforeData, "Receiver was not told the transfer began before the files arrived");
         auto received = clipboardFiles(atB);
         check(sequenceB == 42 && received->roots.size() == 2 && sameBytes(large, received->roots[0]), "Forward bytes or sequence differ");
         check(sameBytes(small, received->roots[1] / "small.txt") && fs::is_directory(received->roots[1] / "empty"), "Folder structure differs");
