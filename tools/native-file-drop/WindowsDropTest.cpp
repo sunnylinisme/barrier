@@ -456,8 +456,14 @@ int main(int argc, char** argv)
             int distance = sx > 0 ? w - 1 - p.x : sx < 0 ? p.x : sy > 0 ? h - 1 - p.y : p.y;
             worst = (std::max)(worst, distance);
             if (distance > limit) {
+                // Tell a late return (cursor still parked at the centre while away) from a cursor
+                // that came back and was then pulled to the centre: look again after a pause.
+                pump(800); POINT later = {}; GetCursorPos(&later);
+                int again = sx > 0 ? w - 1 - later.x : sx < 0 ? later.x : sy > 0 ? h - 1 - later.y : later.y;
                 passed = false;
-                std::cout << "FAIL: return " << (i + 1) << " left the host cursor at " << p.x << "," << p.y << " (" << distance << " px from the " << direction << " edge; centre " << w / 2 << "," << h / 2 << ")\n";
+                std::cout << "::error::fast return " << direction << " trip " << (i + 1) << ": host cursor at " << p.x << "," << p.y << " (" << distance
+                          << " px from the edge, centre " << w / 2 << "," << h / 2 << "); 800 ms later " << later.x << "," << later.y << " (" << again << " px)"
+                          << (again <= limit ? " - the return was late, not lost" : " - still away from the edge") << "\n";
                 saveScreen(L"cursor-fast-return.bmp");
             }
         }

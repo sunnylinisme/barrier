@@ -542,7 +542,8 @@ sealed class ShareWindow : Form
             enabled = true; StartLink(); UpdateControls();
         };
         popup = new ShareTransferPopup(Font); popup.CancelRequested += delegate { if (transferring) CancelTransfer(); else popup.Dismiss(); };
-        autoPaste.Requested += delegate { popup.MarkAutoPaste(); status.Text = "正在接收檔案… 傳完會自動貼上"; };
+        // The popup appears only once a paste is pressed while files are still arriving.
+        autoPaste.Requested += delegate { popup.ShowForPaste(); status.Text = "正在接收檔案… 傳完會自動貼上"; };
         autoPaste.Note += Diagnose;
         stop.Click += delegate { enabled = false; StopLink(); StopBackend(); status.Text = "已暫停；不接受邀請，也不會自動重連。"; UpdateControls(); };
         search.Click += delegate { Send("SEARCH"); status.Text = "正在搜尋同一區網的電腦…"; };
@@ -782,11 +783,11 @@ sealed class ShareWindow : Form
         if (details.TextLength > 24000) details.Text = details.Text.Substring(details.TextLength - 12000); details.AppendText(line + Environment.NewLine);
         if (line.Contains("connected to server") || line.Contains("has connected")) status.Text = "已連線 · 雙向複製貼上已啟用";
         bool wasTransferring = transferring;
-        if (line.Contains("file clipboard: sending")) { status.Text = "正在傳送檔案… 可繼續操作滑鼠與鍵盤"; transferring = true; progress.Reset(); popup.Begin(true); }
-        if (line.Contains("file clipboard: receiving")) { status.Text = "正在接收檔案… 完成後即可貼上"; transferring = true; progress.Reset(); popup.Begin(false); if (!testing) autoPaste.Start(); }
+        if (line.Contains("file clipboard: sending")) { status.Text = "正在傳送檔案… 可繼續操作滑鼠與鍵盤"; transferring = true; progress.Reset(); }
+        if (line.Contains("file clipboard: receiving")) { status.Text = "正在接收檔案… 完成後即可貼上"; transferring = true; progress.Reset(); popup.Prepare(); if (!testing) autoPaste.Start(); }
         string moved = progress.Describe(line, DateTime.UtcNow);
         if (moved != null && transferring) { status.Text = moved; int cut = moved.IndexOf("… "); popup.Progress(cut >= 0 ? moved.Substring(cut + 2) : moved); }
-        if (line.Contains("file clipboard: sent ")) { status.Text = "檔案已送出 · 可在另一台貼上"; transferring = false; popup.Finish("檔案已送出", "可在另一台貼上"); }
+        if (line.Contains("file clipboard: sent ")) { status.Text = "檔案已送出 · 可在另一台貼上"; transferring = false; }
         if (line.Contains("received and verified") && line.Contains("clipboard")) {
             transferring = false; autoPaste.Stop(); Diagnose("自動貼上：" + autoPaste.Decision());
             if (autoPaste.Ready()) {
@@ -799,7 +800,12 @@ sealed class ShareWindow : Form
                     autoPaste.Clear();
                 };
                 delay.Start();
-            } else { autoPaste.Clear(); status.Text = "已收到檔案，可在資料夾 Ctrl+V 貼上"; popup.Finish("已收到檔案", "可在檔案總管資料夾按 Ctrl+V 貼上"); }
+            } else {
+                // A paste pressed in another window is not repeated; without any paste the popup never appeared.
+                bool asked = autoPaste.Target != IntPtr.Zero; autoPaste.Clear();
+                status.Text = "已收到檔案，可在資料夾按 Ctrl+V（Mac 鍵盤按 ⌘V）貼上";
+                if (asked) popup.Finish("已收到檔案", "請在資料夾再按一次 Ctrl+V（Mac 鍵盤按 ⌘V）"); else popup.Dismiss();
+            }
         }
         if (line.Contains("WARNING") && line.Contains("file clipboard:")) { status.Text = "檔案複製未完成；請查看診斷紀錄。"; transferring = false; autoPaste.Clear(); popup.Finish("檔案複製未完成", "詳情見「診斷紀錄」"); }
         if (line.Contains("disconnected") || line.Contains("server is dead")) {
@@ -1110,10 +1116,14 @@ sealed class ShareTransferPopup : Form
     void ShowQuietly() { Place(); Show(); SetWindowPos(Handle, new IntPtr(-1) /* HWND_TOPMOST */, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010); }
     internal bool Topmost { get { return IsHandleCreated && (GetWindowLong(Handle, -20 /* GWL_EXSTYLE */) & 0x8) != 0; } }
     // A transfer started; the window appears only if it is still running a second later.
+    // Receiving started: ready the popup without showing it.
+    public void Prepare() { Begin(false); }
+    // A paste was pressed while receiving: show at once with the latest progress.
+    public void ShowForPaste() { MarkAutoPaste(); if (!Visible) ShowQuietly(); }
     public void Begin(bool sending)
     {
         closeTimer.Stop(); title.Text = sending ? "正在傳送檔案…" : "正在接收檔案…"; detail.Text = sending ? "準備中" : "準備中";
-        bar.Visible = cancel.Visible = true; if (!Visible) showTimer.Start();
+        bar.Visible = cancel.Visible = true;
     }
     public void Progress(string text) { detail.Text = text; }
     // The title keeps this note for the rest of the transfer; Begin starts without it.
@@ -1363,11 +1373,16 @@ static class ShareProgram
                     transfer.ShowNow(); transfer.Progress("已收 3.0 MB · 1.4 MB/s"); Application.DoEvents();
                     if (!transfer.Visible || !transfer.Busy || transfer.Heading != "正在接收檔案…" || transfer.Detail != "已收 3.0 MB · 1.4 MB/s" || !transfer.Topmost || transfer.ShowInTaskbar || Form.ActiveForm == transfer) throw new Exception("Transfer window progress state wrong (or it took the focus)");
                     using (var bitmap = new Bitmap(transfer.Width, transfer.Height)) { transfer.DrawToBitmap(bitmap, new Rectangle(Point.Empty, transfer.Size)); bitmap.Save(Path.Combine(directory, "gui-transfer.png")); }
-                    transfer.Finish("已收到檔案", "可在檔案總管資料夾按 Ctrl+V 貼上"); Application.DoEvents();
+                    transfer.Finish("已收到檔案", "已自動貼上"); Application.DoEvents();
                     if (!transfer.Visible || transfer.Busy || transfer.Heading != "已收到檔案") throw new Exception("Transfer window result state wrong");
                     using (var bitmap = new Bitmap(transfer.Width, transfer.Height)) { transfer.DrawToBitmap(bitmap, new Rectangle(Point.Empty, transfer.Size)); bitmap.Save(Path.Combine(directory, "gui-transfer-done.png")); }
                     transfer.Begin(false); transfer.MarkAutoPaste(); transfer.Progress("已收 4.0 MB"); transfer.MarkAutoPaste();
                     if (transfer.Heading != "正在接收檔案…（傳完自動貼上）") throw new Exception("Auto-paste note missing or repeated: " + transfer.Heading);
+                    // Receiving alone never shows the popup; a paste shows it at once with the latest progress.
+                    transfer.Dismiss(); transfer.Prepare(); transfer.Progress("已收 5.0 MB · 2.0 MB/s"); Application.DoEvents();
+                    if (transfer.Visible) throw new Exception("Transfer popup shown without a paste");
+                    transfer.ShowForPaste(); Application.DoEvents();
+                    if (!transfer.Visible || transfer.Heading != "正在接收檔案…（傳完自動貼上）" || transfer.Detail != "已收 5.0 MB · 2.0 MB/s") throw new Exception("Paste did not show the popup with the latest progress");
                     transfer.Dismiss(); transfer.Begin(true); transfer.Finish("檔案已送出", "可在另一台貼上"); Application.DoEvents();
                     if (transfer.Visible) throw new Exception("Result shown for a transfer whose window never appeared");
                 }

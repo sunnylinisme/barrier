@@ -282,7 +282,12 @@ for role, direction in [(role, d) for role in ["server", "client"] for d in ["ri
                         # Fifty quick leave-and-return trips with motion still arriving during the switch;
                         # the host cursor must come back to the entry edge every time, never the centre.
                         counts = {}
-                        wire.drive([str(binary / "native-windows-drop-test.exe"), "--fast-return", direction, "50"], counts, 90)
+                        try:
+                            wire.drive([str(binary / "native-windows-drop-test.exe"), "--fast-return", direction, "50"], counts, 90)
+                        except subprocess.CalledProcessError:
+                            # How many trips the host really made tells a lost switch from a late one.
+                            print("::error::fast return %s: screen switches seen by the receiver %r" % (direction, {k.decode(): v for k, v in counts.items()}), flush=True)
+                            raise
                         assert counts.get(b"CINN", 0) >= 50 and counts.get(b"COUT", 0) >= 50, "Fast-return trips did not all switch screens: %r" % counts
                     else:
                         wire.send(b"Barrier" + struct.pack("!HH", 1, 6))
