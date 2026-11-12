@@ -34,6 +34,7 @@ static void nonblocking(Socket s) { u_long value = 1; if (ioctlsocket(s, FIONBIO
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <arpa/inet.h>
+#include <netdb.h>
 #include <unistd.h>
 #include <fcntl.h>
 #include <ifaddrs.h>
@@ -94,6 +95,8 @@ struct State {
     std::atomic<bool> stopping{false}, busy{false}, search{true};
     std::mutex mutex; std::map<std::string, Peer> devices; Peer saved, requested;
     bool request = false; std::string approvalId; int decision = 0; unsigned generation = 0;
+    // Addresses or names outside the local broadcast domain (other subnets, VPN) that are searched directly.
+    std::vector<std::string> targets; bool targetsChanged = false;
     fs::path trustPath() const { return profile / "SSL" / "Fingerprints" / (host ? "TrustedClients.txt" : "TrustedServers.txt"); }
 };
 static void atomicWrite(const fs::path& path, const std::string& value) {
@@ -235,6 +238,22 @@ static void runSession(State& state, SSL_CTX* context, Socket accepted, Peer pee
     { std::lock_guard<std::mutex> lock(state.mutex); state.approvalId.clear(); state.decision = 0; }
     state.busy = false;
 }
+static bool validTarget(const std::string& value) {
+    return !value.empty() && value.size() <= 253 && std::all_of(value.begin(), value.end(), [](char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '.' || c == '-'; });
+}
+// IPv4 literals pass through; names are resolved (IPv4 only). Unresolvable names are skipped.
+static std::vector<std::string> resolveTargets(const std::vector<std::string>& targets) {
+    std::vector<std::string> result;
+    for (const auto& target : targets) {
+        in_addr literal{};
+        if (inet_pton(AF_INET, target.c_str(), &literal) == 1) { result.push_back(target); continue; }
+        addrinfo hints{}, *found = nullptr; hints.ai_family = AF_INET; hints.ai_socktype = SOCK_DGRAM;
+        if (getaddrinfo(target.c_str(), nullptr, &hints, &found) != 0) continue;
+        for (auto item = found; item; item = item->ai_next) result.push_back(addressOf(*reinterpret_cast<sockaddr_in*>(item->ai_addr)));
+        freeaddrinfo(found);
+    }
+    return result;
+}
 static std::vector<std::string> broadcastAddresses() {
     std::vector<std::string> result{"255.255.255.255"};
 #if SYSAPI_WIN32
@@ -275,7 +294,8 @@ static void network(State& state, const std::string& testTarget) {
         auto local = endpoint(testTarget.empty() ? "0.0.0.0" : "127.0.0.1", state.port);
         require(bind(udp.value, reinterpret_cast<sockaddr*>(&local), sizeof(local)) == 0 && bind(listener.value, reinterpret_cast<sockaddr*>(&local), sizeof(local)) == 0 && listen(listener.value, 4) == 0, "Discovery port is busy; close the other Barrier Share window");
         nonblocking(udp.value); nonblocking(listener.value);
-        auto lastSearch = Clock::time_point{}, lastResume = Clock::time_point{}, lastInvitation = Clock::time_point{}; std::string query;
+        auto lastSearch = Clock::time_point{}, lastResume = Clock::time_point{}, lastInvitation = Clock::time_point{}, lastResolve = Clock::time_point{}; std::string query;
+        std::vector<std::string> direct;
         auto launch = [&](Socket accepted, Peer peer, bool automatic) {
             if (state.busy.exchange(true)) { if (accepted != invalidSocket) closeSocket(accepted); return; }
             if (worker.joinable()) worker.join();
@@ -287,6 +307,11 @@ static void network(State& state, const std::string& testTarget) {
             if (state.search.exchange(false) || now - lastSearch > std::chrono::seconds(3)) {
                 lastSearch = now; query = nonce(); auto message = "BSEARCH1\t" + query;
                 auto targets = testTarget.empty() ? broadcastAddresses() : std::vector<std::string>{"127.0.0.1"};
+                { std::vector<std::string> names; bool changed;
+                  { std::lock_guard<std::mutex> lock(state.mutex); names = state.targets; changed = state.targetsChanged; state.targetsChanged = false; }
+                  // Names are looked up at most every 30 seconds so a slow DNS answer cannot stall discovery.
+                  if (changed || now - lastResolve > std::chrono::seconds(30)) { lastResolve = now; direct = resolveTargets(names); } }
+                if (testTarget.empty()) targets.insert(targets.end(), direct.begin(), direct.end());
                 unsigned port = testTarget.empty() ? 24801 : static_cast<unsigned>(std::stoul(testTarget));
                 for (const auto& ip : targets) { auto target = endpoint(ip, port); sendto(udp.value, message.data(), static_cast<int>(message.size()), 0, reinterpret_cast<sockaddr*>(&target), sizeof(target)); }
             }
@@ -370,6 +395,13 @@ int main(int argc, char** argv) {
             try {
                 if (f[0] == "QUIT") break;
                 if (f[0] == "SEARCH") state.search = true;
+                else if (f.size() == 2 && f[0] == "TARGETS") {
+                    std::vector<std::string> list; std::stringstream items(f[1]); std::string item;
+                    while (std::getline(items, item, ',')) { if (item.empty()) continue; require(validTarget(item), "Enter an IPv4 address or computer name"); list.push_back(item); }
+                    require(list.size() <= 16, "Enter at most 16 addresses");
+                    { std::lock_guard<std::mutex> lock(state.mutex); state.targets = list; state.targetsChanged = true; }
+                    state.search = true;
+                }
                 else if (f.size() == 2 && f[0] == "PAIR") {
                     std::lock_guard<std::mutex> lock(state.mutex); require(state.host, "Select the receiver from the host computer"); require(!state.busy && !state.request, "Another invitation is in progress");
                     auto found = state.devices.find(f[1]); require(found != state.devices.end(), "Computer is offline; search again"); state.requested = found->second; state.request = true;

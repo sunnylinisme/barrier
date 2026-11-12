@@ -60,21 +60,23 @@ static class ShareSettings
     public static void Save(bool host, string address)
     {
         Directory.CreateDirectory(Root);
-        var document = new XDocument(new XElement("settings", new XAttribute("host", host), new XAttribute("address", address), new XAttribute("position", Position)));
+        var document = new XDocument(new XElement("settings", new XAttribute("host", host), new XAttribute("address", address), new XAttribute("position", Position), Advanced.ToXml()));
         string path = Path.Combine(Root, "settings.xml"), temporary = path + ".new";
         document.Save(temporary);
         if (File.Exists(path)) File.Replace(temporary, path, null); else File.Move(temporary, path);
     }
     public static void Load(out bool host, out string address)
     {
-        host = true; address = ""; Position = "right";
+        host = true; address = ""; Position = "right"; Advanced = new ShareAdvanced();
         string path = Path.Combine(Root, "settings.xml");
         if (!File.Exists(path)) return;
         var root = XDocument.Load(path).Root;
         host = (bool)root.Attribute("host"); address = (string)root.Attribute("address") ?? "";
         string position = (string)root.Attribute("position");
         Position = Directions.Contains(position) ? position : "right";
+        Advanced = ShareAdvanced.FromXml(root.Element("advanced"));
     }
+    public static ShareAdvanced Advanced = new ShareAdvanced();
     static void CopyTree(string source, string target)
     {
         Directory.CreateDirectory(target);
@@ -119,7 +121,19 @@ static class ShareSettings
     {
         if (!Directions.Contains(Position)) throw new IOException("請選擇有效的螢幕位置。");
         string opposite = new[] { "left", "right", "down", "up" }[Array.IndexOf(Directions, Position)];
-        return ("section: screens\n windows-host:\n windows:\nend\nsection: links\n windows-host:\n  right = windows\n windows:\n  left = windows-host\nend\nsection: options\n clipboardSharing = " + (clipboard ? "true" : "false") + "\n" + Hotkeys(Position, opposite) + "end\n").Replace("right = windows", Position + " = windows").Replace("left = windows-host", opposite + " = windows-host");
+        var a = Advanced; var b = new StringBuilder("section: screens\n windows-host:\n windows:\n");
+        // Swap on the receiving screen: Ctrl acts as Command/Windows there and the other way round.
+        if (a.SwapModifiers) b.Append("  ctrl = super\n  super = ctrl\n");
+        b.Append("end\nsection: links\n windows-host:\n  " + Position + " = windows\n windows:\n  " + opposite + " = windows-host\nend\nsection: options\n clipboardSharing = " + (clipboard ? "true" : "false") + "\n");
+        if (a.SwitchDelay > 0) b.Append(" switchDelay = " + a.SwitchDelay + "\n");
+        if (a.DoubleTap > 0) b.Append(" switchDoubleTap = " + a.DoubleTap + "\n");
+        if (a.Corners) b.Append(" switchCorners = all\n switchCornerSize = " + a.CornerSize + "\n");
+        if (a.RelativeMouse) b.Append(" relativeMouseMoves = true\n");
+        b.Append(" screenSaverSync = " + (a.ScreenSaver ? "true" : "false") + "\n");
+        if (a.SwitchKeys) b.Append(Hotkeys(Position, opposite));
+        if (a.LockKey) b.Append(" keystroke(Control+Alt+L) = lockCursorToScreen(toggle)\n");
+        foreach (string line in a.ExtraLines()) b.Append(" " + line + "\n");
+        return b.Append("end\n").ToString();
     }
     // Ctrl+Alt+arrow toward the other screen switches without reaching the edge; only the configured axis is bound.
     public static string Hotkeys(string direction, string opposite)
@@ -179,6 +193,50 @@ static class ShareUpdate
         request.UserAgent = "BarrierShare-UpdateCheck"; request.Accept = "application/vnd.github+json"; request.Timeout = 15000;
         using (var response = request.GetResponse()) using (var reader = new StreamReader(response.GetResponseStream(), Encoding.UTF8))
             return Newer(reader.ReadToEnd(), Current);
+    }
+}
+
+// Host-side Barrier options from the advanced settings dialog; saved in settings.xml.
+sealed class ShareAdvanced
+{
+    public int SwitchDelay, DoubleTap, CornerSize = 16;
+    public bool Corners, SwapModifiers, RelativeMouse, ScreenSaver = true, SwitchKeys = true, LockKey;
+    public string Extra = "", Targets = "";
+    static int Clamp(int value, int max) { return Math.Max(0, Math.Min(max, value)); }
+    public XElement ToXml()
+    {
+        return new XElement("advanced", new XAttribute("switchDelay", SwitchDelay), new XAttribute("doubleTap", DoubleTap), new XAttribute("corners", Corners), new XAttribute("cornerSize", CornerSize),
+            new XAttribute("swapModifiers", SwapModifiers), new XAttribute("relativeMouse", RelativeMouse), new XAttribute("screenSaver", ScreenSaver), new XAttribute("switchKeys", SwitchKeys),
+            new XAttribute("lockKey", LockKey), new XAttribute("targets", Targets), new XElement("extra", Extra));
+    }
+    public static ShareAdvanced FromXml(XElement e)
+    {
+        var a = new ShareAdvanced(); if (e == null) return a;
+        Func<string, int, int> number = (name, fallback) => { int v; return Int32.TryParse((string)e.Attribute(name), out v) ? v : fallback; };
+        Func<string, bool, bool> flag = (name, fallback) => { bool v; return Boolean.TryParse((string)e.Attribute(name), out v) ? v : fallback; };
+        a.SwitchDelay = Clamp(number("switchDelay", 0), 5000); a.DoubleTap = Clamp(number("doubleTap", 0), 2000); a.CornerSize = Clamp(number("cornerSize", 16), 500);
+        a.Corners = flag("corners", false); a.SwapModifiers = flag("swapModifiers", false); a.RelativeMouse = flag("relativeMouse", false);
+        a.ScreenSaver = flag("screenSaver", true); a.SwitchKeys = flag("switchKeys", true); a.LockKey = flag("lockKey", false);
+        a.Targets = (string)e.Attribute("targets") ?? ""; a.Extra = (string)e.Element("extra") ?? "";
+        return a;
+    }
+    // Extra lines go into the options section; section boundaries would break the generated file.
+    public IEnumerable<string> ExtraLines()
+    {
+        foreach (string raw in (Extra ?? "").Replace("\r", "").Split('\n')) {
+            string line = raw.Trim();
+            if (line.Length == 0 || line.StartsWith("#")) continue;
+            if (line.StartsWith("section", StringComparison.OrdinalIgnoreCase) || line.Equals("end", StringComparison.OrdinalIgnoreCase)) throw new IOException("額外設定不可包含 section 或 end：" + line);
+            yield return line;
+        }
+    }
+    // Comma separated IPv4 addresses or computer names outside the local network.
+    public string TargetList()
+    {
+        var items = (Targets ?? "").Split(new[] { ',', ' ', ';', '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+        foreach (string item in items) if (item.Length > 253 || !Regex.IsMatch(item, "^[A-Za-z0-9.-]+$")) throw new IOException("請輸入 IPv4 位址或電腦名稱，以逗號分隔：" + item);
+        if (items.Length > 16) throw new IOException("最多輸入 16 個位址。");
+        return String.Join(",", items);
     }
 }
 
@@ -391,7 +449,7 @@ sealed class ShareWindow : Form
         autostart.Text="登入時自動啟動"; autostart.BackColor=ShareStyle.Background; autostart.Font=new Font(Font.FontFamily,10F); autostart.TabIndex=5; At(autostart,272,602,170,36);
         try { autostart.Checked = !selfTest && ShareLogin.Enabled; } catch (Exception) { }
         autostart.CheckedChanged += delegate { if (!testing) try { ShareLogin.Enabled = autostart.Checked; } catch (Exception e) { Error(e); } };
-        At(new Label { Text="複製 → 換台 → 貼上", ForeColor=ShareStyle.Muted, Font=new Font(Font.FontFamily,10F), TextAlign=ContentAlignment.MiddleRight },448,602,196,36);
+        var advancedButton = new ShareButton { Text="進階設定", BackColor=ShareStyle.Background, Font=new Font(Font.FontFamily,10F), TabIndex=6 }; At(advancedButton,524,602,120,36); advancedButton.Click += delegate { ShowAdvanced(); };
         details.Multiline=true; details.ReadOnly=true; details.ScrollBars=ScrollBars.Vertical; details.Font=new Font("Consolas",9F); details.BackColor=Color.FromArgb(249,251,255); details.BorderStyle=BorderStyle.None;
         var menu = new ContextMenuStrip(); menu.Items.Add("開啟視窗", null, delegate { Show(); WindowState = FormWindowState.Normal; Activate(); });
         menu.Items.Add("結束", null, delegate { closing = true; Close(); }); tray.Icon = Icon; tray.Text = "Barrier Share " + ShareUpdate.Current; tray.ContextMenuStrip = menu; tray.Visible = !testing;
@@ -547,7 +605,7 @@ sealed class ShareWindow : Form
     void LinkLine(string line)
     {
         string[] f = line.Split('\t');
-        if (f[0] == "READY") { LogLine("區網搜尋已啟動 · UDP/TCP 24801"); discoveryReady = true; status.Text = Host ? "正在搜尋接收端…" : "可被搜尋，等待主控端邀請…"; }
+        if (f[0] == "READY") { LogLine("區網搜尋已啟動 · UDP/TCP 24801"); discoveryReady = true; SendTargets(); status.Text = Host ? "正在搜尋接收端…" : "可被搜尋，等待主控端邀請…"; }
         else if (f[0] == "DEVICE" && f.Length == 6) {
             NearbyDevice device; string selected = nearby.SelectedItem is NearbyDevice ? ((NearbyDevice)nearby.SelectedItem).Fingerprint : "";
             if (!devices.TryGetValue(f[1], out device)) { device = new NearbyDevice { Fingerprint = f[1] }; devices[f[1]] = device; }
@@ -685,6 +743,55 @@ sealed class ShareWindow : Form
         using (var graphics = CreateGraphics()) File.WriteAllText(Path.Combine(directory, "LAYOUT-PASS.txt"),
             "Empty, available, long-name, receiver and paused states rendered; accessible native selectors fit their cards with no visible sibling overlap. Actual render DPI: " + graphics.DpiX + " x " + graphics.DpiY + ". No simulated or physical multi-DPI claim.");
     }
+    void SendTargets() { try { string list = ShareSettings.Advanced.TargetList(); if (list.Length > 0 || link != null) Send("TARGETS\t" + list); } catch (Exception e) { Error(e); } }
+    // Host-side Barrier options plus direct addresses for computers on another subnet or VPN.
+    internal Form BuildAdvanced(ShareAdvanced a, out Func<ShareAdvanced> read)
+    {
+        var dialog = new Form { Text = "進階設定", ClientSize = new Size(560, 600), BackColor = Color.White, ForeColor = ShareStyle.Ink, Font = new Font(Font.FontFamily, 10F), FormBorderStyle = FormBorderStyle.FixedDialog, StartPosition = FormStartPosition.CenterParent, MaximizeBox = false, MinimizeBox = false, AutoScaleDimensions = new SizeF(96F, 96F), AutoScaleMode = AutoScaleMode.Dpi };
+        int y = 18;
+        Func<string, Label> note = text => { var l = new Label { Text = text, ForeColor = ShareStyle.Muted, Bounds = new Rectangle(24, y, 512, 24) }; dialog.Controls.Add(l); y += 28; return l; };
+        Func<string, bool, CheckBox> check = (text, value) => { var c = new CheckBox { Text = text, Checked = value, Bounds = new Rectangle(24, y, 512, 28) }; dialog.Controls.Add(c); y += 32; return c; };
+        Func<string, int, int, NumericUpDown> number = (text, value, max) => {
+            dialog.Controls.Add(new Label { Text = text, Bounds = new Rectangle(24, y + 3, 380, 26) });
+            var n = new NumericUpDown { Minimum = 0, Maximum = max, Value = Math.Min(max, Math.Max(0, value)), Increment = 50, Bounds = new Rectangle(416, y, 120, 28) }; dialog.Controls.Add(n); y += 36; return n;
+        };
+        note(Host ? "以下切換設定由這台（主控端）套用到兩台。" : "切換設定只在主控端生效；這台目前是接收端。");
+        var delay = number("游標停在邊緣多久才切換（毫秒，0 = 立即）", a.SwitchDelay, 5000);
+        var tap = number("輕敲兩下邊緣才切換（兩次間隔毫秒，0 = 關閉）", a.DoubleTap, 2000);
+        var corners = check("螢幕四個角落不切換", a.Corners);
+        var cornerSize = number("　角落範圍（像素）", a.CornerSize, 500); cornerSize.Increment = 4;
+        var swap = check("接收端的 Ctrl 與 Command／Windows 鍵對調（Mac 與 Windows 混用時）", a.SwapModifiers);
+        var relative = check("相對滑鼠移動（全螢幕遊戲用）", a.RelativeMouse);
+        var saver = check("螢幕保護程式同步", a.ScreenSaver);
+        var keys = check("Ctrl+Alt+方向鍵切換到另一台", a.SwitchKeys);
+        var lockKey = check("Ctrl+Alt+L 把游標鎖在目前這台（再按一次解除）", a.LockKey);
+        dialog.Controls.Add(new Label { Text = "其他網段或 VPN 的電腦（IP 或名稱，以逗號分隔）", Bounds = new Rectangle(24, y, 512, 24) }); y += 26;
+        var targets = new TextBox { Text = a.Targets, Bounds = new Rectangle(24, y, 512, 28), AccessibleName = "其他網段的電腦" }; dialog.Controls.Add(targets); y += 38;
+        dialog.Controls.Add(new Label { Text = "額外設定（Barrier 設定檔 options 語法，例如自訂快捷鍵）", Bounds = new Rectangle(24, y, 512, 24) }); y += 26;
+        var extra = new TextBox { Text = a.Extra, Multiline = true, ScrollBars = ScrollBars.Vertical, Font = new Font("Consolas", 9.5F), Bounds = new Rectangle(24, y, 512, 70), AccessibleName = "額外設定" }; dialog.Controls.Add(extra); y += 80;
+        var cancel = new ShareButton { Text = "取消", BackColor = Color.White, Bounds = new Rectangle(24, y, 140, 38), DialogResult = DialogResult.Cancel };
+        var ok = new ShareButton { Text = "儲存並套用", Primary = true, BackColor = Color.White, Bounds = new Rectangle(176, y, 360, 38) };
+        dialog.Controls.AddRange(new Control[] { cancel, ok }); dialog.CancelButton = cancel; dialog.ClientSize = new Size(560, y + 56);
+        read = () => new ShareAdvanced { SwitchDelay = (int)delay.Value, DoubleTap = (int)tap.Value, Corners = corners.Checked, CornerSize = (int)cornerSize.Value, SwapModifiers = swap.Checked,
+            RelativeMouse = relative.Checked, ScreenSaver = saver.Checked, SwitchKeys = keys.Checked, LockKey = lockKey.Checked, Targets = targets.Text.Trim(), Extra = extra.Text };
+        var reader = read;
+        ok.Click += delegate {
+            try { var value = reader(); value.TargetList(); value.ExtraLines().ToList(); dialog.DialogResult = DialogResult.OK; }
+            catch (IOException e) { MessageBox.Show(dialog, e.Message, "進階設定"); }
+        };
+        return dialog;
+    }
+    void ShowAdvanced()
+    {
+        Func<ShareAdvanced> read;
+        using (var dialog = BuildAdvanced(ShareSettings.Advanced, out read)) {
+            if (dialog.ShowDialog(this) != DialogResult.OK) return;
+            ShareSettings.Advanced = read(); Save(); SendTargets();
+            // The host core reads options at start; the saved pairing reconnects it right away.
+            if (Host && backend != null) StopBackend();
+            status.Text = "已儲存進階設定。";
+        }
+    }
     void ClearCache()
     {
         if (MessageBox.Show(this, "清除尚未貼上的接收檔案暫存？已貼出的檔案不受影響。", "清除暫存", MessageBoxButtons.OKCancel) != DialogResult.OK) return;
@@ -766,6 +873,21 @@ static class ShareProgram
                 ShareLogin.Enabled = false;
                 if (ShareLogin.Enabled) throw new Exception("Launch-at-login entry not removed");
             } finally { ShareLogin.Enabled = false; ShareLogin.Name = "BarrierShare"; }
+            // Every advanced option at once; the hidden backend below must accept the resulting file.
+            ShareSettings.Advanced = new ShareAdvanced { SwitchDelay = 250, DoubleTap = 300, Corners = true, CornerSize = 24, SwapModifiers = true, RelativeMouse = true, ScreenSaver = false, SwitchKeys = true, LockKey = true,
+                Targets = "10.8.0.5, office-pc.local", Extra = "# comment\r\nkeystroke(Control+Alt+F12) = switchToScreen(windows)\r\n" };
+            string full = ShareSettings.Config(true);
+            foreach (string expected in new[] { " windows:\n  ctrl = super\n  super = ctrl\n", " switchDelay = 250\n", " switchDoubleTap = 300\n", " switchCorners = all\n switchCornerSize = 24\n", " relativeMouseMoves = true\n", " screenSaverSync = false\n", " keystroke(Control+Alt+L) = lockCursorToScreen(toggle)\n", " keystroke(Control+Alt+F12) = switchToScreen(windows)\nend\n" })
+                if (!full.Contains(expected)) throw new Exception("Advanced option missing from config: " + expected.Trim() + "\n" + full);
+            if (full.Contains("# comment") || ShareSettings.Advanced.TargetList() != "10.8.0.5,office-pc.local") throw new Exception("Advanced extras were not normalized");
+            ShareSettings.Save(true, ""); var savedAdvanced = ShareSettings.Advanced; ShareSettings.Load(out host, out address);
+            if (ShareSettings.Advanced.SwitchDelay != 250 || !ShareSettings.Advanced.LockKey || ShareSettings.Advanced.ScreenSaver || ShareSettings.Advanced.Extra != savedAdvanced.Extra.Replace("\r\n", "\n") && ShareSettings.Advanced.Extra != savedAdvanced.Extra) throw new Exception("Advanced settings roundtrip failed");
+            foreach (string bad in new[] { "end", "section: links" }) {
+                bool refused = false; try { new ShareAdvanced { Extra = bad }.ExtraLines().ToList(); } catch (IOException) { refused = true; }
+                if (!refused) throw new Exception("Section boundary accepted in extra settings: " + bad);
+            }
+            bool badTarget = false; try { new ShareAdvanced { Targets = "1.2.3.4 & calc" }.TargetList(); } catch (IOException) { badTarget = true; }
+            if (!badTarget) throw new Exception("Invalid direct address accepted");
             using (var core = Process.Start(ShareSettings.Backend(true, ""))) {
                 Thread.Sleep(1500);
                 if (core.HasExited) throw new Exception("Hidden backend failed: " + core.StandardError.ReadToEnd());
@@ -788,6 +910,18 @@ static class ShareProgram
                 window.Show(); Application.DoEvents(); window.TestDiscovery(directory);
                 window.ShowUpdate(found); Application.DoEvents();
                 using (var bitmap = new Bitmap(window.Width, window.Height)) { window.DrawToBitmap(bitmap, new Rectangle(Point.Empty, window.Size)); bitmap.Save(Path.Combine(directory, "gui-update.png")); }
+                Func<ShareAdvanced> readAdvanced;
+                using (var advanced = window.BuildAdvanced(ShareSettings.Advanced, out readAdvanced)) {
+                    advanced.Show(); Application.DoEvents();
+                    var shown = advanced.Controls.Cast<Control>().ToArray();
+                    for (int i = 0; i < shown.Length; ++i) {
+                        if (!advanced.ClientRectangle.Contains(shown[i].Bounds)) throw new Exception("Advanced dialog clips: " + shown[i].Text);
+                        for (int j = i + 1; j < shown.Length; ++j) if (shown[i].Bounds.IntersectsWith(shown[j].Bounds)) throw new Exception("Advanced dialog overlaps: " + shown[i].Text + " / " + shown[j].Text);
+                    }
+                    if (readAdvanced().SwitchDelay != 250 || !readAdvanced().SwapModifiers) throw new Exception("Advanced dialog lost values");
+                    using (var bitmap = new Bitmap(advanced.Width, advanced.Height)) { advanced.DrawToBitmap(bitmap, new Rectangle(Point.Empty, advanced.Size)); bitmap.Save(Path.Combine(directory, "gui-advanced.png")); }
+                    advanced.Close();
+                }
                 window.ShowUpdate(null);
                 using (var bitmap = new Bitmap(window.Width, window.Height)) { window.DrawToBitmap(bitmap, new Rectangle(Point.Empty, window.Size)); bitmap.Save(Path.Combine(directory, "gui.png")); }
                 window.Close();
