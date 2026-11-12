@@ -60,6 +60,10 @@
 
 - ~~【Mac session 先做】0.3.9 的 Mac 程式還沒編譯過~~：已完成（2026-11-12，Mac mini，Apple Silicon，`22c7b38a`）。照上面的指令（另加 `-DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DCMAKE_OSX_DEPLOYMENT_TARGET=15.0 -DCMAKE_OSX_SYSROOT="$(xcrun --show-sdk-path)"`，並設定 `BARRIER_CODESIGN_IDENTITY` 固定簽章）全部通過，不需要修改程式：編譯無錯誤；ctest 5/5；`link-network-test.py` 通過；`package-macos.sh` 打出 0.3.9；`--self-test` 通過（配對兩種角色、四方向位置、新版通知、切換快捷鍵、傳輸進度），GUI 截圖中「排列螢幕…」「登入時自動啟動」「進階設定」顯示正常。CI 的 macos job 仍需等 GitHub runner 恢復後重跑。
 - 接收端位置只用「排列螢幕」（`2088142e`，Windows 與 Mac）：只配一台時，原本的「螢幕位置」選單和「排列螢幕」會同時出現且互相矛盾，所以主控端一律隱藏選單、只留「排列螢幕…」（未配對時停用）。選單程式碼仍在但永遠隱藏，`position` 設定只當作新接收端的預設方向。請勿把選單加回來。
+- 實機驗收發現並已處理（2026-11-12，Mac mini 主控端 → Windows 接收端）：
+  - Mac 用注音等輸入法時，字母鍵被轉成注音符號送出，Windows 打不出字，要按 Caps 切回 ABC 才行。`501810f6` 改用 ASCII 鍵盤配置轉換（`OSXKeyState.cpp`），已在實機確認可直接打字。
+  - 剪貼簿被搶：RustDesk 的剪貼簿同步和 Barrier Share 互相搶剪貼簿，Windows 上 ⌘C／⌘V、跨台複製檔案都失效。關掉 RustDesk 後正常。程式沒改；之後可考慮讓主控端在內容和剛收到的相同時不搶擁有權。
+  - Mac 鍵盤控制 Windows 時，Command 預設送 Windows 鍵；要用 ⌘C／⌘V 需開「進階設定」的 Ctrl／Command 對調。是否改成 Mac 配 Windows 時預設開啟，尚未決定（配對時目前不知道對方系統）。
 - 0.3.9 尚未發布；發布前需兩台以上實機驗收：多台排列、登入畫面／鎖定畫面／UAC 跨台操作、手動位址跨網段、傳輸進度與取消、登入時自動啟動。
 
 0. 版本號統一：Windows 與 Mac 都在 0.3.8（2026-11-12 以 `windows-v0.3.8`、`mac-v0.3.8` 分開發布，是最後一次分開發布），視窗標題顯示版本（Windows 系統匣提示也會顯示；Mac 新增「關於 Barrier Share」選單）。
