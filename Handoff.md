@@ -36,7 +36,7 @@
 
 - 兩個 GUI 啟動時和之後每 24 小時讀取一次 `api.github.com/repos/sunnylinisme/barrier/releases`，只比對共用 tag `v*` 和自己平台的舊 tag（`windows-v*`／`mac-v*`），略過 draft、prerelease 和非本 repo 的連結。有新版時，右上角的「● 區域網路」會換成下載連結；Windows 另外會跳一次系統匣通知。不會自動下載。
 - 發布（0.3.9 起兩個平台共用一個 Release，tag 為 `vX.Y.Z`）：先把 `windows-setup.iss`、`BarrierShare.cs`（AssemblyVersion）、`package-macos.sh` 升到同一版，`GUI-README.txt` 寫好「X.Y.Z 更新（Windows）」和「X.Y.Z 更新（Mac）」，commit 推上去。接著在 Mac 執行 `BARRIER_CODESIGN_IDENTITY='Apple Development: freefishlin@gmail.com (PP2X799XV2)' sh tools/native-file-drop/release-macos.sh`：編譯、測試、固定簽章打包，用 `verify-macos-update.py` 和 `/Applications` 裡的舊版比對簽章身分（可用 `OLD_APP` 指定），推 `vX.Y.Z` tag，建立附 Mac ZIP 的 **draft** Release。tag 觸發的 workflow 會核對兩個版本檔、等 draft 出現（最多約 10 分鐘），附上 Windows 安裝檔和可攜 ZIP 後才正式發布，所以使用者只會看到三個檔案都齊的 Release。
-- 舊格式 `windows-vX.Y.Z`／`mac-vX.Y.Z` 只用到 0.3.8；新版 GUI 兩種都認得，但 0.3.8 以前裝的版本看不到 `vX.Y.Z`，要手動更新一次。
+- 舊版相容：0.3.8 以前的 App 只認得 `windows-v*`／`mac-v*`。所以 release job 公開 `vX.Y.Z` 之後，會自動再建立 `windows-vX.Y.Z`（附 Windows 兩個檔案）和 `mac-vX.Y.Z`（附 Mac ZIP）兩個副本 Release，不標成 latest，說明連回共用 Release。這樣舊版 App 也能收到新版通知。等所有電腦都更新到 0.3.9 以上，就可以刪掉 workflow 裡的這段。
 - `gh` 推送含 workflow 檔的 commit 需要 `workflow` scope（`gh auth refresh -s workflow`）。
 
 ## 待辦
