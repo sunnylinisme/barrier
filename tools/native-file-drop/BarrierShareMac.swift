@@ -243,13 +243,21 @@ enum ShareLogin {
     static func set(_ on: Bool) throws { if on { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() } }
 }
 
+// Remembers a ⌘V pressed while files are still arriving, and pastes them once they are ready
+// if the same app is still in front; otherwise the user is asked to paste again.
+struct ShareAutoPaste {
+    var target: pid_t?
+    mutating func pressed(front: pid_t?) { if target == nil { target = front } }
+    mutating func ready(front: pid_t?) -> pid_t? { defer { target = nil }; return target != nil && target == front ? target : nil }
+}
+
 // Small floating window at the bottom right that shows a file transfer while it runs, so the
 // progress is visible even when the main window is hidden. It does not take keyboard focus.
 // Short transfers finish before it appears; once shown it stays until the result has been read.
 final class ShareTransferPanel {
     let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 340, height: 96), styleMask: [.titled, .nonactivatingPanel, .utilityWindow], backing: .buffered, defer: false)
     let title = NSTextField(labelWithString: ""), detail = NSTextField(labelWithString: ""), bar = NSProgressIndicator(), cancel = NSButton(title: "取消傳送", target: nil, action: nil)
-    var active = false, pending: DispatchWorkItem?, closing: DispatchWorkItem?
+    var active = false, pending: DispatchWorkItem?, closing: DispatchWorkItem?, note = ""
     init(target: AnyObject, cancelAction: Selector) {
         panel.title = "Barrier Share"; panel.level = .floating; panel.hidesOnDeactivate = false; panel.isReleasedWhenClosed = false
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]; panel.becomesKeyOnlyIfNeeded = true
@@ -260,7 +268,7 @@ final class ShareTransferPanel {
         for view in [title, detail, bar, cancel] as [NSView] { panel.contentView!.addSubview(view) }
     }
     func begin(_ text: String, showAfter delay: Double = 1) {
-        closing?.cancel(); pending?.cancel(); active = true
+        closing?.cancel(); pending?.cancel(); active = true; note = ""
         title.stringValue = text; detail.stringValue = "完成前可繼續操作滑鼠與鍵盤"; cancel.isHidden = false; bar.isHidden = false; bar.startAnimation(nil)
         let work = DispatchWorkItem { [weak self] in if let self = self, self.active { self.show() } }
         pending = work; if delay <= 0 { work.perform() } else { DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work) }
@@ -268,7 +276,7 @@ final class ShareTransferPanel {
     func progress(_ text: String) {
         guard active else { return }
         let parts = text.components(separatedBy: "… ")
-        title.stringValue = parts[0] + "…"; detail.stringValue = parts.count > 1 ? parts[1] : ""
+        title.stringValue = parts[0] + "…" + note; detail.stringValue = parts.count > 1 ? parts[1] : ""
     }
     func finish(_ text: String, detail note: String) {
         pending?.cancel(); active = false
@@ -386,9 +394,23 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
     let autostart = NSButton(checkboxWithTitle: "登入時自動啟動", target: nil, action: nil)
     var transferring = false, progress = ShareProgress()
     lazy var transferPanel = ShareTransferPanel(target: self, cancelAction: #selector(resume))
+    var receiving = false, autoPaste = ShareAutoPaste(), pasteMonitor: Any?
     let test: Bool
     init(test: Bool = false) { self.test = test; super.init() }
-    func applicationDidFinishLaunching(_ notification: Notification) { buildWindow() }
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        buildWindow()
+        // ⌘V while files are still arriving: paste them as soon as they are complete.
+        pasteMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self = self, self.receiving, event.keyCode == 9, event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command else { return }
+            self.autoPaste.pressed(front: NSWorkspace.shared.frontmostApplication?.processIdentifier)
+            self.transferPanel.note = "（傳完自動貼上）"; self.transferPanel.title.stringValue = "正在接收檔案…（傳完自動貼上）"
+        }
+    }
+    // Sent to the app directly, not through the event tap, so it can never be forwarded to the other computer.
+    func paste(into pid: pid_t) {
+        let source = CGEventSource(stateID: .hidSystemState)
+        for down in [true, false] { if let key = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: down) { key.flags = .maskCommand; key.postToPid(pid) } }
+    }
     func buildWindow() {
         let menu = NSMenu(), appMenu = NSMenu(), appItem = NSMenuItem()
         appMenu.addItem(withTitle: "關於 Barrier Share", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: ""); appMenu.addItem(.separator()); appMenu.addItem(withTitle: "結束 Barrier Share", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"); appItem.submenu = appMenu; menu.addItem(appItem); NSApp.mainMenu = menu
@@ -670,13 +692,20 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         details.string = String((details.string + line + "\n").suffix(20000)); details.scrollToEndOfDocument(nil)
         if line.contains("connected to server") || line.contains("has connected") { status.stringValue = "已連線 · 雙向複製貼上已啟用" }
         let was = transferring
-        if line.contains("file clipboard: sending") { status.stringValue = "正在傳送檔案… 可繼續操作滑鼠與鍵盤"; transferring = true; progress.reset(); transferPanel.begin("正在傳送檔案…") }
-        if line.contains("file clipboard: receiving") { status.stringValue = "正在接收檔案… 完成後即可貼上"; transferring = true; progress.reset(); transferPanel.begin("正在接收檔案…") }
+        if line.contains("file clipboard: sending") { status.stringValue = "正在傳送檔案… 可繼續操作滑鼠與鍵盤"; transferring = true; receiving = false; progress.reset(); transferPanel.begin("正在傳送檔案…") }
+        if line.contains("file clipboard: receiving") { status.stringValue = "正在接收檔案… 完成後即可貼上"; transferring = true; receiving = true; autoPaste.target = nil; progress.reset(); transferPanel.begin("正在接收檔案…") }
         if let moved = progress.describe(line), transferring { status.stringValue = moved; transferPanel.progress(moved) }
         if line.contains("file clipboard: sent ") { status.stringValue = "檔案已送出 · 可在另一台貼上"; transferring = false; transferPanel.finish("檔案已送出", detail: "可在另一台貼上") }
-        if line.contains("received and verified") { status.stringValue = "已收到檔案，可在 Finder 資料夾使用 ⌘V 貼上"; transferring = false; transferPanel.finish("已收到檔案", detail: "可在 Finder 資料夾按 ⌘V 貼上") }
-        if line.contains("WARNING") && line.contains("file clipboard:") { status.stringValue = "檔案複製未完成；請查看下方原因。"; transferring = false; transferPanel.finish("檔案複製未完成", detail: "詳情見「診斷紀錄」") }
-        if line.contains("server is dead") || line.contains("disconnected") { status.stringValue = "連線中斷，正在自動重連…"; transferring = false; transferPanel.finish("連線中斷", detail: "檔案沒有傳完，請重新複製") }
+        if line.contains("received and verified") {
+            receiving = false; transferring = false
+            if let pid = autoPaste.ready(front: NSWorkspace.shared.frontmostApplication?.processIdentifier) {
+                // The core has already published the files; give the pasteboard a moment before pasting.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in self?.paste(into: pid) }
+                status.stringValue = "已收到檔案並自動貼上"; transferPanel.finish("已收到檔案", detail: "已自動貼上")
+            } else { status.stringValue = "已收到檔案，可在 Finder 資料夾使用 ⌘V 貼上"; transferPanel.finish("已收到檔案", detail: "可在 Finder 資料夾按 ⌘V 貼上") }
+        }
+        if line.contains("WARNING") && line.contains("file clipboard:") { status.stringValue = "檔案複製未完成；請查看下方原因。"; transferring = false; receiving = false; autoPaste.target = nil; transferPanel.finish("檔案複製未完成", detail: "詳情見「診斷紀錄」") }
+        if line.contains("server is dead") || line.contains("disconnected") { status.stringValue = "連線中斷，正在自動重連…"; transferring = false; receiving = false; autoPaste.target = nil; transferPanel.finish("連線中斷", detail: "檔案沒有傳完，請重新複製") }
         if was != transferring { updateControls() }
     }
     @objc func showDiagnostics() {
@@ -771,6 +800,12 @@ func selfTest(_ directory: URL) throws {
     pop.finish("已收到檔案", detail: "可在 Finder 資料夾按 ⌘V 貼上")
     guard pop.title.stringValue == "已收到檔案", pop.cancel.isHidden, !pop.active else { throw ShareError.message("Transfer window did not show the result") }
     pop.panel.orderOut(nil)
+    var auto = ShareAutoPaste()
+    guard auto.ready(front: 7) == nil else { throw ShareError.message("Pasted without a ⌘V") }
+    auto.pressed(front: 7); auto.pressed(front: 9)
+    guard auto.ready(front: 7) == 7, auto.target == nil else { throw ShareError.message("⌘V during a transfer was not pasted") }
+    auto.pressed(front: 7)
+    guard auto.ready(front: 9) == nil else { throw ShareError.message("Pasted into a different app") }
     for binary in ["barriers", "barrierc"] { if try !ShareSettings.run(binary, ["--help"], allowFailure: true).contains("--file-clipboard") { throw ShareError.message("Missing backend or file clipboard option") } }
     guard let icon = Bundle.main.url(forResource: "BarrierShare", withExtension: "icns"), NSImage(contentsOf: icon) != nil,
           Bundle.main.object(forInfoDictionaryKey: "CFBundleIconFile") as? String == "BarrierShare.icns" else { throw ShareError.message("Missing app icon") }
