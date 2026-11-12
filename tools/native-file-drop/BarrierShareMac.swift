@@ -9,6 +9,8 @@ struct ShareOptions: Codable {
     var address = ""
     var position = "right"
     var advanced = ShareAdvanced()
+    // Where each paired receiver sits relative to this host on a 5x5 grid: fingerprint -> [x, y], y grows downwards.
+    var layout: [String: [Int]] = [:]
     init() {}
     // Settings saved by older versions lack newer keys; keep their defaults.
     init(from decoder: Decoder) throws {
@@ -17,6 +19,7 @@ struct ShareOptions: Codable {
         address = try c.decodeIfPresent(String.self, forKey: .address) ?? ""
         position = try c.decodeIfPresent(String.self, forKey: .position) ?? "right"
         advanced = (try? c.decodeIfPresent(ShareAdvanced.self, forKey: .advanced)) ?? ShareAdvanced()
+        layout = ((try? c.decodeIfPresent([String: [Int]].self, forKey: .layout)) ?? [:]).filter { $0.value.count == 2 && abs($0.value[0]) <= 2 && abs($0.value[1]) <= 2 }
     }
 }
 // Host-side Barrier options from the advanced settings dialog.
@@ -89,34 +92,68 @@ final class ShareSettings {
         if !directions.contains(options.position) { options.position = "right" }
         return options
     }
-    static func config(_ direction: String, _ a: ShareAdvanced = ShareAdvanced()) throws -> String {
-        guard let index = directions.firstIndex(of: direction) else { throw ShareError.message("請選擇有效的螢幕位置。") }
-        let opposite = ["left", "right", "down", "up"][index]
-        var text = "section: screens\n windows-host:\n windows:\n"
-        // Swap on the receiving screen: Ctrl acts as Command/Windows there and the other way round.
-        if a.swapModifiers { text += "  ctrl = super\n  super = ctrl\n" }
-        text += "end\nsection: links\n windows-host:\n  \(direction) = windows\n windows:\n  \(opposite) = windows-host\nend\nsection: options\n clipboardSharing = true\n"
+    struct Cell: Hashable { var x: Int, y: Int }
+    static let hostName = "windows-host"
+    static var ownFingerprint: String?
+    // Core screen name of a receiver; unique per computer so several can connect at once.
+    static func screenName(_ fingerprint: String) -> String { "r-" + String(fingerprint.dropFirst(10).prefix(16)) }
+    static var receiverName: String { ownFingerprint.map(screenName) ?? "windows" }
+    static func step(_ direction: String) -> Cell { [Cell(x: 1, y: 0), Cell(x: -1, y: 0), Cell(x: 0, y: -1), Cell(x: 0, y: 1)][directions.firstIndex(of: direction) ?? 0] }
+    static func opposite(_ direction: String) -> String { ["left", "right", "down", "up"][directions.firstIndex(of: direction) ?? 0] }
+    // Screen name -> grid cell, host first. Without paired receivers this is the classic host + "windows" pair.
+    static func cells(_ direction: String, receivers: [String], layout: [String: [Int]]) -> [(String, Cell)] {
+        var result: [(String, Cell)] = [(hostName, Cell(x: 0, y: 0))]
+        if receivers.isEmpty { return result + [("windows", step(direction))] }
+        var order = [step(direction), step(opposite(direction)), Cell(x: 0, y: -1), Cell(x: 0, y: 1), Cell(x: 1, y: 0), Cell(x: -1, y: 0)]
+        for ring in 1...2 { for y in -ring...ring { for x in -ring...ring where max(abs(x), abs(y)) == ring { order.append(Cell(x: x, y: y)) } } }
+        for (index, fp) in receivers.enumerated() {
+            let used = Set(result.map { $0.1 })
+            var cell = layout[fp].map { Cell(x: $0[0], y: $0[1]) }
+            if cell == nil || used.contains(cell!) { cell = index == 0 && !used.contains(step(direction)) ? step(direction) : order.first { !used.contains($0) && $0 != Cell(x: 0, y: 0) } }
+            result.append((screenName(fp), cell!))
+        }
+        return result
+    }
+    static func config(_ direction: String, _ a: ShareAdvanced = ShareAdvanced(), receivers: [String] = [], layout: [String: [Int]] = [:]) throws -> String {
+        guard directions.contains(direction) else { throw ShareError.message("請選擇有效的螢幕位置。") }
+        let grid = cells(direction, receivers: receivers, layout: layout)
+        var text = "section: screens\n"
+        for (name, _) in grid {
+            text += " \(name):\n"
+            // Swap on the receiving screens: Ctrl acts as Command/Windows there and the other way round.
+            if a.swapModifiers && name != hostName { text += "  ctrl = super\n  super = ctrl\n" }
+        }
+        // The first receiver also answers to "windows", the name receivers used before 0.3.9.
+        if let first = receivers.first { text += "end\nsection: aliases\n \(screenName(first)):\n  windows\n" }
+        text += "end\nsection: links\n"
+        let order = [direction, opposite(direction)] + directions.filter { $0 != direction && $0 != opposite(direction) }
+        var used: [String] = []
+        for (name, cell) in grid {
+            text += " \(name):\n"
+            for d in order {
+                let next = Cell(x: cell.x + step(d).x, y: cell.y + step(d).y)
+                for (other, place) in grid where place == next { text += "  \(d) = \(other)\n"; if !used.contains(d) { used.append(d) } }
+            }
+        }
+        text += "end\nsection: options\n clipboardSharing = true\n"
         if a.switchDelay > 0 { text += " switchDelay = \(a.switchDelay)\n" }
         if a.doubleTap > 0 { text += " switchDoubleTap = \(a.doubleTap)\n" }
         if a.corners { text += " switchCorners = all\n switchCornerSize = \(a.cornerSize)\n" }
         if a.relativeMouse { text += " relativeMouseMoves = true\n" }
         text += " screenSaverSync = \(a.screenSaver ? "true" : "false")\n"
-        if a.switchKeys { text += hotkeys(direction, opposite) }
+        if a.switchKeys { for d in order where used.contains(d) { text += " keystroke(Control+Alt+\(d.prefix(1).uppercased() + d.dropFirst())) = switchInDirection(\(d))\n" } }
         if a.lockKey { text += " keystroke(Control+Alt+L) = lockCursorToScreen(toggle)\n" }
         for line in try a.extraLines() { text += " \(line)\n" }
         return text + "end\n"
     }
-    // Control+Option+arrow toward the other screen switches without reaching the edge; only the configured axis is bound.
-    static func hotkeys(_ direction: String, _ opposite: String) -> String {
-        [direction, opposite].map { " keystroke(Control+Alt+\($0.prefix(1).uppercased() + $0.dropFirst())) = switchInDirection(\($0))\n" }.joined()
-    }
+    static var receivers: [String] = []
     static func command(_ options: ShareOptions) throws -> Process {
         let p = profile(options.host), process = Process()
         process.executableURL = bin.appendingPathComponent(options.host ? "barriers" : "barrierc")
-        var args = ["-f", "--no-tray", "--file-clipboard", "--profile-dir", p.path, "--log", p.appendingPathComponent(options.host ? "server.log" : "mac.log").path, "--name", options.host ? "windows-host" : "windows"]
+        var args = ["-f", "--no-tray", "--file-clipboard", "--profile-dir", p.path, "--log", p.appendingPathComponent(options.host ? "server.log" : "mac.log").path, "--name", options.host ? hostName : receiverName]
         if options.host {
             let path = p.appendingPathComponent("screens.conf")
-            try config(options.position, options.advanced).write(to: path, atomically: true, encoding: .utf8)
+            try config(options.position, options.advanced, receivers: receivers, layout: options.layout).write(to: path, atomically: true, encoding: .utf8)
             args += ["-c", path.path]
         } else {
             var ip = in_addr()
@@ -225,6 +262,56 @@ struct ShareProgress {
     }
 }
 
+// Drag the paired receivers around this host on a 5x5 grid. Neighbouring cells are linked edges;
+// every screen must touch the group, or the cursor could never reach it.
+final class ShareLayoutView: NSView {
+    static let cell = CGSize(width: 104, height: 64), span = 2
+    var names: [String: String], placement: [String: ShareSettings.Cell], blue: NSColor, onChange: (() -> Void)?
+    var dragging: String?, pointer = NSPoint.zero
+    override var isFlipped: Bool { true }
+    init(names: [String: String], placement: [String: ShareSettings.Cell], blue: NSColor) {
+        self.names = names; self.placement = placement; self.blue = blue
+        super.init(frame: NSRect(x: 0, y: 0, width: ShareLayoutView.cell.width * 5, height: ShareLayoutView.cell.height * 5))
+    }
+    required init?(coder: NSCoder) { fatalError("unused") }
+    func rect(_ c: ShareSettings.Cell) -> NSRect { NSRect(x: CGFloat(c.x + 2) * Self.cell.width + 5, y: CGFloat(c.y + 2) * Self.cell.height + 5, width: Self.cell.width - 10, height: Self.cell.height - 10) }
+    func reachable() -> Bool {
+        let all = Set(placement.values); var seen: Set<ShareSettings.Cell> = [ShareSettings.Cell(x: 0, y: 0)]
+        var queue = Array(seen)
+        while let c = queue.popLast() {
+            for n in [ShareSettings.Cell(x: c.x + 1, y: c.y), ShareSettings.Cell(x: c.x - 1, y: c.y), ShareSettings.Cell(x: c.x, y: c.y + 1), ShareSettings.Cell(x: c.x, y: c.y - 1)] where all.contains(n) && !seen.contains(n) { seen.insert(n); queue.append(n) }
+        }
+        return all.isSubset(of: seen)
+    }
+    @discardableResult func place(_ fp: String, _ c: ShareSettings.Cell) -> Bool {
+        guard abs(c.x) <= Self.span, abs(c.y) <= Self.span, c != ShareSettings.Cell(x: 0, y: 0), !placement.contains(where: { $0.key != fp && $0.value == c }) else { return false }
+        placement[fp] = c; needsDisplay = true; onChange?(); return true
+    }
+    override func mouseDown(with event: NSEvent) { pointer = convert(event.locationInWindow, from: nil); dragging = placement.first { rect($0.value).contains(pointer) }?.key }
+    override func mouseDragged(with event: NSEvent) { pointer = convert(event.locationInWindow, from: nil); if dragging != nil { needsDisplay = true } }
+    override func mouseUp(with event: NSEvent) {
+        let p = convert(event.locationInWindow, from: nil)
+        if let fp = dragging { place(fp, ShareSettings.Cell(x: Int(p.x / Self.cell.width) - 2, y: Int(p.y / Self.cell.height) - 2)) }
+        dragging = nil; needsDisplay = true
+    }
+    override func draw(_ dirtyRect: NSRect) {
+        NSColor(srgbRed: 244/255, green: 246/255, blue: 250/255, alpha: 1).setFill(); bounds.fill()
+        let dash = NSColor(srgbRed: 219/255, green: 226/255, blue: 237/255, alpha: 1)
+        for y in -2...2 { for x in -2...2 { let path = NSBezierPath(rect: rect(ShareSettings.Cell(x: x, y: y))); path.setLineDash([4, 3], count: 2, phase: 0); dash.setStroke(); path.stroke() } }
+        func tile(_ r: NSRect, _ text: String, host: Bool) {
+            let shape = NSBezierPath(roundedRect: r, xRadius: 10, yRadius: 10); (host ? blue : .white).setFill(); shape.fill(); blue.setStroke(); shape.lineWidth = 1.5; shape.stroke()
+            let style = NSMutableParagraphStyle(); style.alignment = .center; style.lineBreakMode = .byTruncatingTail
+            let string = NSAttributedString(string: text, attributes: [.font: NSFont.systemFont(ofSize: 12, weight: .medium), .foregroundColor: host ? NSColor.white : NSColor.labelColor, .paragraphStyle: style])
+            string.draw(in: NSRect(x: r.minX + 6, y: r.midY - 9, width: r.width - 12, height: 18))
+        }
+        tile(rect(ShareSettings.Cell(x: 0, y: 0)), "這台（主控端）", host: true)
+        for (fp, c) in placement {
+            var r = rect(c); if fp == dragging { r.origin = NSPoint(x: pointer.x - r.width / 2, y: pointer.y - r.height / 2) }
+            tile(r, names[fp] ?? "", host: false)
+        }
+    }
+}
+
 final class ShareActionButton: NSButton {
     override func draw(_ dirtyRect: NSRect) {
         let blue = NSColor(srgbRed:47/255,green:101/255,blue:235/255,alpha:1)
@@ -249,7 +336,10 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
     let start = NSButton(title: "恢復連線", target: nil, action: nil), stop = NSButton(title: "暫停", target: nil, action: nil), search = NSButton(title: "重新搜尋", target: nil, action: nil), pair = ShareActionButton(title: "邀請配對", target: nil, action: nil), forget = NSButton(title: "解除配對", target: nil, action: nil), clear = NSButton(title: "清除檔案暫存", target: nil, action: nil)
     let details = NSTextView()
     var tray: NSStatusItem!, core: Process?, corePipe: Pipe?, link: Process?, linkOutput: Pipe?, linkInput: Pipe?, pendingCore = Data(), pendingLink = Data(), retry: Timer?
-    var computers: [NearbyComputer] = [], savedPeer = "", connectedAddress = "", consent: NSAlert?, consentId: String?, enabled = true, loading = true, promptedPermissions = false
+    // Paired computers in pairing order: every receiver for a host, the one host for a receiver.
+    var peers: [(fingerprint: String, name: String)] = []
+    let arrange = NSButton(title: "排列螢幕…", target: nil, action: nil)
+    var computers: [NearbyComputer] = [], connectedAddress = "", consent: NSAlert?, consentId: String?, enabled = true, loading = true, promptedPermissions = false
     let network = NSTextField(labelWithString: "●  區域網路"), update = NSButton(title: "", target: nil, action: nil)
     var updateURL: URL?, updateTimer: Timer?
     let autostart = NSButton(checkboxWithTitle: "登入時自動啟動", target: nil, action: nil)
@@ -286,8 +376,8 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         status.textColor=blue; status.font = .systemFont(ofSize:16,weight:.semibold); status.maximumNumberOfLines=3; at(status,540,321,248,70)
         peerLabel.textColor=muted; peerLabel.font = .systemFont(ofSize:12); peerLabel.maximumNumberOfLines=2; peerLabel.lineBreakMode = .byTruncatingTail; at(peerLabel,540,394,248,42)
         for (button,x,width,action) in [(start,CGFloat(536),CGFloat(150),#selector(resume)),(stop,688,104,#selector(pause))] { button.bezelStyle = .rounded; button.target=self; button.action=action; at(button,x,444,width,38) }
-        label("螢幕位置",52,551,140,17,bold:true); at(position,216,545,574,36); position.addItems(withTitles:["接收端在右邊  →","接收端在左邊  ←","接收端在上方  ↑","接收端在下方  ↓"])
-        positionHint.stringValue="由主控端設定兩台螢幕的相對位置"; positionHint.textColor=muted; at(positionHint,220,553,566,32)
+        label("螢幕位置",52,551,140,17,bold:true); at(position,216,545,420,36); arrange.bezelStyle = .rounded; arrange.target = self; arrange.action = #selector(showLayout); at(arrange,648,544,142,38); position.addItems(withTitles:["接收端在右邊  →","接收端在左邊  ←","接收端在上方  ↑","接收端在下方  ↓"])
+        positionHint.stringValue="由主控端設定兩台螢幕的相對位置"; positionHint.textColor=muted; at(positionHint,220,553,416,32)
         clear.title="清除暫存"; for (button,x,action) in [(forget,CGFloat(28),#selector(forgetPeer)),(clear,156,#selector(clearCache))] { button.bezelStyle = .rounded; button.target=self; button.action=action; at(button,x,632,124,38) }
         let permissions = NSButton(title:"權限設定",target:self,action:#selector(openPermissions)); permissions.bezelStyle = .rounded; at(permissions,284,632,124,38)
         autostart.target = self; autostart.action = #selector(toggleLogin); autostart.state = !test && ShareLogin.enabled ? .on : .off; at(autostart,418,640,150,22)
@@ -315,11 +405,10 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         autostart.state = ShareLogin.enabled ? .on : .off
         if autostart.state == .off && SMAppService.mainApp.status == .requiresApproval { status.stringValue = "請到「系統設定 › 一般 › 登入項目」允許 Barrier Share。" }
     }
-    func updateControls() { transferring = transferring && core != nil; start.title = transferring ? "取消傳送" : "恢復連線"; nearby.isHidden = computers.isEmpty; emptyNearby.isHidden = !computers.isEmpty; pair.title = options.host ? "邀請配對  →" : "等待主控端邀請"; start.isEnabled = transferring || !enabled || link == nil; stop.isEnabled = enabled; search.isEnabled = link != nil; pair.isEnabled = options.host && link != nil && nearby.indexOfSelectedItem >= 0 && consent == nil; forget.isEnabled = link != nil && !savedPeer.isEmpty; clear.isEnabled = !enabled && core == nil }
+    func updateControls() { transferring = transferring && core != nil; start.title = transferring ? "取消傳送" : "恢復連線"; nearby.isHidden = computers.isEmpty; emptyNearby.isHidden = !computers.isEmpty; pair.title = options.host ? "邀請配對  →" : "等待主控端邀請"; start.isEnabled = transferring || !enabled || link == nil; stop.isEnabled = enabled; search.isEnabled = link != nil; pair.isEnabled = options.host && link != nil && nearby.indexOfSelectedItem >= 0 && consent == nil; forget.isEnabled = link != nil && !peers.isEmpty; clear.isEnabled = !enabled && core == nil }
     func refreshRole() throws {
-        position.isHidden = !options.host; positionHint.isHidden = options.host; savedPeer = ""; computers.removeAll(); nearby.removeAllItems()
+        peers.removeAll(); peersChanged(); computers.removeAll(); nearby.removeAllItems()
         _ = try ShareSettings.initialize(options.host); try ShareSettings.save(options)
-        peerLabel.stringValue = options.host ? "選擇接收端，按「邀請配對」。" : "等待主控端邀請；首次需要你同意。"
         status.stringValue = enabled ? "正在啟用區網搜尋…" : "已暫停"; updateControls()
     }
     func showError(_ error: Error) { status.stringValue = "操作未完成：" + error.localizedDescription }
@@ -393,7 +482,7 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
     @objc func openUpdate() { if let url = updateURL { NSWorkspace.shared.open(url) } }
     @objc func roleChanged() { guard !loading else { return }; stopLink(); stopBackend(); options.host = role.indexOfSelectedItem == 0; do { try refreshRole(); if enabled { startLink() } } catch { showError(error) } }
-    @objc func positionChanged() { guard !loading else { return }; options.position = ShareSettings.directions[position.indexOfSelectedItem]; do { try ShareSettings.save(options); if core != nil { stopBackend() } } catch { showError(error) } }
+    @objc func positionChanged() { guard !loading else { return }; options.position = ShareSettings.directions[position.indexOfSelectedItem]; for p in peers { options.layout[p.fingerprint] = nil }; do { try ShareSettings.save(options); if core != nil { stopBackend() } } catch { showError(error) } }
     @objc func selectionChanged() { updateControls() }
     @objc func searchNow() { send("SEARCH"); status.stringValue = "正在搜尋同一區網的電腦…" }
     @objc func invite() { let index = nearby.indexOfSelectedItem; guard index >= 0 && index < computers.count else { return }; stopBackend(); send("PAIR\t" + computers[index].fingerprint); status.stringValue = "正在發出邀請…" }
@@ -438,19 +527,27 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func decoded(_ text: String) -> String { Data(base64Encoded: text).map { String(decoding: $0, as: UTF8.self) } ?? "未知電腦" }
     func linkLine(_ line: String) {
         let f = line.components(separatedBy: "\t")
-        if f[0] == "READY" { log("區網搜尋已啟動 · UDP/TCP 24801"); sendTargets(); status.stringValue = options.host ? "正在搜尋接收端…" : "可被搜尋，等待主控端邀請…" }
+        if f[0] == "READY" { log("區網搜尋已啟動 · UDP/TCP 24801"); if f.count == 2 { ShareSettings.ownFingerprint = f[1] }; sendTargets(); status.stringValue = options.host ? "正在搜尋接收端…" : "可被搜尋，等待主控端邀請…" }
         else if f[0] == "DEVICE" && f.count == 6 {
             let index = nearby.indexOfSelectedItem, selected = nearby.indexOfSelectedItem >= 0 && nearby.indexOfSelectedItem < computers.count ? computers[index].fingerprint : ""
             computers.removeAll { $0.fingerprint == f[1] }; computers.append(NearbyComputer(fingerprint: f[1], name: decoded(f[2]), address: f[3])); computers.sort { $0.name < $1.name }
             nearby.removeAllItems(); nearby.addItems(withTitles: computers.map { $0.name + "  ·  " + $0.address }); if let item = computers.firstIndex(where: { $0.fingerprint == selected }) { nearby.selectItem(at: item) }
         } else if f[0] == "GONE" && f.count == 2 { if let index = computers.firstIndex(where: { $0.fingerprint == f[1] }) { computers.remove(at: index); nearby.removeItem(at: index) } }
         else if (f[0] == "SAVED" || f[0] == "PAIRED") && f.count == 3 {
-            if f[0] == "PAIRED" { stopBackend() }; savedPeer = f[1]; peerLabel.stringValue = "已配對 · \(decoded(f[2]))\n重新開啟後會自動連線"
+            // A receiver has one host; a host's new receiver needs the core restarted with the new screen list.
+            if f[0] == "PAIRED" { stopBackend(); if !options.host { peers.removeAll() } }
+            if let index = peers.firstIndex(where: { $0.fingerprint == f[1] }) { peers[index].name = decoded(f[2]) } else { peers.append((f[1], decoded(f[2]))) }
+            peersChanged()
         } else if (f[0] == "REQUEST" || f[0] == "VERIFY") && f.count == 5 { showConsent(f) }
         else if f[0] == "CLOSED" && f.count == 2 && consentId == f[1] { closeConsent() }
-        else if f[0] == "CONNECT" && f.count == 4 && f[1] == savedPeer {
+        else if f[0] == "CONNECT" && f.count == 4 && peers.contains(where: { $0.fingerprint == f[1] }) {
             if core == nil || (!options.host && connectedAddress != f[3]) { stopBackend(); options.address = f[3]; do { try ShareSettings.save(options); startBackend() } catch { showError(error) } }
-        } else if f[0] == "REMOVED" { stopBackend(); savedPeer = ""; peerLabel.stringValue = "已解除配對。"; status.stringValue = options.host ? "可以選擇接收端重新邀請。" : "等待新的配對邀請。" }
+        } else if f[0] == "REMOVED" {
+            stopBackend()
+            if f.count == 2 { peers.removeAll { $0.fingerprint == f[1] }; options.layout[f[1]] = nil } else { peers.removeAll() }
+            peersChanged(); try? ShareSettings.save(options); if peers.isEmpty { peerLabel.stringValue = "已解除配對。" }
+            status.stringValue = !peers.isEmpty ? "已解除一台；其餘的會自動重新連線。" : options.host ? "可以選擇接收端重新邀請。" : "等待新的配對邀請。"
+        }
         else if f[0] == "UNAVAILABLE" && f.count == 3 && core == nil { status.stringValue = "正在重新尋找並驗證已配對的電腦…"; log(decoded(f[2])) }
         else if (f[0] == "ERROR" || f[0] == "FATAL") && f.count == 2 { if f[0] == "FATAL" { stopLink() }; status.stringValue = decoded(f[1]); log(status.stringValue) }
         updateControls()
@@ -469,8 +566,46 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
     func closeConsent() { let alert = consent; consent = nil; consentId = nil; if let alert = alert { window.endSheet(alert.window, returnCode: .cancel); alert.window.orderOut(nil) } }
     @objc func forgetPeer() {
-        let alert = NSAlert(); alert.messageText = "解除配對？"; alert.informativeText = "解除後不會自動連線，需要重新邀請並經對方同意。"; alert.addButton(withTitle: "取消"); alert.addButton(withTitle: "解除")
-        if alert.runModal() == .alertSecondButtonReturn { stopBackend(); send("FORGET") }
+        if peers.count > 1 {
+            // Several receivers: choose one, or all of them.
+            let menu = NSMenu()
+            for p in peers { let item = menu.addItem(withTitle: "解除「\(p.name)」", action: #selector(forgetChosen(_:)), keyEquivalent: ""); item.target = self; item.representedObject = p.fingerprint }
+            menu.addItem(.separator()); let all = menu.addItem(withTitle: "全部解除", action: #selector(forgetChosen(_:)), keyEquivalent: ""); all.target = self
+            menu.popUp(positioning: nil, at: NSPoint(x: 0, y: forget.bounds.height + 4), in: forget); return
+        }
+        confirmForget("FORGET", "解除後不會自動連線，需要重新邀請並經對方同意。")
+    }
+    @objc func forgetChosen(_ item: NSMenuItem) {
+        if let fp = item.representedObject as? String { confirmForget("FORGET\t" + fp, "解除與「\(peers.first { $0.fingerprint == fp }?.name ?? "")」的配對？") } else { confirmForget("FORGET", "解除所有配對？") }
+    }
+    func confirmForget(_ command: String, _ question: String) {
+        let alert = NSAlert(); alert.messageText = "解除配對？"; alert.informativeText = question; alert.addButton(withTitle: "取消"); alert.addButton(withTitle: "解除")
+        if alert.runModal() == .alertSecondButtonReturn { stopBackend(); send(command) }
+    }
+    // Keeps the screen list, the paired label and the position controls in step with the paired computers.
+    func peersChanged() {
+        ShareSettings.receivers = options.host ? peers.map { $0.fingerprint } : []
+        let names = peers.map { $0.name }
+        peerLabel.stringValue = names.count == 1 ? "已配對 · \(names[0])\n重新開啟後會自動連線" : names.count > 1 ? "已配對 \(names.count) 台 · " + names.joined(separator: "、") : options.host ? "選擇接收端，按「邀請配對」。" : "等待主控端邀請；首次需要你同意。"
+        position.isHidden = !(options.host && peers.count <= 1); arrange.isHidden = !options.host; positionHint.isHidden = !position.isHidden
+        positionHint.stringValue = options.host ? "已配對 \(peers.count) 台；按「排列螢幕」調整位置" : "由主控端設定螢幕的相對位置"
+        updateControls()
+    }
+    func buildLayout() -> (NSAlert, ShareLayoutView) {
+        let grid = ShareSettings.cells(options.position, receivers: peers.map { $0.fingerprint }, layout: options.layout)
+        var placement: [String: ShareSettings.Cell] = [:]
+        for p in peers { if let cell = grid.first(where: { $0.0 == ShareSettings.screenName(p.fingerprint) })?.1 { placement[p.fingerprint] = cell } }
+        let view = ShareLayoutView(names: Dictionary(uniqueKeysWithValues: peers.map { ($0.fingerprint, $0.name) }), placement: placement, blue: blue)
+        let alert = NSAlert(); alert.messageText = "排列螢幕"; alert.informativeText = "拖曳電腦到這台的上下左右；相鄰的邊就是游標可以移過去的地方。"
+        alert.accessoryView = view; alert.addButton(withTitle: "儲存排列"); alert.addButton(withTitle: "取消")
+        view.onChange = { [weak alert, weak view] in alert?.buttons.first?.isEnabled = view?.reachable() ?? false }
+        return (alert, view)
+    }
+    @objc func showLayout() {
+        let (alert, view) = buildLayout()
+        guard alert.runModal() == .alertFirstButtonReturn, view.reachable() else { return }
+        for (fp, cell) in view.placement { options.layout[fp] = [cell.x, cell.y] }
+        do { try ShareSettings.save(options); if core != nil { stopBackend() }; status.stringValue = "已儲存螢幕排列。" } catch { showError(error) }
     }
     func startBackend() {
         guard core == nil && enabled && !test else { return }
@@ -568,6 +703,17 @@ func selfTest(_ directory: URL) throws {
     guard try ShareSettings.load().advanced == full else { throw ShareError.message("Advanced settings roundtrip failed") }
     try Data(#"{"host":false,"address":"192.168.1.9","position":"up"}"#.utf8).write(to: ShareSettings.root.appendingPathComponent("settings.json"))
     let legacy = try ShareSettings.load(); guard !legacy.host && legacy.position == "up" && legacy.advanced == ShareAdvanced() else { throw ShareError.message("Settings from 0.3.8 did not load") }
+    let fa = "v2:sha256:" + String(repeating: "a", count: 64), fb = "v2:sha256:" + String(repeating: "b", count: 64), fc = "v2:sha256:" + String(repeating: "c", count: 64)
+    var swapped = ShareAdvanced(); swapped.swapModifiers = true
+    let multi = try ShareSettings.config("right", swapped, receivers: [fa, fb, fc], layout: [fb: [0, -1]])
+    let (na, nb, nc) = (ShareSettings.screenName(fa), ShareSettings.screenName(fb), ShareSettings.screenName(fc))
+    for expected in [" windows-host:\n  right = \(na)\n  left = \(nc)\n  up = \(nb)\n", " \(na):\n  left = windows-host\n", " \(nb):\n  down = windows-host\n", "section: aliases\n \(na):\n  windows\nend\n", " \(nb):\n  ctrl = super\n  super = ctrl\n", "switchInDirection(up)", "switchInDirection(down)"] where !multi.contains(expected) {
+        throw ShareError.message("Multi-screen config missing: \(expected)")
+    }
+    var withLayout = ShareOptions(); withLayout.layout = [fb: [0, -1], "bad": [9, 9]]; try ShareSettings.save(withLayout)
+    guard try ShareSettings.load().layout == [fb: [0, -1]] else { throw ShareError.message("Screen layout roundtrip failed") }
+    let layout = ShareLayoutView(names: [fa: "書房 Windows", fb: "MacBook Air", fc: "客廳電腦"], placement: [fa: .init(x: 1, y: 0), fb: .init(x: 0, y: -1), fc: .init(x: -1, y: 0)], blue: .systemBlue)
+    guard layout.reachable(), !layout.place(fc, .init(x: 1, y: 0)), layout.place(fc, .init(x: 2, y: 2)), !layout.reachable(), layout.place(fc, .init(x: -1, y: 0)), layout.reachable() else { throw ShareError.message("Layout editor rules failed") }
     guard try ShareSettings.config("right").contains(" keystroke(Control+Alt+Right) = switchInDirection(right)\n keystroke(Control+Alt+Left) = switchInDirection(left)\nend\n") else { throw ShareError.message("Hotkey syntax changed") }
     var meter = ShareProgress(); meter.reset(); let t0 = Date()
     let first = meter.describe("[2026-11-12T10:00:00] INFO: file clipboard: progress sent 1048576 bytes", now: t0.addingTimeInterval(1))
@@ -609,7 +755,7 @@ func selfTest(_ directory: URL) throws {
     guard app.consent == nil && app.consentId == nil else { throw ShareError.message("Expired pairing dialog remained open") }
     app.linkLine("GONE\t\(peer)"); guard app.computers.isEmpty else { throw ShareError.message("Offline peer remained listed") }
     // Render the available-peer state without starting any input capture or network service.
-    app.link = Process(); app.savedPeer = ""; app.linkLine("DEVICE\t\(peer)\t\(name)\t192.168.1.3\t24801\tR")
+    app.link = Process(); app.peers.removeAll(); app.linkLine("DEVICE\t\(peer)\t\(name)\t192.168.1.3\t24801\tR")
     app.peerLabel.stringValue = "對方同意後，會記住這台電腦。"; app.status.stringValue = "找到附近電腦\n可以發出配對邀請"
     RunLoop.current.run(until: Date().addingTimeInterval(0.3)); app.window.displayIfNeeded()
     guard let view = app.window.contentView, let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { throw ShareError.message("Cannot render window") }

@@ -86,11 +86,28 @@ def run():
             assert (rp/'SSL/Fingerprints/TrustedServers.txt').read_text().strip()==hf
             print('PASS: two approvals persist exact TLS certificate pins and connect both roles',flush=True)
             host.stop(); receiver.stop()
+            # A second receiver is added to the host's list instead of replacing the first.
+            sp=root/'第二台'; sf=initialize(sp); a,b=port(),port()
+            host=Agent(hp,'host',a,b); second=Agent(sp,'receiver',b,a)
+            try:
+                assert [e[1] for e in host.history if e[0]=='SAVED']==[rf], host.history
+                assert host.wait('DEVICE')[1]==sf
+                hi,ri=invitation(host,second,sf); host.send('ACCEPT',hi); second.send('ACCEPT',ri)
+                host.wait('PAIRED'); second.wait('PAIRED'); second.wait('CONNECT')
+                assert set((hp/'SSL/Fingerprints/TrustedClients.txt').read_text().split())=={rf,sf}
+                assert (hp/'Peer.txt').read_text(encoding='utf-8').split('\n')[0::2][:2]==[rf,sf]
+            finally: host.stop(); second.stop()
+            print('PASS: a host keeps several paired receivers',flush=True)
             # New discovery endpoints simulate a changed network address after restarting.
             a,b=port(),port(); host=Agent(hp,'host',a,b); receiver=Agent(rp,'receiver',b,a)
             host.wait('CONNECT'); receiver.wait('CONNECT')
             assert not any(e[0] in ('VERIFY','REQUEST') for e in host.history+receiver.history)
             print('PASS: restart and rediscovery reconnect automatically without new consent',flush=True)
+            assert sorted(e[1] for e in host.history if e[0]=='SAVED')==sorted([rf,sf])
+            host.send('FORGET',sf); assert host.wait('REMOVED')[1]==sf
+            assert (hp/'SSL/Fingerprints/TrustedClients.txt').read_text().strip()==rf
+            assert (hp/'Peer.txt').read_text(encoding='utf-8').split('\n')[0]==rf
+            print('PASS: forgetting one receiver keeps the others',flush=True)
             host.stop(); receiver.stop()
             rogue=root/'偽裝'; initialize(rogue); a,b=port(),port()
             impostor=Impostor(b,rf,rogue/'SSL/Barrier.pem',hp/'SSL/Barrier.pem')

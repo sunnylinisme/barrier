@@ -1138,7 +1138,7 @@ static class ShareProgram
             ShareSettings.Save(true, ""); ShareSettings.Load(out host, out address);
             if (ShareSettings.Layout.Count != 1 || ShareSettings.Layout[fb] != new Point(0, -1)) throw new Exception("Screen layout roundtrip failed");
             ShareSettings.OwnFingerprint = fc;
-            if (!String.Join(" ", ShareSettings.Backend(false, "192.168.1.2").Arguments).Contains("--name \"" + nc + "\"")) throw new Exception("Receiver does not use its own screen name");
+            if (!String.Join(" ", ShareSettings.Backend(false, "192.168.1.2").Arguments).Contains("\"--name\" \"" + nc + "\"")) throw new Exception("Receiver does not use its own screen name");
             ShareSettings.OwnFingerprint = null;
             using (var core = Process.Start(ShareSettings.Backend(true, ""))) {
                 Thread.Sleep(1500);
