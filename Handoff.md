@@ -46,6 +46,16 @@
 - 快捷鍵：主控端設定檔加上 `keystroke(Control+Alt+<方向>) = switchInDirection(<方向>)`，只綁設定的那一軸（朝接收端和反方向）。Mac 上 Alt 是 Option。
 - 安裝時自動關閉：拿掉 `AppMutex`，改在 `PrepareToInstall`／`InitializeUninstall` 觸發 `Local\BarrierShare.Quit` 事件讓 App 正常結束（會還原游標、停掉背景程式）；0.3.8 以前沒有這個事件，或 8 秒內沒結束，就 `taskkill /F /T` 再用 `SPI_SETCURSORS` 還原游標。之前有在執行的話，裝完會再開啟（靜默安裝也會）。`windows-installer-test.ps1` 有測試：背景執行中更新、更新後重新開啟、執行中解除安裝。
 
+### 0.3.9：進階設定、手動位址、Windows 背景服務
+
+- 進階設定（兩個 GUI）：切換延遲、輕敲兩下、角落不切換、接收端 ctrl/super 對調、相對滑鼠、螢幕保護同步、切換快捷鍵開關、Ctrl+Alt+L 鎖游標、額外 options 行（不能有 section/end）。存在 settings.xml 的 `<advanced>`／settings.json 的 `advanced`，舊設定檔可讀。
+- 手動位址：`barrier-link` 新指令 `TARGETS\t<a,b>`（IPv4 或名稱，最多 16 個），每次搜尋也直接送到這些位址；名稱最多 30 秒解析一次。GUI 在 READY 和存檔後送出。
+- Windows 背景服務 `barrier-service.exe`（服務名 `BarrierShare`，LocalSystem，自動啟動）：GUI 透過 `\\.\pipe\BarrierShare.Service` 送 START/STOP/STATUS。核心用主控台工作階段的 winlogon token 啟動（SYSTEM），所以登入畫面、鎖定畫面、UAC 都能用；登出後會在新的主控台工作階段重新啟動核心。
+  - 安全性：只接受主控台工作階段使用者的要求；配對憑證、信任清單、設定檔以資料傳送，服務寫到 `{app}\state\<SID>\`（只有 SYSTEM／Administrators 可改，使用者可讀），從不開啟使用者指定的路徑；執行檔只用服務自己的資料夾。
+  - 已知限制：核心以 SYSTEM 讀取要傳送的檔案（多人共用電腦時要注意）；核心還原游標時讀的是 SYSTEM 的游標配置，GUI 停止核心後會再用使用者的配置還原。
+  - 安裝改為 `PrivilegesRequired=admin`、`{autopf}\Barrier Share`；`PrepareToInstall` 停服務、移除 HKCU 舊個人安裝；裝完用 `sc` 建立／更新並啟動服務；解除安裝停止並刪除服務、刪 `{app}\state`。GUI 以 `runasoriginaluser` 重新開啟。
+  - 免安裝 ZIP 沒有服務，GUI 連不到 pipe 時自動改回自己啟動核心。
+
 ## 待辦
 
 0. 版本號統一：Windows 與 Mac 都在 0.3.8（2026-11-12 以 `windows-v0.3.8`、`mac-v0.3.8` 分開發布，是最後一次分開發布），視窗標題顯示版本（Windows 系統匣提示也會顯示；Mac 新增「關於 Barrier Share」選單）。

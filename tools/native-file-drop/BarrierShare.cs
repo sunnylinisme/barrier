@@ -240,6 +240,33 @@ sealed class ShareAdvanced
     }
 }
 
+// Talks to barrier-service.exe (installed version): the service runs the core with system rights so
+// it also works on the sign-in screen, the lock screen and UAC prompts. The portable copy has no service.
+static class ShareService
+{
+    public const string Pipe = "BarrierShare.Service";
+    public static bool Installed { get { return File.Exists(Path.Combine(ShareSettings.Bin, "barrier-service.exe")); } }
+    public static string[] Request(string line, int timeout = 1500)
+    {
+        using (var pipe = new System.IO.Pipes.NamedPipeClientStream(".", Pipe, System.IO.Pipes.PipeDirection.InOut)) {
+            pipe.Connect(timeout); pipe.ReadMode = System.IO.Pipes.PipeTransmissionMode.Message;
+            byte[] request = Encoding.UTF8.GetBytes(line); pipe.Write(request, 0, request.Length); pipe.Flush();
+            var reply = new MemoryStream(); var buffer = new byte[4096];
+            do { int read = pipe.Read(buffer, 0, buffer.Length); if (read == 0) break; reply.Write(buffer, 0, read); } while (!pipe.IsMessageComplete);
+            string[] f = Encoding.UTF8.GetString(reply.ToArray()).Split('\t');
+            if (f[0] != "OK" || f.Length != 3) throw new IOException("背景服務：" + (f.Length > 1 ? f[1] : f[0]));
+            return f;
+        }
+    }
+    static string File64(string path) { return File.Exists(path) ? Convert.ToBase64String(File.ReadAllBytes(path)) : ""; }
+    // The pairing identity and settings travel as data; the service never opens the user's folders.
+    public static string StartCommand(bool host, string address)
+    {
+        return String.Join("\t", new[] { "START", host ? "host" : "receiver", host ? "-" : address, File64(Path.Combine(ShareSettings.Profile(host), "SSL", "Barrier.pem")),
+            File64(ShareSettings.TrustedPath(host)), host ? Convert.ToBase64String(new UTF8Encoding(false).GetBytes(ShareSettings.Config(true))) : "" });
+    }
+}
+
 // Launch at sign-in through the per-user Run key; the value follows the exe if the app is moved.
 static class ShareLogin
 {
@@ -384,9 +411,11 @@ sealed class ShareWindow : Form
     readonly bool testing;
     readonly List<ShareCard> cards = new List<ShareCard>();
     Process backend, link;
+    // Set while the service runs the core; its log file is followed instead of the process output.
+    string serviceLog; long serviceOffset; readonly System.Windows.Forms.Timer serviceTail = new System.Windows.Forms.Timer { Interval = 500 };
     Form consent, diagnostics;
     string consentId, connectedAddress = "", savedPeer = "";
-    bool closing, loading = true, enabled = true, discoveryReady, started, transferring;
+    bool closing, loading = true, enabled = true, discoveryReady, started, transferring, keepServiceCore;
     readonly CheckBox autostart = new CheckBox();
     readonly ShareProgress progress = new ShareProgress();
     // Set by --background (sign-in launch): start in the notification area without showing the window.
@@ -472,6 +501,7 @@ sealed class ShareWindow : Form
         nearby.SelectedIndexChanged += delegate { UpdateControls(); };
         retry.Tick += delegate { if (enabled && link == null && !testing && !closing) StartLink(); };
         updateTimer.Tick += delegate { CheckUpdate(); };
+        serviceTail.Tick += delegate { FollowServiceLog(); };
         ResumeLayout(false);
         Shown += delegate {
             var available=Screen.FromControl(this).WorkingArea;
@@ -479,6 +509,8 @@ sealed class ShareWindow : Form
             Startup();
         };
         FormClosing += delegate(object sender, FormClosingEventArgs e) {
+            // On sign-out or shutdown the service keeps the core running for the sign-in screen.
+            if (e.CloseReason == CloseReason.WindowsShutDown) { closing = true; keepServiceCore = true; }
             if (!closing && !testing) { e.Cancel = true; Hide(); tray.ShowBalloonTip(1500, "Barrier Share", "程式已收至系統匣；可從圖示開啟或結束。", ToolTipIcon.Info); return; }
             closing = true; retry.Stop(); updateTimer.Stop(); StopLink(); StopBackend(); tray.Dispose();
         };
@@ -642,6 +674,17 @@ sealed class ShareWindow : Form
     void StartBackend()
     {
         if (backend != null || !enabled) return;
+        if (!testing && ShareService.Installed) {
+            try {
+                ShareSettings.Backend(Host, address.Text); // validates the address and settings
+                var reply = ShareService.Request(ShareService.StartCommand(Host, address.Text), 5000);
+                backend = new Process(); serviceLog = reply[2]; serviceOffset = 0;
+                try { serviceOffset = new FileInfo(serviceLog).Length; } catch (Exception) { }
+                serviceTail.Start(); LogLine("背景服務已啟動核心（登入畫面與 UAC 也可使用）· " + serviceLog);
+                connectedAddress = address.Text; status.Text = "配對已驗證，正在連線…"; UpdateControls();
+                return;
+            } catch (Exception e) { backend = null; serviceLog = null; LogLine("背景服務無法使用，改由這個程式啟動：" + e.Message); }
+        }
         try {
             var process = new Process { StartInfo = ShareSettings.Backend(Host, address.Text), EnableRaisingEvents = true }; backend = process;
             process.OutputDataReceived += delegate(object s, DataReceivedEventArgs e) { Post(process, e.Data, false); }; process.ErrorDataReceived += delegate(object s, DataReceivedEventArgs e) { Post(process, e.Data, false); };
@@ -652,6 +695,10 @@ sealed class ShareWindow : Form
     void StopBackend()
     {
         var process = backend; backend = null;
+        if (serviceLog != null) {
+            serviceTail.Stop(); serviceLog = null;
+            if (!keepServiceCore) try { ShareService.Request("STOP", 5000); } catch (Exception e) { LogLine("停止背景服務核心失敗：" + e.Message); }
+        }
         if (process != null) { try { if (!process.HasExited) { process.Kill(); process.WaitForExit(5000); } } catch (InvalidOperationException) { } process.Dispose(); ShareCursor.Restore(); }
         UpdateControls();
     }
@@ -742,6 +789,21 @@ sealed class ShareWindow : Form
         peerLabel.Text="對方同意後，會記住這台電腦。"; status.Text="找到附近電腦\r\n可以發出配對邀請";
         using (var graphics = CreateGraphics()) File.WriteAllText(Path.Combine(directory, "LAYOUT-PASS.txt"),
             "Empty, available, long-name, receiver and paused states rendered; accessible native selectors fit their cards with no visible sibling overlap. Actual render DPI: " + graphics.DpiX + " x " + graphics.DpiY + ". No simulated or physical multi-DPI claim.");
+    }
+    void FollowServiceLog()
+    {
+        if (serviceLog == null) return;
+        try {
+            using (var stream = new FileStream(serviceLog, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete)) {
+                if (stream.Length < serviceOffset) serviceOffset = 0;
+                stream.Seek(serviceOffset, SeekOrigin.Begin);
+                var bytes = new byte[Math.Min(1 << 20, stream.Length - serviceOffset)]; int read = stream.Read(bytes, 0, bytes.Length);
+                int end = Array.LastIndexOf(bytes, (byte)'\n', Math.Max(0, read - 1));
+                if (read == 0 || end < 0) return;
+                serviceOffset += end + 1;
+                foreach (string line in Encoding.UTF8.GetString(bytes, 0, end + 1).Split('\n')) { string text = line.TrimEnd('\r'); if (text.Length > 0) LogLine(text); }
+            }
+        } catch (IOException) { } catch (UnauthorizedAccessException) { }
     }
     void SendTargets() { try { string list = ShareSettings.Advanced.TargetList(); if (list.Length > 0 || link != null) Send("TARGETS\t" + list); } catch (Exception e) { Error(e); } }
     // Host-side Barrier options plus direct addresses for computers on another subnet or VPN.

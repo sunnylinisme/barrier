@@ -8,7 +8,8 @@ Barrier Share — Windows／Mac 雙向複製通用測試版
 搜尋與配對
 1. 停止舊版連線程式，再開啟新版。
    Windows：開啟 BarrierShare-Setup-0.3.9-x64.exe 安裝，再從開始功能表開啟 Barrier Share。
-   安裝程式會自動關閉執行中的舊版，裝完再開啟；沿用同一位置，保留配對及設定。
+   安裝需要系統管理員權限（會詢問一次「是否允許」），裝在 Program Files，並安裝「Barrier Share」背景服務。
+   安裝程式會自動關閉執行中的舊版並移除 0.3.8 以前的個人安裝，裝完再開啟；配對及設定都會保留。
    也可使用可攜 ZIP，解壓後雙擊 BarrierShare.exe。
    Mac：解壓縮後將 Barrier Share.app 放到「應用程式」，再開啟。
    Mac 測試版未公證，若被阻擋，請在「系統設定 → 隱私權與安全性」允許開啟。
@@ -24,6 +25,9 @@ Barrier Share — Windows／Mac 雙向複製通用測試版
    Windows 防火牆若詢問，允許 barrier-link.exe 和 barriers.exe 使用私人網路。
 
 0.3.9 更新（Windows）
+新增 Barrier Share 背景服務：登入畫面、鎖定畫面及「使用者帳戶控制（UAC）」視窗，也能用另一台的鍵盤滑鼠操作。
+因此安裝改為需要系統管理員權限，程式改裝在 Program Files；舊的個人安裝會自動移除，配對與設定保留。
+免安裝 ZIP 沒有背景服務，登入畫面與 UAC 視窗仍無法跨台操作。
 勾選視窗下方「登入時自動啟動」後，登入 Windows 會在系統匣背景啟動並自動連線。
 傳送或接收檔案時，狀態會顯示已傳大小及速度；「恢復連線」按鈕會變成「取消傳送」。
 主控端可按 Ctrl+Alt+方向鍵（朝接收端的方向）直接切到另一台，按反方向切回。

@@ -15,10 +15,12 @@ AppVersion={#AppVersion}
 AppPublisher=Barrier Share contributors
 AppPublisherURL=https://github.com/sunnylinisme/barrier
 AppSupportURL=https://github.com/sunnylinisme/barrier
-DefaultDirName={localappdata}\Programs\Barrier Share
+DefaultDirName={autopf}\Barrier Share
 DefaultGroupName=Barrier Share
 DisableProgramGroupPage=yes
-PrivilegesRequired=lowest
+; Administrator rights install the Barrier Share service, which lets the other computer
+; control the sign-in screen, the lock screen and UAC prompts.
+PrivilegesRequired=admin
 ArchitecturesAllowed=x64os
 ArchitecturesInstallIn64BitMode=x64os
 MinVersion=10.0.18362
@@ -53,6 +55,7 @@ Source: "{#PackageDir}\barriers.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#PackageDir}\barrierc.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#PackageDir}\barrier-pair.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#PackageDir}\barrier-link.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#PackageDir}\barrier-service.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#PackageDir}\GUI-README.txt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#PackageDir}\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#PackageDir}\COMMIT.txt"; DestDir: "{app}"; Flags: ignoreversion
@@ -68,11 +71,14 @@ Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: 
 
 [Run]
 ; A copy that was running before the update is started again, also for silent installs.
-Filename: "{app}\BarrierShare.exe"; WorkingDir: "{app}"; Flags: nowait; Check: WasRunning
-Filename: "{app}\BarrierShare.exe"; Description: "{cm:LaunchProgram,Barrier Share}"; WorkingDir: "{app}"; Flags: nowait postinstall skipifsilent unchecked; Check: not WasRunning
+; The app runs as the signed-in user, never with the installer's administrator rights.
+Filename: "{app}\BarrierShare.exe"; WorkingDir: "{app}"; Flags: nowait runasoriginaluser; Check: WasRunning
+Filename: "{app}\BarrierShare.exe"; Description: "{cm:LaunchProgram,Barrier Share}"; WorkingDir: "{app}"; Flags: nowait postinstall skipifsilent unchecked runasoriginaluser; Check: not WasRunning
 
-; Settings and pairing live in a separate LocalAppData\BarrierShare directory.
-; No UninstallDelete entry: uninstall removes only this install's recorded files.
+; Settings and pairing live in LocalAppData\BarrierShare and are kept. The service's copy of them
+; (pairing identity, screen settings, logs, received files) lives in {app}\state and goes with the app.
+[UninstallDelete]
+Type: filesandordirs; Name: "{app}\state"
 
 [Code]
 const
@@ -123,17 +129,77 @@ begin
   Sleep(300);
 end;
 
+function Sc(Params: String): Integer;
+var
+  Code: Integer;
+begin
+  if not Exec(ExpandConstant('{sys}\sc.exe'), Params, '', SW_HIDE, ewWaitUntilTerminated, Code) then Code := -1;
+  Log('sc ' + Params + ' -> ' + IntToStr(Code));
+  Result := Code;
+end;
+
+{ Stop the service and wait until it has ended its core, so the files can be replaced. }
+procedure StopService();
+var
+  I, Code: Integer;
+begin
+  Sc('stop BarrierShare');
+  for I := 1 to 50 do begin
+    { findstr succeeds while the service is still running or changing state. }
+    Exec(ExpandConstant('{sys}\cmd.exe'), '/c sc query BarrierShare | findstr /c:"RUNNING" /c:"PENDING" >nul', '', SW_HIDE, ewWaitUntilTerminated, Code);
+    if Code <> 0 then break;
+    Sleep(200);
+  end;
+end;
+
+{ Versions up to 0.3.8 installed per user under LocalAppData; remove that copy so only one remains.
+  Pairing and settings are kept because they live outside the program folder. }
+procedure RemovePerUserInstall();
+var
+  Command: String;
+  Code: Integer;
+begin
+  if not RegQueryStringValue(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Uninstall\org.barriershare.desktop_is1', 'UninstallString', Command) then exit;
+  Command := RemoveQuotes(Command);
+  if not FileExists(Command) then exit;
+  Log('Removing the per-user installation: ' + Command);
+  Exec(Command, '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART', '', SW_HIDE, ewWaitUntilTerminated, Code);
+end;
+
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 begin
   CloseBarrierShare();
-  if CheckForMutexes(AppMutexName) then
-    Result := ExpandConstant('{cm:CloseFailed}')
-  else
-    Result := '';
+  if CheckForMutexes(AppMutexName) then begin
+    Result := ExpandConstant('{cm:CloseFailed}');
+    exit;
+  end;
+  StopService();
+  RemovePerUserInstall();
+  Result := '';
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+var
+  Binary: String;
+begin
+  if CurStep <> ssPostInstall then exit;
+  Binary := '"' + ExpandConstant('{app}\barrier-service.exe') + '"';
+  if Sc('create BarrierShare binPath= "' + Binary + '" start= auto DisplayName= "Barrier Share"') <> 0 then
+    Sc('config BarrierShare binPath= "' + Binary + '" start= auto');
+  Sc('description BarrierShare "Lets the paired computer control the sign-in screen, lock screen and UAC prompts."');
+  Sc('failure BarrierShare reset= 86400 actions= restart/5000/restart/5000/restart/30000');
+  Sc('start BarrierShare');
 end;
 
 function InitializeUninstall(): Boolean;
 begin
   CloseBarrierShare();
   Result := True;
+end;
+
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+begin
+  if CurUninstallStep <> usUninstall then exit;
+  StopService();
+  Sc('delete BarrierShare');
 end;

@@ -34,7 +34,7 @@ for platform in Windows Mac; do
 done
 cat >> "$notes" <<EOF
 下載
-- Windows 10/11 x64：BarrierShare-Setup-$version-x64.exe（安裝版；會自動關閉並重新開啟執行中的舊版，保留配對及設定）或 BarrierShare-$version-x64-portable.zip（免安裝）
+- Windows 10/11 x64：BarrierShare-Setup-$version-x64.exe（安裝版，需要系統管理員權限；含背景服務，登入畫面與 UAC 也能跨台操作；會自動關閉並重新開啟執行中的舊版，保留配對及設定）或 BarrierShare-$version-x64-portable.zip（免安裝）
 - Apple Silicon Mac（macOS 15+）：BarrierShare-$version-macos-arm64.zip；解壓縮後將 Barrier Share.app 放到「應用程式」取代舊版，更新前先結束舊程式
 EOF
 

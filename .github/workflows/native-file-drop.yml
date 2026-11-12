@@ -136,7 +136,7 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory build/package | Out-Null
-          Copy-Item build/bin/Release/barrierc.exe, build/bin/Release/barriers.exe, build/bin/Release/barrier-pair.exe, build/bin/Release/barrier-link.exe, build/bin/Release/BarrierShare.exe build/package/
+          Copy-Item build/bin/Release/barrierc.exe, build/bin/Release/barriers.exe, build/bin/Release/barrier-pair.exe, build/bin/Release/barrier-link.exe, build/bin/Release/barrier-service.exe, build/bin/Release/BarrierShare.exe build/package/
           Copy-Item tools/native-file-drop/GUI-README.txt build/package/
           Copy-Item LICENSE build/package/
           Copy-Item -Recurse tools/native-file-drop/licenses build/package/

@@ -20,12 +20,14 @@ if (-not $TestRoot.StartsWith($workspace, [StringComparison]::OrdinalIgnoreCase)
     throw 'TestRoot must be a new directory inside the CI workspace.'
 }
 $profile = Join-Path $env:LOCALAPPDATA 'BarrierShare'
-$uninstallKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\org.barriershare.desktop_is1'
-$machineKey = 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\org.barriershare.desktop_is1'
+# 0.3.9 installs for all users (administrator) with the Barrier Share service.
+$uninstallKey = 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\org.barriershare.desktop_is1'
+$machineKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\org.barriershare.desktop_is1'
 $shortcuts = @(
-    (Join-Path ([Environment]::GetFolderPath('Programs')) 'Barrier Share.lnk'),
-    (Join-Path ([Environment]::GetFolderPath('DesktopDirectory')) 'Barrier Share.lnk')
+    (Join-Path ([Environment]::GetFolderPath('CommonPrograms')) 'Barrier Share.lnk'),
+    (Join-Path ([Environment]::GetFolderPath('CommonDesktopDirectory')) 'Barrier Share.lnk')
 )
+if (Get-Service BarrierShare -ErrorAction SilentlyContinue) { throw 'Refusing to replace an existing Barrier Share service.' }
 foreach ($path in @($profile, $uninstallKey, $machineKey) + $shortcuts) {
     if (Test-Path -LiteralPath $path) { throw "Refusing to alter an existing profile, installation or shortcut: $path" }
 }
@@ -63,7 +65,7 @@ function Assert-Profile([hashtable]$Expected) {
     }
 }
 function Assert-Installed {
-    foreach ($name in 'BarrierShare.exe', 'barriers.exe', 'barrierc.exe', 'barrier-pair.exe', 'barrier-link.exe', 'GUI-README.txt', 'LICENSE', 'COMMIT.txt') {
+    foreach ($name in 'BarrierShare.exe', 'barriers.exe', 'barrierc.exe', 'barrier-pair.exe', 'barrier-link.exe', 'barrier-service.exe', 'GUI-README.txt', 'LICENSE', 'COMMIT.txt') {
         if (-not (Test-Path -LiteralPath (Join-Path $installDir $name) -PathType Leaf)) { throw "Missing installed file: $name" }
     }
     foreach ($file in Get-ChildItem -LiteralPath $PackageDir -File -Recurse) {
@@ -73,7 +75,11 @@ function Assert-Installed {
             throw "Installed payload differs from package: $relative"
         }
     }
-    if (Test-Path -LiteralPath $machineKey) { throw 'Installer unexpectedly created a machine-wide uninstall entry.' }
+    if (Test-Path -LiteralPath $machineKey) { throw 'Installer unexpectedly created a per-user uninstall entry.' }
+    $service = Get-CimInstance Win32_Service -Filter "Name='BarrierShare'"
+    if (-not $service -or $service.State -ne 'Running' -or $service.StartMode -ne 'Auto' -or -not $service.PathName.Contains((Join-Path $installDir 'barrier-service.exe'))) {
+        throw "Barrier Share service is not installed and running from this installation: $($service | Out-String)"
+    }
     $entry = Get-ItemProperty -LiteralPath $uninstallKey
     $fileVersion = [Version][Diagnostics.FileVersionInfo]::GetVersionInfo((Join-Path $installDir 'BarrierShare.exe')).FileVersion
     $expectedVersion = '{0}.{1}.{2}' -f $fileVersion.Major, $fileVersion.Minor, $fileVersion.Build
@@ -116,6 +122,48 @@ Invoke-TestProcess $InstallerPath ($arguments + "/LOG=$(Join-Path $TestRoot 'ins
 Assert-Installed
 Assert-Profile $beforeInstall
 
+# The service starts a host core with the winlogon token of the console session, from data sent
+# over its pipe, and stops it again. The core then also serves the sign-in screen and UAC prompts.
+function Invoke-Service([string]$Line) {
+    $pipe = [IO.Pipes.NamedPipeClientStream]::new('.', 'BarrierShare.Service', [IO.Pipes.PipeDirection]::InOut)
+    try {
+        $pipe.Connect(5000); $pipe.ReadMode = [IO.Pipes.PipeTransmissionMode]::Message
+        $bytes = [Text.Encoding]::UTF8.GetBytes($Line); $pipe.Write($bytes, 0, $bytes.Length); $pipe.Flush()
+        $buffer = [byte[]]::new(65536); $reply = [IO.MemoryStream]::new()
+        do { $read = $pipe.Read($buffer, 0, $buffer.Length); $reply.Write($buffer, 0, $read) } while ($read -gt 0 -and -not $pipe.IsMessageComplete)
+        return [Text.Encoding]::UTF8.GetString($reply.ToArray()).Split("`t")
+    } finally { $pipe.Dispose() }
+}
+function Get-ServiceCore { @(Get-CimInstance Win32_Process -Filter "Name='barriers.exe'" | Where-Object { $_.ExecutablePath -ieq (Join-Path $installDir 'barriers.exe') }) }
+$serviceProfile = Join-Path $TestRoot 'service-identity'
+& (Join-Path $installDir 'barrier-pair.exe') init $serviceProfile | Out-Null
+if ($LASTEXITCODE -ne 0) { throw 'Cannot create a test identity for the service.' }
+$pem = [Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $serviceProfile 'SSL\Barrier.pem')))
+$config = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes("section: screens`n windows-host:`n windows:`nend`nsection: links`n windows-host:`n  right = windows`n windows:`n  left = windows-host`nend`nsection: options`n clipboardSharing = true`nend`n"))
+$console = (Get-CimInstance Win32_Process -Filter "Name='explorer.exe'" | Select-Object -First 1).SessionId
+Write-Output "::notice title=Service session::test session $((Get-Process -Id $PID).SessionId), explorer session $console"
+$reply = Invoke-Service "START`thost`t-`t$pem`t`t$config"
+if ($reply[0] -ne 'OK') { throw "Service refused START: $($reply -join ' ')" }
+$deadline = [DateTime]::UtcNow.AddSeconds(15)
+while (@(Get-ServiceCore).Count -eq 0 -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 200 }
+$core = Get-ServiceCore
+$stateRoot = Join-Path $installDir 'state'
+if ($core.Count -ne 1) {
+    $notes = Get-ChildItem -LiteralPath $stateRoot -Recurse -Filter service.log -ErrorAction SilentlyContinue | ForEach-Object { Get-Content -LiteralPath $_.FullName -Raw }
+    throw "Service did not start the core: $notes"
+}
+$owner = Invoke-CimMethod -InputObject $core[0] -MethodName GetOwner
+Write-Output "::notice title=Service core::owner $($owner.Domain)\$($owner.User), session $($core[0].SessionId), log $($reply[2])"
+if ($owner.User -ne 'SYSTEM' -or $core[0].SessionId -ne (Get-Process -Id $PID).SessionId) { throw 'Service core is not a SYSTEM process in the signed-in session.' }
+Start-Sleep -Seconds 2
+if (-not (Test-Path -LiteralPath $reply[2]) -or -not (Get-Content -LiteralPath $reply[2] -Raw).Contains('started server')) { throw 'Service core log is missing or the server did not start.' }
+$reply = Invoke-Service 'STOP'
+if ($reply[0] -ne 'OK' -or $reply[1] -ne '0') { throw "Service did not stop the core: $($reply -join ' ')" }
+Start-Sleep -Seconds 1
+if (@(Get-ServiceCore).Count -ne 0) { throw 'Core kept running after STOP.' }
+$reply = Invoke-Service "START`thost`t-`tbm90IGEga2V5`t`t$config"
+if ($reply[0] -ne 'ERROR') { throw 'Service accepted pairing data without a private key.' }
+
 $startupRoot = Join-Path $TestRoot '已安裝啟動 startup'
 Invoke-TestProcess $shortcuts[0] @('--startup-test', $startupRoot) 45 $true
 if (-not (Test-Path -LiteralPath (Join-Path $startupRoot 'STARTUP-PASS.txt'))) { throw 'Installed Start Menu shortcut did not pass normal startup/discovery checks.' }
@@ -132,6 +180,8 @@ Invoke-TestProcess (Join-Path $installDir 'unins000.exe') @('/VERYSILENT', '/SUP
 foreach ($file in Get-ChildItem -LiteralPath $PackageDir -File -Recurse) {
     if (Test-Path -LiteralPath (Join-Path $installDir ([IO.Path]::GetRelativePath($PackageDir, $file.FullName)))) { throw "Uninstall left packaged file: $($file.Name)" }
 }
+if (Get-Service BarrierShare -ErrorAction SilentlyContinue) { throw 'Uninstall left the Barrier Share service.' }
+if (Test-Path -LiteralPath (Join-Path $installDir 'state')) { throw 'Uninstall left the service state folder.' }
 foreach ($path in @($uninstallKey, $machineKey) + $shortcuts) {
     if (Test-Path -LiteralPath $path) { throw "Uninstall left registration or shortcut: $path" }
 }
@@ -172,5 +222,5 @@ if (-not $second.WaitForExit(1000)) { throw 'Uninstall left the app running.' }
 if ($null -ne (Get-ItemProperty -LiteralPath $runKey -Name BarrierShare -ErrorAction SilentlyContinue)) { throw 'Uninstall left the launch-at-sign-in entry.' }
 if (Test-Path -LiteralPath $app) { throw 'Uninstall could not remove the app that was running.' }
 
-Set-Content -LiteralPath (Join-Path $TestRoot 'INSTALLER-PASS.txt') -Value 'Per-user silent installation to a Unicode path with spaces; payload hashes and shortcuts match; installed Start Menu shortcut startup passes; repeat installation and uninstall preserve an existing profile; uninstall removes payload, shortcuts and registration; updating over a running background copy closes it through the quit signal and starts it again; uninstall closes a running copy and removes the launch-at-sign-in entry. This is a same-version reinstall, not an old-release migration test.' -Encoding utf8
+Set-Content -LiteralPath (Join-Path $TestRoot 'INSTALLER-PASS.txt') -Value 'Administrator silent installation with the Barrier Share service (runs a SYSTEM core in the signed-in session on request and stops it; rejects incomplete data) to a Unicode path with spaces; payload hashes and shortcuts match; installed Start Menu shortcut startup passes; repeat installation and uninstall preserve an existing profile; uninstall removes payload, shortcuts and registration; updating over a running background copy closes it through the quit signal and starts it again; uninstall closes a running copy and removes the launch-at-sign-in entry. This is a same-version reinstall, not an old-release migration test.' -Encoding utf8
 Get-Content -LiteralPath (Join-Path $TestRoot 'INSTALLER-PASS.txt')
