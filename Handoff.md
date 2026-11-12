@@ -58,6 +58,9 @@
 
 ## 待辦
 
+- **【Mac session 先做】0.3.9 的 Mac 程式還沒編譯過**：2026-11-12 GitHub 的 macOS arm64 runner 一直排不到（"not acquired by Runner… capacity constraints"），CI 的 macos job 都被取消。`bf3d18bb` 起 Mac 版加了：登入時自動啟動（SMAppService）、傳輸進度／取消、Control+Option+方向鍵、進階設定、手動位址、多台接收端與「排列螢幕」。請在 Mac 上 `git pull` 後跑：`cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DBARRIER_BUILD_GUI=OFF -DBARRIER_BUILD_INSTALLER=OFF -DBARRIER_BUILD_TESTS=OFF -DBARRIER_USE_SYSTEM_OPENSSL=ON -DBARRIER_NATIVE_DROP_TESTS=ON -DOPENSSL_ROOT_DIR="$(brew --prefix openssl@3)" && cmake --build build --parallel && ctest --test-dir build --output-on-failure && python3 tools/native-file-drop/link-network-test.py build/bin && sh tools/native-file-drop/package-macos.sh build && "build/Barrier Share.app/Contents/MacOS/BarrierShare" --self-test build/gui-test`，修好 Swift 編譯錯誤再推。Windows 端 `bf3d18bb` CI 全部通過（含服務以 SYSTEM 啟動核心、安裝時自動關閉與重開）。
+- 0.3.9 尚未發布；發布前需兩台以上實機驗收：多台排列、登入畫面／鎖定畫面／UAC 跨台操作、手動位址跨網段、傳輸進度與取消、登入時自動啟動。
+
 0. 版本號統一：Windows 與 Mac 都在 0.3.8（2026-11-12 以 `windows-v0.3.8`、`mac-v0.3.8` 分開發布，是最後一次分開發布），視窗標題顯示版本（Windows 系統匣提示也會顯示；Mac 新增「關於 Barrier Share」選單）。
 
 1. ~~確認 `ec4d8249` 的 CI 通過~~：已通過（run 43144214817，Windows 和 macOS 都成功）。
