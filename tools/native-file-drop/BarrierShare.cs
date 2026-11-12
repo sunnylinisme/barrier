@@ -16,6 +16,9 @@ using System.Threading.Tasks;
 using System.Windows.Forms;
 using System.Xml.Linq;
 
+[assembly: System.Reflection.AssemblyVersion("0.3.5.0")]
+[assembly: System.Reflection.AssemblyFileVersion("0.3.5.0")]
+
 static class ShareSettings
 {
     public static string Root = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "BarrierShare");
@@ -137,7 +140,8 @@ static class ShareSettings
 
 static class ShareStyle
 {
-    public static readonly Color Background = Color.FromArgb(244, 246, 250), Ink = Color.FromArgb(24, 37, 57), Muted = Color.FromArgb(109, 122, 141), Blue = Color.FromArgb(47, 101, 235);
+    public static readonly Color Background = Color.FromArgb(244, 246, 250), Ink = Color.FromArgb(24, 37, 57), Muted = Color.FromArgb(88, 105, 129), Blue = Color.FromArgb(47, 101, 235);
+    public static readonly Color Field = Color.FromArgb(247, 249, 253), Border = Color.FromArgb(219, 226, 237);
     public static GraphicsPath Rounded(RectangleF r, float radius) {
         var path = new GraphicsPath(); float d = radius * 2;
         path.AddArc(r.X, r.Y, d, d, 180, 90); path.AddArc(r.Right-d, r.Y, d, d, 270, 90); path.AddArc(r.Right-d, r.Bottom-d, d, d, 0, 90); path.AddArc(r.X, r.Bottom-d, d, d, 90, 90); path.CloseFigure(); return path;
@@ -148,28 +152,61 @@ sealed class ShareCard : Panel
     public ShareCard() { DoubleBuffered = true; BackColor = ShareStyle.Background; }
     protected override void OnPaint(PaintEventArgs e) {
         base.OnPaint(e); e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
-        using (var path = ShareStyle.Rounded(new RectangleF(0.5F,0.5F,Width-1,Height-1),16)) using (var fill = new SolidBrush(Color.White)) using (var border = new Pen(Color.FromArgb(228,233,242))) { e.Graphics.FillPath(fill,path); e.Graphics.DrawPath(border,path); }
+        using (var path = ShareStyle.Rounded(new RectangleF(0.5F,0.5F,Width-1,Height-1),14 * e.Graphics.DpiX / 96F)) using (var fill = new SolidBrush(Color.White)) using (var border = new Pen(Color.FromArgb(228,233,242))) { e.Graphics.FillPath(fill,path); e.Graphics.DrawPath(border,path); }
     }
 }
 sealed class ShareButton : Button
 {
     public bool Primary;
-    bool hover;
+    bool hover, pressed;
     public ShareButton() { FlatStyle = FlatStyle.Flat; FlatAppearance.BorderSize = 0; Cursor = Cursors.Hand; SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer,true); }
     protected override void OnMouseEnter(EventArgs e) { hover=true; Invalidate(); base.OnMouseEnter(e); }
     protected override void OnMouseLeave(EventArgs e) { hover=false; Invalidate(); base.OnMouseLeave(e); }
+    protected override void OnMouseDown(MouseEventArgs e) { if (e.Button == MouseButtons.Left) pressed=true; Invalidate(); base.OnMouseDown(e); }
+    protected override void OnMouseUp(MouseEventArgs e) { pressed=false; Invalidate(); base.OnMouseUp(e); }
+    protected override void OnMouseCaptureChanged(EventArgs e) { pressed=false; Invalidate(); base.OnMouseCaptureChanged(e); }
+    protected override void OnKeyDown(KeyEventArgs e) { if (e.KeyCode == Keys.Space) pressed=true; Invalidate(); base.OnKeyDown(e); }
+    protected override void OnKeyUp(KeyEventArgs e) { pressed=false; Invalidate(); base.OnKeyUp(e); }
+    protected override void OnLostFocus(EventArgs e) { pressed=false; Invalidate(); base.OnLostFocus(e); }
     protected override void OnPaint(PaintEventArgs e) {
         e.Graphics.Clear(BackColor); e.Graphics.SmoothingMode=SmoothingMode.AntiAlias;
-        var fill = !Enabled ? Color.FromArgb(238,241,246) : Primary ? (hover ? Color.FromArgb(36,84,206) : ShareStyle.Blue) : (hover ? Color.FromArgb(226,233,246) : Color.FromArgb(239,243,250));
-        using (var path = ShareStyle.Rounded(new RectangleF(0,0,Width-1,Height-1),10)) using (var brush = new SolidBrush(fill)) { e.Graphics.FillPath(brush,path); if (Focused && ShowFocusCues) using (var pen = new Pen(ShareStyle.Blue)) e.Graphics.DrawPath(pen,path); }
-        TextRenderer.DrawText(e.Graphics,Text,Font,ClientRectangle,!Enabled ? Color.FromArgb(155,165,181) : Primary ? Color.White : ShareStyle.Ink,TextFormatFlags.HorizontalCenter|TextFormatFlags.VerticalCenter);
+        float scale=e.Graphics.DpiX/96F;
+        var fill = !Enabled ? Color.FromArgb(239,242,247) : Primary ? (pressed ? Color.FromArgb(28,69,181) : hover ? Color.FromArgb(36,84,206) : ShareStyle.Blue) : (pressed ? Color.FromArgb(218,227,243) : hover ? Color.FromArgb(232,238,249) : Color.FromArgb(246,248,252));
+        using (var path = ShareStyle.Rounded(new RectangleF(0.5F,0.5F,Width-1,Height-1),9*scale)) using (var brush = new SolidBrush(fill)) {
+            e.Graphics.FillPath(brush,path);
+            if (!Primary && Enabled) using (var pen=new Pen(ShareStyle.Border)) e.Graphics.DrawPath(pen,path);
+        }
+        if (Focused && ShowFocusCues) using (var path=ShareStyle.Rounded(new RectangleF(3*scale,3*scale,Width-6*scale,Height-6*scale),6*scale)) using (var pen=new Pen(Primary ? Color.White : ShareStyle.Blue,scale)) e.Graphics.DrawPath(pen,path);
+        TextRenderer.DrawText(e.Graphics,Text,Font,ClientRectangle,!Enabled ? Color.FromArgb(133,145,163) : Primary ? Color.White : ShareStyle.Ink,TextFormatFlags.HorizontalCenter|TextFormatFlags.VerticalCenter|TextFormatFlags.EndEllipsis|TextFormatFlags.NoPrefix);
+    }
+}
+// Keep native keyboard navigation and accessibility while giving the whole field a visible surface.
+sealed class ShareComboBox : ComboBox
+{
+    public ShareComboBox() {
+        DropDownStyle=ComboBoxStyle.DropDownList; DrawMode=DrawMode.OwnerDrawFixed;
+        FlatStyle=FlatStyle.Standard; BackColor=ShareStyle.Field; ForeColor=ShareStyle.Ink;
+        IntegralHeight=false; MaxDropDownItems=8; UpdateItemHeight();
+    }
+    void UpdateItemHeight() { ItemHeight=(int)Math.Ceiling(Font.Height*1.8F); DropDownHeight=ItemHeight*5; }
+    protected override void OnFontChanged(EventArgs e) { base.OnFontChanged(e); UpdateItemHeight(); }
+    protected override void OnDrawItem(DrawItemEventArgs e) {
+        bool selected=(e.State & DrawItemState.Selected)!=0 && (e.State & DrawItemState.ComboBoxEdit)==0;
+        Color background=selected ? ShareStyle.Blue : BackColor;
+        using (var brush=new SolidBrush(background)) e.Graphics.FillRectangle(brush,e.Bounds);
+        int inset=Math.Max(8,Font.Height/2);
+        var textBounds=new Rectangle(e.Bounds.X+inset,e.Bounds.Y,Math.Max(1,e.Bounds.Width-2*inset),e.Bounds.Height);
+        string text=e.Index>=0 ? GetItemText(Items[e.Index]) : Text;
+        TextRenderer.DrawText(e.Graphics,text,Font,textBounds,!Enabled ? ShareStyle.Muted : selected ? Color.White : ForeColor,TextFormatFlags.Left|TextFormatFlags.VerticalCenter|TextFormatFlags.EndEllipsis|TextFormatFlags.NoPrefix);
+        e.DrawFocusRectangle();
     }
 }
 sealed class ComputerMark : Control
 {
     protected override void OnPaint(PaintEventArgs e) {
         e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
-        using (var path = ShareStyle.Rounded(new RectangleF(0,0,Width-1,Height-1),12)) using (var brush = new SolidBrush(Color.FromArgb(232,239,255))) e.Graphics.FillPath(brush,path);
+        e.Graphics.ScaleTransform(Width/52F,Height/52F);
+        using (var path = ShareStyle.Rounded(new RectangleF(0,0,51,51),12)) using (var brush = new SolidBrush(Color.FromArgb(232,239,255))) e.Graphics.FillPath(brush,path);
         using (var pen = new Pen(ShareStyle.Blue,2)) { e.Graphics.DrawRectangle(pen,12,12,28,20); e.Graphics.DrawLine(pen,8,37,44,37); e.Graphics.DrawLine(pen,22,32,22,36); e.Graphics.DrawLine(pen,30,32,30,36); }
     }
 }
@@ -180,7 +217,7 @@ sealed class NearbyDevice
 }
 sealed class ShareWindow : Form
 {
-    readonly ComboBox role = new ComboBox(), position = new ComboBox(), nearby = new ComboBox();
+    readonly ShareComboBox role = new ShareComboBox(), position = new ShareComboBox(), nearby = new ShareComboBox();
     readonly Label positionHint = new Label(), status = new Label(), peerLabel = new Label(), emptyNearby = new Label();
     readonly TextBox address = new TextBox(), details = new TextBox();
     readonly ShareButton start = new ShareButton(), stop = new ShareButton(), search = new ShareButton(), pair = new ShareButton { Primary = true }, forget = new ShareButton(), clear = new ShareButton();
@@ -201,41 +238,45 @@ sealed class ShareWindow : Form
             c.SetBounds(x-card.Left,y-card.Top,width,height); card.Controls.Add(c); c.BringToFront(); return;
         }
         c.Bounds=bounds; Controls.Add(c); c.BringToFront();
-        if (c is ShareCard) cards.Add((ShareCard)c);
+        if (c is ShareCard) { c.TabIndex=cards.Count; cards.Add((ShareCard)c); }
     }
     void LabelAt(string text, int x, int y, int width) { At(new Label { Text = text }, x, y, width, 26); }
     public ShareWindow(bool selfTest = false)
     {
+        SuspendLayout();
         testing = selfTest; Text = "Barrier Share";
-        Font = new Font("Microsoft JhengHei UI", 10F); ClientSize = new Size(840, 710); BackColor = ShareStyle.Background; ForeColor = ShareStyle.Ink;
+        Font = new Font("Microsoft JhengHei UI", 11F); AutoScaleDimensions=new SizeF(96F,96F); AutoScaleMode=AutoScaleMode.Dpi;
+        ClientSize = new Size(800, 654); BackColor = ShareStyle.Background; ForeColor = ShareStyle.Ink;
+        AutoScroll=true; AutoScrollMinSize=ClientSize;
         FormBorderStyle = FormBorderStyle.FixedSingle; MaximizeBox = false; StartPosition = FormStartPosition.CenterScreen; Icon = System.Drawing.Icon.ExtractAssociatedIcon(Application.ExecutablePath);
-        At(new Label { Text = "Barrier Share", Font = new Font("Segoe UI", 26F, FontStyle.Bold), ForeColor = ShareStyle.Ink }, 32, 24, 550, 48);
-        At(new Label { Text = "同一張桌面，連上兩台電腦。", ForeColor = ShareStyle.Muted }, 34, 77, 600, 26);
-        At(new Label { Text = "●  區域網路", ForeColor = ShareStyle.Blue, TextAlign = ContentAlignment.MiddleRight }, 650, 38, 158, 30);
-        foreach (var bounds in new[] { new Rectangle(32,118,776,112), new Rectangle(32,250,468,250), new Rectangle(520,250,288,250), new Rectangle(32,520,776,94) }) At(new ShareCard(),bounds.X,bounds.Y,bounds.Width,bounds.Height);
-        At(new ComputerMark { BackColor = Color.White },52,151,52,52);
-        At(new Label { Text = "這台電腦", BackColor = Color.White, ForeColor = ShareStyle.Muted, Font = new Font(Font.FontFamily,9F) },120,139,260,24);
-        At(new Label { Text = Environment.MachineName, BackColor = Color.White, Font = new Font(Font.FontFamily,16F,FontStyle.Bold), AutoEllipsis = true },120,167,274,36);
-        At(new Label { Text = "角色", BackColor = Color.White, ForeColor = ShareStyle.Muted },416,138,340,26);
-        At(role,416,169,370,34); role.DropDownStyle = ComboBoxStyle.DropDownList; role.FlatStyle = FlatStyle.Flat;
-        role.Items.AddRange(new object[] { "主控端 · 鍵盤滑鼠在這台", "接收端 · 等待主控端邀請" });
-        At(new Label { Text = "附近電腦", BackColor = Color.White, Font = new Font(Font.FontFamily,14F,FontStyle.Bold) },52,272,300,32);
-        search.Text = "重新搜尋"; search.BackColor = Color.White; At(search,376,268,104,34);
-        At(nearby,52,328,428,36); nearby.DropDownStyle = ComboBoxStyle.DropDownList; nearby.FlatStyle = FlatStyle.Flat; nearby.Font = new Font(Font.FontFamily,12F);
-        emptyNearby.Text = "正在尋找附近的電腦…\r\n在另一台開啟程式，並選擇另一個角色。"; emptyNearby.BackColor=Color.White; emptyNearby.ForeColor=ShareStyle.Muted; At(emptyNearby,52,325,428,62);
-        At(new Label { Text = "首次核對短碼，對方同意後即可連線。", BackColor = Color.White, ForeColor = ShareStyle.Muted },52,397,428,28);
-        pair.Text = "邀請配對  →"; pair.BackColor=Color.White; pair.Font = new Font(Font.FontFamily,11F,FontStyle.Bold); At(pair,52,440,428,40);
-        At(new Label { Text = "連線狀態", BackColor = Color.White, Font = new Font(Font.FontFamily,14F,FontStyle.Bold) },540,272,248,32);
-        status.BackColor = Color.White; status.ForeColor = ShareStyle.Blue; status.Font = new Font(Font.FontFamily,12F,FontStyle.Bold); At(status,540,321,248,70);
-        peerLabel.BackColor=Color.White; peerLabel.ForeColor=ShareStyle.Muted; peerLabel.AutoEllipsis=true; peerLabel.Font=new Font(Font.FontFamily,9F); At(peerLabel,540,394,248,42);
-        start.Text = "恢復連線"; stop.Text = "暫停"; start.BackColor=stop.BackColor=Color.White; At(start,540,446,142,34); At(stop,692,446,96,34);
-        At(new Label { Text="螢幕位置", BackColor=Color.White, Font=new Font(Font.FontFamily,13F,FontStyle.Bold) },52,551,140,32);
-        At(position,220,549,566,34); position.DropDownStyle=ComboBoxStyle.DropDownList; position.FlatStyle=FlatStyle.Flat;
+        At(new Label { Text = "Barrier Share", Font = new Font("Segoe UI", 24F, FontStyle.Bold), ForeColor = ShareStyle.Ink }, 24, 20, 520, 44);
+        At(new Label { Text = "同一張桌面，連上兩台電腦。", ForeColor = ShareStyle.Muted }, 26, 68, 600, 26);
+        At(new Label { Text = "●  區域網路", ForeColor = ShareStyle.Blue, Font=new Font(Font.FontFamily,10F), TextAlign = ContentAlignment.MiddleRight }, 620, 34, 156, 30);
+        foreach (var bounds in new[] { new Rectangle(24,108,752,108), new Rectangle(24,232,444,244), new Rectangle(484,232,292,244), new Rectangle(24,492,752,92) }) At(new ShareCard(),bounds.X,bounds.Y,bounds.Width,bounds.Height);
+        At(new ComputerMark { BackColor = Color.White },44,138,48,48);
+        At(new Label { Text = "這台電腦", BackColor = Color.White, ForeColor = ShareStyle.Muted, Font = new Font(Font.FontFamily,10F) },108,125,280,24);
+        At(new Label { Text = Environment.MachineName, BackColor = Color.White, Font = new Font(Font.FontFamily,16F,FontStyle.Bold), AutoEllipsis = true },108,153,288,36);
+        At(new Label { Text = "角色", BackColor = Color.White, ForeColor = ShareStyle.Muted, Font=new Font(Font.FontFamily,10F) },432,125,320,24);
+        At(role,432,151,320,42); role.AccessibleName="這台電腦的角色"; role.TabIndex=0;
+        role.Items.AddRange(new object[] { "主控端 · 使用這台的鍵盤滑鼠", "接收端 · 等待主控端邀請" });
+        At(new Label { Text = "附近電腦", BackColor = Color.White, Font = new Font(Font.FontFamily,13F,FontStyle.Bold) },44,252,260,30);
+        search.Text = "重新搜尋"; search.BackColor = Color.White; search.Font=new Font(Font.FontFamily,10F); At(search,336,248,108,36); search.TabIndex=0;
+        At(nearby,44,305,400,42); nearby.AccessibleName="附近的電腦"; nearby.TabIndex=1; nearby.DropDownWidth=500;
+        emptyNearby.Text = "正在尋找附近的電腦…\r\n請在另一台開啟程式，並選擇另一個角色。"; emptyNearby.BackColor=Color.White; emptyNearby.ForeColor=ShareStyle.Muted; At(emptyNearby,44,303,400,64);
+        At(new Label { Text = "首次連線需核對短碼，並由雙方同意。", BackColor = Color.White, ForeColor = ShareStyle.Muted, Font=new Font(Font.FontFamily,10F) },44,375,400,26);
+        pair.Text = "邀請配對  →"; pair.BackColor=Color.White; pair.Font = new Font(Font.FontFamily,11F,FontStyle.Bold); At(pair,44,416,400,40); pair.TabIndex=2;
+        At(new Label { Text = "連線狀態", BackColor = Color.White, Font = new Font(Font.FontFamily,13F,FontStyle.Bold) },504,252,252,30);
+        status.BackColor = Color.White; status.ForeColor = ShareStyle.Blue; status.Font = new Font(Font.FontFamily,12F,FontStyle.Bold); At(status,504,305,252,76);
+        peerLabel.BackColor=Color.White; peerLabel.ForeColor=ShareStyle.Muted; peerLabel.AutoEllipsis=true; peerLabel.Font=new Font(Font.FontFamily,10F); At(peerLabel,504,382,252,38);
+        start.Text = "恢復連線"; stop.Text = "暫停"; start.BackColor=stop.BackColor=Color.White; At(start,504,422,148,34); At(stop,664,422,92,34); start.TabIndex=0; stop.TabIndex=1;
+        At(new Label { Text="螢幕位置", BackColor=Color.White, Font=new Font(Font.FontFamily,13F,FontStyle.Bold) },44,511,184,30);
+        At(new Label { Text="游標從哪一側移過去", BackColor=Color.White, ForeColor=ShareStyle.Muted, Font=new Font(Font.FontFamily,10F) },44,544,200,24);
+        At(position,260,516,492,42); position.AccessibleName="接收端的螢幕位置"; position.TabIndex=0;
         position.Items.AddRange(new object[] { "接收端在右邊  →", "接收端在左邊  ←", "接收端在上方  ↑", "接收端在下方  ↓" }); position.SelectedIndex=0;
-        positionHint.Text="由主控端設定兩台螢幕的相對位置"; positionHint.BackColor=Color.White; positionHint.ForeColor=ShareStyle.Muted; At(positionHint,220,553,566,32);
-        forget.Text="解除配對"; clear.Text="清除暫存"; forget.BackColor=clear.BackColor=ShareStyle.Background; At(forget,32,634,116,34); At(clear,160,634,116,34);
-        var diagnosticButton = new ShareButton { Text="診斷紀錄", BackColor=ShareStyle.Background }; At(diagnosticButton,680,634,128,34); diagnosticButton.Click += delegate { ShowDiagnostics(); };
-        At(new Label { Text="複製 → 換到另一台 → 等接收完成後貼上", ForeColor=ShareStyle.Muted, Font=new Font(Font.FontFamily,9F) },34,682,740,24);
+        positionHint.Text="由主控端設定兩台螢幕的相對位置"; positionHint.BackColor=Color.White; positionHint.ForeColor=ShareStyle.Muted; At(positionHint,260,522,492,42);
+        forget.Text="解除配對"; clear.Text="清除暫存"; forget.BackColor=clear.BackColor=ShareStyle.Background; forget.Font=clear.Font=new Font(Font.FontFamily,10F); At(forget,24,602,108,36); At(clear,144,602,108,36); forget.TabIndex=4; clear.TabIndex=5;
+        var diagnosticButton = new ShareButton { Text="診斷紀錄", BackColor=ShareStyle.Background, Font=new Font(Font.FontFamily,10F), TabIndex=6 }; At(diagnosticButton,656,602,120,36); diagnosticButton.Click += delegate { ShowDiagnostics(); };
+        At(new Label { Text="複製 → 換到另一台 → 完成後貼上", ForeColor=ShareStyle.Muted, Font=new Font(Font.FontFamily,10F), TextAlign=ContentAlignment.MiddleCenter },270,602,372,36);
         details.Multiline=true; details.ReadOnly=true; details.ScrollBars=ScrollBars.Vertical; details.Font=new Font("Consolas",9F); details.BackColor=Color.FromArgb(249,251,255); details.BorderStyle=BorderStyle.None;
         var menu = new ContextMenuStrip(); menu.Items.Add("開啟視窗", null, delegate { Show(); WindowState = FormWindowState.Normal; Activate(); });
         menu.Items.Add("結束", null, delegate { closing = true; Close(); }); tray.Icon = Icon; tray.Text = "Barrier Share"; tray.ContextMenuStrip = menu; tray.Visible = !testing;
@@ -253,7 +294,10 @@ sealed class ShareWindow : Form
         position.SelectedIndexChanged += delegate { if (!loading && position.SelectedIndex >= 0) { ShareSettings.Position = ShareSettings.Directions[position.SelectedIndex]; Save(); if (backend != null) StopBackend(); } };
         nearby.SelectedIndexChanged += delegate { UpdateControls(); };
         retry.Tick += delegate { if (enabled && link == null && !testing && !closing) StartLink(); };
+        ResumeLayout(false);
         Shown += delegate {
+            var available=Screen.FromControl(this).WorkingArea;
+            if (Width>available.Width || Height>available.Height) { Size=new Size(Math.Min(Width,available.Width),Math.Min(Height,available.Height)); Location=available.Location; }
             try {
                 ShareSettings.Import(ShareSettings.Bin, true, false); ShareSettings.Import(ShareSettings.Bin, false, false);
                 bool host; string ip; ShareSettings.Load(out host, out ip); role.SelectedIndex = host ? 0 : 1; address.Text = ip; position.SelectedIndex = Array.IndexOf(ShareSettings.Directions, ShareSettings.Position);
@@ -377,7 +421,7 @@ sealed class ShareWindow : Form
     void ShowConsent(string[] message)
     {
         CloseConsent(); Show(); Activate(); consentId = message[1]; string id = consentId;
-        var dialog = new Form { Text = message[0] == "REQUEST" ? "收到配對邀請" : "核對配對碼", ClientSize = new Size(500, 310), BackColor = Color.White, ForeColor = ShareStyle.Ink, Font = Font, FormBorderStyle = FormBorderStyle.FixedDialog, StartPosition = FormStartPosition.CenterParent, MaximizeBox = false, MinimizeBox = false };
+        var dialog = new Form { Text = message[0] == "REQUEST" ? "收到配對邀請" : "核對配對碼", ClientSize = new Size(500, 310), BackColor = Color.White, ForeColor = ShareStyle.Ink, Font = Font, FormBorderStyle = FormBorderStyle.FixedDialog, StartPosition = FormStartPosition.CenterParent, MaximizeBox = false, MinimizeBox = false, AutoScaleDimensions=new SizeF(96F,96F), AutoScaleMode=AutoScaleMode.Dpi };
         consent = dialog;
         var explanation = new Label { Text = Decode(message[2]) + "\r\n請確認另一台顯示相同的 6 位數配對碼。", Bounds = new Rectangle(24, 18, 452, 58) };
         var code = new Label { Text = message[4], ForeColor = ShareStyle.Blue, Font = new Font("Consolas", 34F, FontStyle.Bold), Bounds = new Rectangle(24, 82, 452, 60), TextAlign = ContentAlignment.MiddleCenter };
@@ -396,7 +440,7 @@ sealed class ShareWindow : Form
         try {
             var process = new Process { StartInfo = ShareSettings.Backend(Host, address.Text), EnableRaisingEvents = true }; backend = process;
             process.OutputDataReceived += delegate(object s, DataReceivedEventArgs e) { Post(process, e.Data, false); }; process.ErrorDataReceived += delegate(object s, DataReceivedEventArgs e) { Post(process, e.Data, false); };
-            process.Exited += delegate { if (!closing && IsHandleCreated) BeginInvoke((Action)delegate { if (backend == process) { StopBackend(); status.Text = "連線暫停，會自動重試；詳情見下方紀錄。"; } }); };
+            process.Exited += delegate { if (!closing && IsHandleCreated) BeginInvoke((Action)delegate { if (backend == process) { StopBackend(); status.Text = "連線暫停，會自動重試；詳情見診斷紀錄。"; } }); };
             process.Start(); process.BeginOutputReadLine(); process.BeginErrorReadLine(); connectedAddress = address.Text; status.Text = "配對已驗證，正在連線…"; UpdateControls();
         } catch (Exception e) { StopBackend(); Error(e); }
     }
@@ -413,13 +457,13 @@ sealed class ShareWindow : Form
         if (line.Contains("file clipboard: sending")) status.Text = "正在傳送檔案… 可繼續操作滑鼠與鍵盤";
         if (line.Contains("file clipboard: receiving")) status.Text = "正在接收檔案… 完成後即可貼上";
         if (line.Contains("received and verified") && line.Contains("clipboard")) status.Text = "已收到檔案，可在資料夾 Ctrl+V 貼上";
-        if (line.Contains("WARNING") && line.Contains("file clipboard:")) status.Text = "檔案複製未完成；請查看下方原因。";
+        if (line.Contains("WARNING") && line.Contains("file clipboard:")) status.Text = "檔案複製未完成；請查看診斷紀錄。";
         if (line.Contains("disconnected") || line.Contains("server is dead")) status.Text = "連線中斷，正在自動重連…";
     }
     void ShowDiagnostics()
     {
         if (diagnostics == null) {
-            diagnostics = new Form { Text="Barrier Share · 診斷紀錄", ClientSize=new Size(760,400), Font=Font, StartPosition=FormStartPosition.CenterParent, Padding=new Padding(18), BackColor=Color.White };
+            diagnostics = new Form { Text="Barrier Share · 診斷紀錄", ClientSize=new Size(760,400), Font=Font, StartPosition=FormStartPosition.CenterParent, Padding=new Padding(18), BackColor=Color.White, AutoScaleDimensions=new SizeF(96F,96F), AutoScaleMode=AutoScaleMode.Dpi };
             details.Dock=DockStyle.Fill; diagnostics.Controls.Add(details);
             diagnostics.FormClosing += delegate(object sender, FormClosingEventArgs e) { if (!closing) { e.Cancel=true; diagnostics.Hide(); } };
         }
@@ -427,8 +471,34 @@ sealed class ShareWindow : Form
     }
     internal void TestDiscovery(string directory)
     {
+        Action<string> capture = delegate(string filename) {
+            Application.DoEvents(); Refresh();
+            foreach (var selector in new ComboBox[] { role, position, nearby }) {
+                if (String.IsNullOrWhiteSpace(selector.AccessibilityObject.Name) || selector.DropDownStyle != ComboBoxStyle.DropDownList)
+                    throw new Exception("Native selector is missing its accessible name or list behavior");
+                if (selector.Height < selector.Font.Height + selector.Font.Height / 2 || selector.ItemHeight < selector.Font.Height)
+                    throw new Exception("Selector clips its text or has insufficient vertical spacing: " + selector.AccessibleName);
+                if (!(selector.Parent is ShareCard) || !selector.Parent.ClientRectangle.Contains(selector.Bounds))
+                    throw new Exception("Selector extends beyond its visible card: " + selector.AccessibleName);
+            }
+            foreach (var container in new Control[] { this }.Concat(cards.Cast<Control>())) {
+                var visible = container.Controls.Cast<Control>().Where(control => control.Visible).ToArray();
+                for (int i = 0; i < visible.Length; ++i) {
+                    if (!container.DisplayRectangle.Contains(visible[i].Bounds)) throw new Exception("Container clips control: " + visible[i].Text);
+                    for (int j = i + 1; j < visible.Length; ++j)
+                        if (visible[i].Bounds.IntersectsWith(visible[j].Bounds)) throw new Exception("Visible controls overlap: " + visible[i].Text + " / " + visible[j].Text);
+                }
+            }
+            using (var bitmap = new Bitmap(Width, Height)) {
+                DrawToBitmap(bitmap, new Rectangle(Point.Empty, Size)); bitmap.Save(Path.Combine(directory, filename));
+            }
+        };
         role.SelectedIndex = 0;
-        if (!(role.Parent is ShareCard) || !(nearby.Parent is ShareCard) || !(pair.Parent is ShareCard)) throw new Exception("Card controls must belong to their visible container");
+        if (role.Items.Count != 2 || position.Items.Count != ShareSettings.Directions.Length) throw new Exception("Role or position choices are incomplete");
+        // UI-only discovery fixture: no input capture or network service starts here.
+        link = new Process(); LinkLine("READY");
+        if (nearby.Visible || !emptyNearby.Visible || pair.Enabled) throw new Exception("Empty discovery state offers an unavailable peer");
+        capture("gui-empty.png");
         string fp = "v2:sha256:" + new string('a', 64), name = Convert.ToBase64String(Encoding.UTF8.GetBytes("另一台電腦"));
         LinkLine("DEVICE\t" + fp + "\t" + name + "\t192.168.1.2\t24801\tR");
         LinkLine("DEVICE\t" + fp + "\t" + name + "\t192.168.1.3\t24801\tR");
@@ -444,9 +514,24 @@ sealed class ShareWindow : Form
         }
         if (consent != null || consentId != null) throw new Exception("Expired pairing dialog remained open");
         LinkLine("GONE\t" + fp); if (nearby.Items.Count != 0) throw new Exception("Offline peer remained listed");
-        // Render the available-peer state without starting any input capture or network service.
-        link = new Process(); savedPeer=""; LinkLine("DEVICE\t" + fp + "\t" + name + "\t192.168.1.3\t24801\tR");
+        savedPeer=""; LinkLine("DEVICE\t" + fp + "\t" + name + "\t192.168.1.3\t24801\tR");
         peerLabel.Text="對方同意後，會記住這台電腦。"; status.Text="找到附近電腦\r\n可以發出配對邀請";
+        if (!nearby.Visible || emptyNearby.Visible || !pair.Enabled) throw new Exception("Available peer cannot be invited");
+        capture("gui-available.png");
+        string longName = Convert.ToBase64String(Encoding.UTF8.GetBytes("工作室的 Windows 11 筆記型電腦 — Design review and shared files workstation"));
+        LinkLine("DEVICE\t" + fp + "\t" + longName + "\t192.168.1.3\t24801\tR");
+        capture("gui-long-name.png");
+        role.SelectedIndex = 1; link = new Process(); LinkLine("READY");
+        if (position.Visible || !positionHint.Visible || pair.Enabled) throw new Exception("Receiver offers host-only actions");
+        capture("gui-receiver.png");
+        stop.PerformClick();
+        if (!start.Enabled || stop.Enabled || pair.Enabled || !clear.Enabled) throw new Exception("Paused state exposes active connection controls");
+        capture("gui-paused.png");
+        role.SelectedIndex = 0; enabled = true; link = new Process(); LinkLine("READY");
+        LinkLine("DEVICE\t" + fp + "\t" + name + "\t192.168.1.3\t24801\tR");
+        peerLabel.Text="對方同意後，會記住這台電腦。"; status.Text="找到附近電腦\r\n可以發出配對邀請";
+        using (var graphics = CreateGraphics()) File.WriteAllText(Path.Combine(directory, "LAYOUT-PASS.txt"),
+            "Empty, available, long-name, receiver and paused states rendered; accessible native selectors fit their cards with no visible sibling overlap. Actual render DPI: " + graphics.DpiX + " x " + graphics.DpiY + ". No simulated or physical multi-DPI claim.");
     }
     void ClearCache()
     {
@@ -519,7 +604,7 @@ static class ShareProgram
                 using (var bitmap = new Bitmap(window.Width, window.Height)) { window.DrawToBitmap(bitmap, new Rectangle(Point.Empty, window.Size)); bitmap.Save(Path.Combine(directory, "gui.png")); }
                 window.Close();
             }
-            File.WriteAllText(Path.Combine(directory, "PASS.txt"), "Settings persist; old pairing and trust preserved; hidden backend starts/stops; GUI renders.");
+            File.WriteAllText(Path.Combine(directory, "PASS.txt"), "Settings persist; old pairing and trust preserved; hidden backend starts/stops; GUI states render with accessible, unclipped controls.");
             return 0;
         } catch (Exception e) { Directory.CreateDirectory(directory); File.WriteAllText(Path.Combine(directory, "FAIL.txt"), e.ToString()); return 1; }
     }
