@@ -1,6 +1,6 @@
 # Barrier Share 交接
 
-最後更新：2026-11-12
+最後更新：2026-11-12（Mac 0.3.5 發布）
 
 ## 這是什麼
 
@@ -14,7 +14,7 @@
 ## 目前版本
 
 - Windows 0.3.7（含跨畫面彈跳、主控端游標殘留修正與新版通知）：單一 EXE 安裝包（per-user，Inno Setup，`windows-setup.iss`）。
-- Mac 0.3.5（已升版，待在 Mac 上發布）：固定簽章；打包需設定 `BARRIER_CODESIGN_IDENTITY`，更新前用 `verify-macos-update.py` 驗證。
+- Mac 0.3.5（已發布，2026-11-12，Release `mac-v0.3.5`）：固定簽章（`Apple Development: freefishlin@gmail.com (PP2X799XV2)`，Team ID 2RA95F4R6F）；打包需設定 `BARRIER_CODESIGN_IDENTITY`，更新前用 `verify-macos-update.py` 驗證。
 
 ## 最近的工作
 
@@ -36,13 +36,13 @@
 
 - 兩個 GUI 啟動時和之後每 24 小時讀取一次 `api.github.com/repos/sunnylinisme/barrier/releases`，只比對自己平台的 tag（`windows-v*`／`mac-v*`），略過 draft、prerelease 和非本 repo 的連結。有新版時，右上角的「● 區域網路」會換成下載連結；Windows 另外會跳一次系統匣通知。不會自動下載。
 - Windows 發布：推 `windows-vX.Y.Z` tag，workflow 的 `release` job 會核對 tag 和 `windows-setup.iss` 的版本，從 `GUI-README.txt` 取「X.Y.Z 更新（Windows）」那段當說明，附上安裝檔和可攜 ZIP。
-- Mac 發布：CI 只有臨時簽章，所以要在 Mac 本機執行 `tools/native-file-drop/release-macos.sh`。它會編譯、測試、用 `BARRIER_CODESIGN_IDENTITY` 簽章打包，用 `verify-macos-update.py` 和 `/Applications` 裡的舊版比對簽章身分（可用 `OLD_APP` 指定），最後推 `mac-vX.Y.Z` tag，並用 `gh` 建立 Release。版本號取自 `package-macos.sh`，說明取自 `GUI-README.txt` 的「X.Y.Z 更新（Mac）」。
+- Mac 發布：CI 只有臨時簽章，所以要在 Mac 本機執行 `tools/native-file-drop/release-macos.sh`。它會編譯、測試、用 `BARRIER_CODESIGN_IDENTITY` 簽章打包，用 `verify-macos-update.py` 和 `/Applications` 裡的舊版比對簽章身分（可用 `OLD_APP` 指定），最後推 `mac-vX.Y.Z` tag，並用 `gh` 建立 Release。版本號取自 `package-macos.sh`，說明取自 `GUI-README.txt` 的「X.Y.Z 更新（Mac）」。注意：腳本會在 repo 內產生 `build-release/`（未列入 .gitignore），重跑前要先刪掉，否則會因工作目錄不乾淨而中止。
 
 ## 待辦
 
 1. ~~確認 `ec4d8249` 的 CI 通過~~：已通過（run 43144214817，Windows 和 macOS 都成功）。
 2. 實機驗收：Windows → Windows，主控端多螢幕，四個方向都要慢慢貼邊來回移動，確認不再彈跳、刻意切回仍正常；游標在接收端時主控端看不到游標，回來後游標樣式正常。
-3. Windows 0.3.7 已升版；推 `windows-v0.3.7` tag 即發布第一個正式 Release。Mac 已升到 0.3.5（含彈跳修正與新版通知），需在 Mac 上執行 `release-macos.sh` 發布。
+3. Windows 0.3.7 已升版；推 `windows-v0.3.7` tag 即發布第一個正式 Release。Mac 0.3.5（含彈跳修正與新版通知）已於 2026-11-12 發布並在 Mac mini 上安裝驗證：診斷紀錄顯示 0.3.5（組建 8），輔助使用與輸入監控權限在更新後仍為已授權。
 4. 已知限制（見 README）：一次只能連一台、只支援 IPv4 同網段、Mac App 未公證、自動測試不能取代兩台實機的驗收。
 
 ## 開發注意事項
