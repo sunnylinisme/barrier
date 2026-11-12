@@ -174,6 +174,15 @@ static class ShareUpdate
     }
 }
 
+static class ShareCursor
+{
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    static extern bool SystemParametersInfo(uint action, uint param, IntPtr value, uint flags);
+    // The host core hides the system cursors while another screen is active and normally
+    // restores them itself; reload the user's cursor scheme if it was stopped abruptly.
+    public static void Restore() { SystemParametersInfo(0x0057 /* SPI_SETCURSORS */, 0, IntPtr.Zero, 0); }
+}
+
 static class ShareStyle
 {
     public static readonly Color Background = Color.FromArgb(244, 246, 250), Ink = Color.FromArgb(24, 37, 57), Muted = Color.FromArgb(88, 105, 129), Blue = Color.FromArgb(47, 101, 235);
@@ -338,6 +347,7 @@ sealed class ShareWindow : Form
         updateTimer.Tick += delegate { CheckUpdate(); };
         ResumeLayout(false);
         Shown += delegate {
+            if (!testing) ShareCursor.Restore();
             var available=Screen.FromControl(this).WorkingArea;
             if (Width>available.Width || Height>available.Height) { Size=new Size(Math.Min(Width,available.Width),Math.Min(Height,available.Height)); Location=available.Location; }
             try {
@@ -508,7 +518,7 @@ sealed class ShareWindow : Form
     void StopBackend()
     {
         var process = backend; backend = null;
-        if (process != null) { try { if (!process.HasExited) { process.Kill(); process.WaitForExit(5000); } } catch (InvalidOperationException) { } process.Dispose(); }
+        if (process != null) { try { if (!process.HasExited) { process.Kill(); process.WaitForExit(5000); } } catch (InvalidOperationException) { } process.Dispose(); ShareCursor.Restore(); }
         UpdateControls();
     }
     void LogLine(string line)

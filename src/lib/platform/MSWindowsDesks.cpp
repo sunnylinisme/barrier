@@ -30,6 +30,7 @@
 #include "base/TMethodEventJob.h"
 #include "base/IEventQueue.h"
 
+#include <atomic>
 #include <malloc.h>
 #include <VersionHelpers.h>
 
@@ -95,6 +96,35 @@
 // MSWindowsDesks
 //
 
+// System cursor shapes replaced while the primary screen is not active.
+static const DWORD kHiddenSystemCursors[] = {
+    32512, 32513, 32514, 32515, 32516, 32642, 32643, 32644, 32645,
+    32646, 32648, 32649, 32650, 32651, 32671, 32672
+};
+static std::atomic<bool> s_systemCursorsHidden(false);
+
+static void
+hideSystemCursors(HCURSOR blank)
+{
+    // SetSystemCursor takes ownership, so give it a copy for each shape.
+    for (DWORD id : kHiddenSystemCursors) {
+        HCURSOR copy = CopyCursor(blank);
+        if (copy != NULL && !SetSystemCursor(copy, id)) {
+            DestroyCursor(copy);
+        }
+    }
+    s_systemCursorsHidden = true;
+}
+
+static void
+restoreSystemCursors(bool force = false)
+{
+    // Reload the user's cursor scheme from the registry.
+    if (s_systemCursorsHidden.exchange(false) || force) {
+        SystemParametersInfo(SPI_SETCURSORS, 0, NULL, 0);
+    }
+}
+
 MSWindowsDesks::MSWindowsDesks(bool isPrimary, bool noHooks,
         const IScreenSaver* screensaver, IEventQueue* events,
         const std::function<void()>& updateKeys, bool stopOnDeskSwitch) :
@@ -120,11 +150,18 @@ MSWindowsDesks::MSWindowsDesks(bool isPrimary, bool noHooks,
     m_deskClass = createDeskWindowClass(m_isPrimary);
     m_keyLayout = GetKeyboardLayout(GetCurrentThreadId());
     resetOptions();
+    if (m_isPrimary) {
+        // Recover from a previous run that ended while the cursors were hidden.
+        restoreSystemCursors(true);
+    }
 }
 
 MSWindowsDesks::~MSWindowsDesks()
 {
     disable();
+    if (m_isPrimary) {
+        restoreSystemCursors();
+    }
     destroyClass(m_deskClass);
     destroyCursor(m_cursor);
 }
@@ -520,7 +557,9 @@ MSWindowsDesks::deskEnter(Desk* desk)
         ReleaseCapture();
     }
     ShowCursor(TRUE);
-    LOG((CLOG_DEBUG "hider: enter ex=%x", (unsigned)GetWindowLong(desk->m_window, GWL_EXSTYLE)));
+    if (m_isPrimary) {
+        restoreSystemCursors();
+    }
     SetWindowPos(desk->m_window, HWND_BOTTOM, 0, 0, 0, 0,
                             SWP_NOMOVE | SWP_NOSIZE |
                             SWP_NOACTIVATE | SWP_HIDEWINDOW);
@@ -559,10 +598,13 @@ MSWindowsDesks::deskLeave(Desk* desk, HKL keyLayout)
         h = 1;
         // Stay above windows that become foreground or always-on-top later;
         // deskEnter's HWND_BOTTOM clears the topmost status again.
-        BOOL placed = SetWindowPos(desk->m_window, HWND_TOPMOST, x, y, w, h,
+        SetWindowPos(desk->m_window, HWND_TOPMOST, x, y, w, h,
                             SWP_NOACTIVATE | SWP_SHOWWINDOW);
-        LOG((CLOG_DEBUG "hider: leave placed=%d error=%d ex=%x", placed, placed ? 0 : (int)GetLastError(),
-            (unsigned)GetWindowLong(desk->m_window, GWL_EXSTYLE)));
+
+        // Windows refuses to raise a background process's window above the
+        // user's foreground window, so the hider alone cannot be relied on.
+        // Swap the system cursors for the blank one until deskEnter.
+        hideSystemCursors(m_cursor);
 
         // since we're using low-level hooks, disable the foreground window
         // so it can't mess up any of our keyboard events.  the console
@@ -581,9 +623,8 @@ MSWindowsDesks::deskLeave(Desk* desk, HKL keyLayout)
             DWORD thatThread =
                 GetWindowThreadProcessId(desk->m_foregroundWindow, NULL);
             AttachThreadInput(thatThread, thisThread, TRUE);
-            BOOL foreground = SetForegroundWindow(desk->m_window);
+            SetForegroundWindow(desk->m_window);
             AttachThreadInput(thatThread, thisThread, FALSE);
-            LOG((CLOG_DEBUG "hider: foreground=%d ex=%x", foreground, (unsigned)GetWindowLong(desk->m_window, GWL_EXSTYLE)));
         }
 
         // switch to requested keyboard layout
