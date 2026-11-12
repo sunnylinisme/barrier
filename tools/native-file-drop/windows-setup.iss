@@ -6,7 +6,7 @@
 #ifndef OutputDir
   #error OutputDir must be specified.
 #endif
-#define AppVersion "0.3.6"
+#define AppVersion "0.3.7"
 
 [Setup]
 AppId=org.barriershare.desktop

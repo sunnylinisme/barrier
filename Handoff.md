@@ -13,7 +13,7 @@
 
 ## 目前版本
 
-- Windows 0.3.6（含跨畫面彈跳修正）：單一 EXE 安裝包（per-user，Inno Setup，`windows-setup.iss`）。
+- Windows 0.3.7（含跨畫面彈跳、主控端游標殘留修正與新版通知）：單一 EXE 安裝包（per-user，Inno Setup，`windows-setup.iss`）。
 - Mac 0.3.4：固定簽章；打包需設定 `BARRIER_CODESIGN_IDENTITY`，更新前用 `verify-macos-update.py` 驗證。
 
 ## 最近的工作
@@ -25,11 +25,24 @@
 - `6e471969`：新增測試 `--clipboard-edge-jitter`（進入後先往回 2 px 再往前，不能觸發 COUT），在 server 角色的四個方向都會跑。只加了測試、還沒修程式，所以 CI 失敗。
 - `ec4d8249`：修正。`Server.cpp` 新增 `insetEntry()`，把原本只用在原生檔案拖曳的 16 px 內縮，套用到所有滑鼠觸發的畫面切換（主控端 → 接收端、接收端 → 主控端或其他畫面）。刻意往回移動（測試中是 64 px）仍然會正常切回。
 
+### 主控端游標殘留在畫面中央（Windows 實機回報）
+
+- 原因：原版 Barrier 靠一個 1×1 隱形視窗蓋住停在中央的游標。它帶 `WS_EX_TRANSPARENT`，系統判斷滑鼠位置時會略過它；拿掉之後，Windows 也不讓背景程式把視窗放到前景視窗之上（`SetWindowPos(HWND_TOPMOST)` 回報成功但沒生效，`SetForegroundWindow` 被拒）。CI 診斷證實了這兩點。
+- `45848192`：離開主控端時用 `SetSystemCursor` 換成透明游標，進入、啟動、結束時用 `SPI_SETCURSORS` 從使用者設定重新載入。Windows GUI 停止或重啟背景程式後、以及啟動時也會還原，避免強制結束後游標一直透明。
+- 測試：`WindowsDropTest --cursor-hidden/--cursor-visible` 用 `GetCursorInfo` 檢查游標圖案，並把狀態輸出成 CI 註記（未登入也能在 checks 頁看到）。
+- 已知風險：如果背景程式和 GUI 同時異常結束，游標會維持透明，直到重新開啟 Barrier Share、更換游標配置或重新登入。
+
+### 新版通知與發布
+
+- 兩個 GUI 啟動時和之後每 24 小時讀取一次 `api.github.com/repos/sunnylinisme/barrier/releases`，只比對自己平台的 tag（`windows-v*`／`mac-v*`），略過 draft、prerelease 和非本 repo 的連結。有新版時，右上角的「● 區域網路」會換成下載連結；Windows 另外會跳一次系統匣通知。不會自動下載。
+- Windows 發布：推 `windows-vX.Y.Z` tag，workflow 的 `release` job 會核對 tag 和 `windows-setup.iss` 的版本，從 `GUI-README.txt` 取「X.Y.Z 更新（Windows）」那段當說明，附上安裝檔和可攜 ZIP。
+- Mac 發布：CI 只有臨時簽章，所以要在本機用 `BARRIER_CODESIGN_IDENTITY` 打包、跑 `verify-macos-update.py`，再手動建立 `mac-vX.Y.Z` Release 並上傳 ZIP。
+
 ## 待辦
 
 1. ~~確認 `ec4d8249` 的 CI 通過~~：已通過（run 43144214817，Windows 和 macOS 都成功）。
-2. 實機驗收：Windows → Windows，主控端多螢幕，四個方向都要慢慢貼邊來回移動，確認不再彈跳、刻意切回仍正常。
-3. ~~發 Windows 0.3.6~~：已升版，安裝檔由 CI 產生（artifact `barriershare-windows-setup`）。這次修改在核心，Mac 當主控端時需要另外發 Mac 版才會套用。
+2. 實機驗收：Windows → Windows，主控端多螢幕，四個方向都要慢慢貼邊來回移動，確認不再彈跳、刻意切回仍正常；游標在接收端時主控端看不到游標，回來後游標樣式正常。
+3. Windows 0.3.7 已升版；推 `windows-v0.3.7` tag 即發布第一個正式 Release。Mac 尚停在 0.3.4：跨畫面彈跳修正在核心，Mac 當主控端時需要另外發 Mac 版才會套用（同時也會帶入新版通知）。
 4. 已知限制（見 README）：一次只能連一台、只支援 IPv4 同網段、Mac App 未公證、自動測試不能取代兩台實機的驗收。
 
 ## 開發注意事項
