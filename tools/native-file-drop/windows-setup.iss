@@ -39,7 +39,7 @@ SolidCompression=yes
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
-Name: "chinesetraditional"; MessagesFile: "compiler:Languages\ChineseTraditional.isl"
+Name: "chinesetraditional"; MessagesFile: "{#AddBackslash(SourcePath)}installer-languages\ChineseTraditional.isl"
 
 [Messages]
 english.SetupAppRunningError=%1 is running.%n%nChoose Exit from its notification-area icon, then click OK to continue, or Cancel to exit Setup.
