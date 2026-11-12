@@ -113,7 +113,8 @@ final class ShareSettings {
 // Looks up the newest published Mac release; only the public release list is requested, nothing is sent.
 enum ShareUpdate {
     static let releases = URL(string: "https://api.github.com/repos/sunnylinisme/barrier/releases?per_page=30")!
-    static let prefix = "mac-v"
+    // Shared vX.Y.Z releases carry both platforms; mac-vX.Y.Z is the pre-0.3.9 Mac-only form.
+    static let prefixes = ["v", "mac-v"]
     struct Release: Decodable { let tag_name: String; let html_url: String; let draft: Bool?; let prerelease: Bool? }
     static func parts(_ text: String) -> [Int]? {
         let pieces = text.split(separator: ".", omittingEmptySubsequences: false).map { Int($0) }
@@ -125,8 +126,8 @@ enum ShareUpdate {
     static func newer(_ data: Data, current: [Int]) -> (version: String, url: URL)? {
         guard let list = try? JSONDecoder().decode([Release].self, from: data) else { return nil }
         var best: ([Int], URL)?
-        for release in list where release.draft != true && release.prerelease != true && release.tag_name.hasPrefix(prefix) {
-            guard let version = parts(String(release.tag_name.dropFirst(prefix.count))), let url = URL(string: release.html_url),
+        for release in list where release.draft != true && release.prerelease != true {
+            guard let prefix = prefixes.first(where: { release.tag_name.hasPrefix($0) }), let version = parts(String(release.tag_name.dropFirst(prefix.count))), let url = URL(string: release.html_url),
                   release.html_url.hasPrefix("https://github.com/sunnylinisme/barrier/releases/") else { continue }
             if version.lexicographicallyPrecedes(current) || version == current { continue }
             if best == nil || best!.0.lexicographicallyPrecedes(version) { best = (version, url) }
@@ -403,10 +404,13 @@ func selfTest(_ directory: URL) throws {
      {"tag_name":"mac-v0.4.0","html_url":"\(base)mac-v0.4.0","draft":true,"prerelease":false},
      {"tag_name":"mac-v0.3.9","html_url":"\(base)mac-v0.3.9","draft":false,"prerelease":false},
      {"tag_name":"mac-v0.3.10","html_url":"https://example.com/elsewhere","draft":false,"prerelease":false},
-     {"tag_name":"mac-v0.3.8","html_url":"\(base)mac-v0.3.8","draft":false,"prerelease":false}]
+     {"tag_name":"mac-v0.3.8","html_url":"\(base)mac-v0.3.8","draft":false,"prerelease":false},
+     {"tag_name":"v0.5.0","html_url":"\(base)v0.5.0","draft":true,"prerelease":false},
+     {"tag_name":"v0.3.11","html_url":"\(base)v0.3.11","draft":false,"prerelease":false}]
     """.utf8)
-    guard let found = ShareUpdate.newer(releases, current: [0, 3, 4]), found.version == "0.3.9", found.url.absoluteString.hasSuffix("/mac-v0.3.9") else { throw ShareError.message("Update selection ignored platform, draft or origin rules") }
-    guard ShareUpdate.newer(releases, current: [0, 3, 9]) == nil, ShareUpdate.newer(Data("{\"message\":\"rate limited\"}".utf8), current: [0, 0, 0]) == nil else { throw ShareError.message("Update reported without a newer release") }
+    guard let found = ShareUpdate.newer(releases, current: [0, 3, 4]), found.version == "0.3.11", found.url.absoluteString.hasSuffix("/v0.3.11") else { throw ShareError.message("Update selection ignored platform, draft or origin rules") }
+    guard let legacy = ShareUpdate.newer(Data(String(decoding: releases, as: UTF8.self).replacingOccurrences(of: "\"v0.3.11\"", with: "\"x0.3.11\"").utf8), current: [0, 3, 4]), legacy.url.absoluteString.hasSuffix("/mac-v0.3.9") else { throw ShareError.message("Update selection dropped legacy Mac releases") }
+    guard ShareUpdate.newer(releases, current: [0, 3, 11]) == nil, ShareUpdate.newer(Data("{\"message\":\"rate limited\"}".utf8), current: [0, 0, 0]) == nil else { throw ShareError.message("Update reported without a newer release") }
     NSApp.finishLaunching()
     let app = ShareApp(test: true); app.buildWindow(); app.options.host = true; app.role.selectItem(at: 0); try app.refreshRole()
     let peer = "v2:sha256:" + String(repeating: "a", count: 64), name = Data("另一台電腦".utf8).base64EncodedString()

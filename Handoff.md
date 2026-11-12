@@ -1,6 +1,6 @@
 # Barrier Share 交接
 
-最後更新：2026-11-12（Mac 0.3.5 發布）
+最後更新：2026-11-12（0.3.8 發布；下一版起共用 Release）
 
 ## 這是什麼
 
@@ -13,8 +13,8 @@
 
 ## 目前版本
 
-- Windows 0.3.7（含跨畫面彈跳、主控端游標殘留修正與新版通知）：單一 EXE 安裝包（per-user，Inno Setup，`windows-setup.iss`）。
-- Mac 0.3.5（已發布，2026-11-12，Release `mac-v0.3.5`）：固定簽章（`Apple Development: freefishlin@gmail.com (PP2X799XV2)`，Team ID 2RA95F4R6F）；打包需設定 `BARRIER_CODESIGN_IDENTITY`，更新前用 `verify-macos-update.py` 驗證。
+- Windows 0.3.8（已發布，`windows-v0.3.8`）：單一 EXE 安裝包（per-user，Inno Setup，`windows-setup.iss`）＋可攜 ZIP。視窗標題顯示版本。
+- Mac 0.3.8（已發布，`mac-v0.3.8`，組建 9）：視窗標題顯示版本、有「關於 Barrier Share」。固定簽章（`Apple Development: freefishlin@gmail.com (PP2X799XV2)`，Team ID 2RA95F4R6F）；打包需設定 `BARRIER_CODESIGN_IDENTITY`，更新前用 `verify-macos-update.py` 驗證。
 
 ## 最近的工作
 
@@ -34,17 +34,18 @@
 
 ### 新版通知與發布
 
-- 兩個 GUI 啟動時和之後每 24 小時讀取一次 `api.github.com/repos/sunnylinisme/barrier/releases`，只比對自己平台的 tag（`windows-v*`／`mac-v*`），略過 draft、prerelease 和非本 repo 的連結。有新版時，右上角的「● 區域網路」會換成下載連結；Windows 另外會跳一次系統匣通知。不會自動下載。
-- Windows 發布：推 `windows-vX.Y.Z` tag，workflow 的 `release` job 會核對 tag 和 `windows-setup.iss` 的版本，從 `GUI-README.txt` 取「X.Y.Z 更新（Windows）」那段當說明，附上安裝檔和可攜 ZIP。
-- Mac 發布：CI 只有臨時簽章，所以要在 Mac 本機執行 `tools/native-file-drop/release-macos.sh`。它會編譯、測試、用 `BARRIER_CODESIGN_IDENTITY` 簽章打包，用 `verify-macos-update.py` 和 `/Applications` 裡的舊版比對簽章身分（可用 `OLD_APP` 指定），最後推 `mac-vX.Y.Z` tag，並用 `gh` 建立 Release。版本號取自 `package-macos.sh`，說明取自 `GUI-README.txt` 的「X.Y.Z 更新（Mac）」。注意：腳本會在 repo 內產生 `build-release/`（未列入 .gitignore），重跑前要先刪掉，否則會因工作目錄不乾淨而中止。
+- 兩個 GUI 啟動時和之後每 24 小時讀取一次 `api.github.com/repos/sunnylinisme/barrier/releases`，只比對共用 tag `v*` 和自己平台的舊 tag（`windows-v*`／`mac-v*`），略過 draft、prerelease 和非本 repo 的連結。有新版時，右上角的「● 區域網路」會換成下載連結；Windows 另外會跳一次系統匣通知。不會自動下載。
+- 發布（0.3.9 起兩個平台共用一個 Release，tag 為 `vX.Y.Z`）：先把 `windows-setup.iss`、`BarrierShare.cs`（AssemblyVersion）、`package-macos.sh` 升到同一版，`GUI-README.txt` 寫好「X.Y.Z 更新（Windows）」和「X.Y.Z 更新（Mac）」，commit 推上去。接著在 Mac 執行 `BARRIER_CODESIGN_IDENTITY='Apple Development: freefishlin@gmail.com (PP2X799XV2)' sh tools/native-file-drop/release-macos.sh`：編譯、測試、固定簽章打包，用 `verify-macos-update.py` 和 `/Applications` 裡的舊版比對簽章身分（可用 `OLD_APP` 指定），推 `vX.Y.Z` tag，建立附 Mac ZIP 的 **draft** Release。tag 觸發的 workflow 會核對兩個版本檔、等 draft 出現（最多約 10 分鐘），附上 Windows 安裝檔和可攜 ZIP 後才正式發布，所以使用者只會看到三個檔案都齊的 Release。
+- 舊格式 `windows-vX.Y.Z`／`mac-vX.Y.Z` 只用到 0.3.8；新版 GUI 兩種都認得，但 0.3.8 以前裝的版本看不到 `vX.Y.Z`，要手動更新一次。
+- `gh` 推送含 workflow 檔的 commit 需要 `workflow` scope（`gh auth refresh -s workflow`）。
 
 ## 待辦
 
-0. 版本號統一：Windows 與 Mac 都升到 0.3.8，視窗標題顯示版本（Windows 系統匣提示也會顯示；Mac 新增「關於 Barrier Share」選單）。尚未發布：Windows 推 `windows-v0.3.8`，Mac 執行 `release-macos.sh`。
+0. 版本號統一：Windows 與 Mac 都在 0.3.8（2026-11-12 以 `windows-v0.3.8`、`mac-v0.3.8` 分開發布，是最後一次分開發布），視窗標題顯示版本（Windows 系統匣提示也會顯示；Mac 新增「關於 Barrier Share」選單）。
 
 1. ~~確認 `ec4d8249` 的 CI 通過~~：已通過（run 43144214817，Windows 和 macOS 都成功）。
 2. 實機驗收：Windows → Windows，主控端多螢幕，四個方向都要慢慢貼邊來回移動，確認不再彈跳、刻意切回仍正常；游標在接收端時主控端看不到游標，回來後游標樣式正常。
-3. Windows 0.3.7 已升版；推 `windows-v0.3.7` tag 即發布第一個正式 Release。Mac 0.3.5（含彈跳修正與新版通知）已於 2026-11-12 發布並在 Mac mini 上安裝驗證：診斷紀錄顯示 0.3.5（組建 8），輔助使用與輸入監控權限在更新後仍為已授權。
+3. Mac 0.3.5（含彈跳修正與新版通知）已於 2026-11-12 發布並在 Mac mini 上安裝驗證：診斷紀錄顯示 0.3.5（組建 8），輔助使用與輸入監控權限在更新後仍為已授權。
 4. 已知限制（見 README）：一次只能連一台、只支援 IPv4 同網段、Mac App 未公證、自動測試不能取代兩台實機的驗收。
 
 ## 開發注意事項

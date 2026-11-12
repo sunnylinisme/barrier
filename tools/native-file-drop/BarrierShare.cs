@@ -143,7 +143,8 @@ static class ShareSettings
 static class ShareUpdate
 {
     public const string Releases = "https://api.github.com/repos/sunnylinisme/barrier/releases?per_page=30";
-    public const string Prefix = "windows-v";
+    // Shared vX.Y.Z releases carry both platforms; windows-vX.Y.Z is the pre-0.3.9 Windows-only form.
+    static readonly string[] Prefixes = { "v", "windows-v" };
     public static Version Current { get { var v = typeof(ShareUpdate).Assembly.GetName().Version; return new Version(v.Major, v.Minor, Math.Max(0, v.Build)); } }
     public sealed class Found { public Version Version; public string Url; }
     // Returns the highest non-draft, non-prerelease Windows release newer than current, or null.
@@ -157,7 +158,8 @@ static class ShareUpdate
             if (!item.TryGetValue("tag_name", out tag) || !item.TryGetValue("html_url", out url)) continue;
             if ((item.TryGetValue("draft", out draft) && true.Equals(draft)) || (item.TryGetValue("prerelease", out pre) && true.Equals(pre))) continue;
             string name = tag as string, link = url as string; Version version;
-            if (name == null || link == null || !name.StartsWith(Prefix) || !Version.TryParse(name.Substring(Prefix.Length), out version)) continue;
+            string prefix = name == null ? null : Prefixes.FirstOrDefault(p => name.StartsWith(p, StringComparison.Ordinal));
+            if (prefix == null || link == null || !Version.TryParse(name.Substring(prefix.Length), out version)) continue;
             if (!link.StartsWith("https://github.com/sunnylinisme/barrier/releases/")) continue;
             version = new Version(version.Major, version.Minor, Math.Max(0, version.Build));
             if (version > current && (best == null || version > best.Version)) best = new Found { Version = version, Url = link };
@@ -674,10 +676,14 @@ static class ShareProgram
                 "{\"tag_name\":\"windows-v0.4.0\",\"html_url\":\"https://github.com/sunnylinisme/barrier/releases/tag/windows-v0.4.0\",\"draft\":true,\"prerelease\":false}," +
                 "{\"tag_name\":\"windows-v0.3.9\",\"html_url\":\"https://github.com/sunnylinisme/barrier/releases/tag/windows-v0.3.9\",\"draft\":false,\"prerelease\":false}," +
                 "{\"tag_name\":\"windows-v0.3.8\",\"html_url\":\"https://github.com/sunnylinisme/barrier/releases/tag/windows-v0.3.8\",\"draft\":false,\"prerelease\":false}," +
-                "{\"tag_name\":\"windows-v0.3.10\",\"html_url\":\"https://example.com/elsewhere\",\"draft\":false,\"prerelease\":false}]";
+                "{\"tag_name\":\"windows-v0.3.10\",\"html_url\":\"https://example.com/elsewhere\",\"draft\":false,\"prerelease\":false}," +
+                "{\"tag_name\":\"v0.5.0\",\"html_url\":\"https://github.com/sunnylinisme/barrier/releases/tag/v0.5.0\",\"draft\":true,\"prerelease\":false}," +
+                "{\"tag_name\":\"v0.3.11\",\"html_url\":\"https://github.com/sunnylinisme/barrier/releases/tag/v0.3.11\",\"draft\":false,\"prerelease\":false}]";
             var found = ShareUpdate.Newer(releases, new Version(0, 3, 7));
-            if (found == null || found.Version != new Version(0, 3, 9) || !found.Url.EndsWith("/windows-v0.3.9")) throw new Exception("Update selection ignored platform, draft or origin rules");
-            if (ShareUpdate.Newer(releases, new Version(0, 3, 9)) != null || ShareUpdate.Newer("{\"message\":\"rate limited\"}", ShareUpdate.Current) != null) throw new Exception("Update reported without a newer release");
+            if (found == null || found.Version != new Version(0, 3, 11) || !found.Url.EndsWith("/v0.3.11")) throw new Exception("Update selection ignored platform, draft or origin rules");
+            var legacy = ShareUpdate.Newer(releases.Replace("\"v0.3.11\"", "\"x0.3.11\""), new Version(0, 3, 7));
+            if (legacy == null || !legacy.Url.EndsWith("/windows-v0.3.9")) throw new Exception("Update selection dropped legacy Windows releases");
+            if (ShareUpdate.Newer(releases, new Version(0, 3, 11)) != null || ShareUpdate.Newer("{\"message\":\"rate limited\"}", ShareUpdate.Current) != null) throw new Exception("Update reported without a newer release");
             using (var window = new ShareWindow(true)) {
                 window.Show(); Application.DoEvents(); window.TestDiscovery(directory);
                 window.ShowUpdate(found); Application.DoEvents();
