@@ -125,6 +125,7 @@ jobs:
             build/gui-test/*.png
             build/gui-test/*.txt
             explorer-*.bmp
+            cursor-*.bmp
           if-no-files-found: ignore
           retention-days: 7
       - name: Package

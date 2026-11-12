@@ -17,6 +17,7 @@
 #include "common/DataDirectories.h"
 #include "barrier/FileClipboardTransfer.h"
 #include <fstream>
+#include <sstream>
 
 static std::string readBytes(const barrier::fs::path& path) {
     std::ifstream in; barrier::open_utf8_path(in, path, std::ios::binary);
@@ -364,6 +365,30 @@ static bool explorerSource(const wchar_t* folder, bool serverMode) {
     std::cout << (passed ? "PASS" : "FAIL") << ": actual Explorer source drag preserves original bytes\n";
     return passed;
 }
+// True when the system cursor is hidden or its current image is fully transparent.
+bool cursorInvisible(std::string& detail)
+{
+    CURSORINFO info = {}; info.cbSize = sizeof(info);
+    if (!GetCursorInfo(&info)) { detail = "GetCursorInfo failed"; return false; }
+    std::ostringstream text; text << "flags=" << info.flags << " pos=" << info.ptScreenPos.x << "," << info.ptScreenPos.y;
+    if (!(info.flags & CURSOR_SHOWING) || !info.hCursor) { detail = text.str() + " hidden"; return true; }
+    ICONINFO icon = {};
+    if (!GetIconInfo(info.hCursor, &icon)) { detail = text.str() + " no icon info"; return false; }
+    bool blank = false;
+    if (!icon.hbmColor && icon.hbmMask) {
+        BITMAP bitmap = {}; GetObject(icon.hbmMask, sizeof(bitmap), &bitmap);
+        std::vector<unsigned char> bits(static_cast<size_t>(bitmap.bmWidthBytes) * bitmap.bmHeight);
+        if (!bits.empty() && GetBitmapBits(icon.hbmMask, static_cast<LONG>(bits.size()), bits.data()) == static_cast<LONG>(bits.size())) {
+            // Monochrome cursors stack the AND mask above the XOR mask.
+            size_t half = bits.size() / 2; blank = true;
+            for (size_t i = 0; i < bits.size() && blank; ++i) blank = bits[i] == (i < half ? 0xff : 0x00);
+        }
+    }
+    if (icon.hbmColor) DeleteObject(icon.hbmColor);
+    if (icon.hbmMask) DeleteObject(icon.hbmMask);
+    detail = text.str() + (blank ? " blank image" : " visible image");
+    return blank;
+}
 int main(int argc, char** argv)
 {
     ArchMiscWindows::setInstanceWin32(GetModuleHandle(nullptr));
@@ -397,6 +422,20 @@ int main(int argc, char** argv)
             }
         }
         pump(500); OleUninitialize(); return 0;
+    }
+    if (argc == 2 && (std::strcmp(argv[1], "--cursor-hidden") == 0 || std::strcmp(argv[1], "--cursor-visible") == 0)) {
+        bool wantHidden = std::strcmp(argv[1], "--cursor-hidden") == 0;
+        std::string detail; bool invisible = false;
+        // Give the host a moment to hide or restore its cursor.
+        for (int attempt = 0; attempt < 20 && (invisible = cursorInvisible(detail)) != wantHidden; ++attempt) pump(50);
+        bool passed = invisible == wantHidden;
+        bool mouse = GetSystemMetrics(SM_MOUSEPRESENT) != 0;
+        std::cout << "::notice::host cursor " << (wantHidden ? "after leaving" : "after returning") << ": " << detail << " mouse=" << mouse << "\n";
+        std::cout << (passed ? "PASS" : "FAIL") << ": host cursor " << (wantHidden ? "hidden" : "visible") << " (" << detail << ")\n";
+        // Without a pointing device Windows never shows the cursor; only hiding can be checked then.
+        if (!passed && !wantHidden && !mouse) passed = true;
+        if (!passed) saveScreen(wantHidden ? L"cursor-not-hidden.bmp" : L"cursor-not-restored.bmp");
+        OleUninitialize(); return passed ? 0 : 1;
     }
     if (argc > 1 && std::strcmp(argv[1], "--explorer") == 0) {
         auto file = std::make_shared<barrier::NativeFile>(); file->name = "跨機測試.txt"; file->bytes = payload;

@@ -264,6 +264,7 @@ for role, direction in [(role, d) for role in ["server", "client"] for d in ["ri
                         entered = wire.until(b"CINN")
                         wire.pending.appendleft(entered)
                         driver("--clipboard-edge-jitter", direction)
+                        driver("--cursor-hidden")
                         digest, size, sequence = wire.read_clipboard()
                         assert digest == hashlib.sha256(local_bytes).digest() and size == len(local_bytes)
                         assert sequence is not None
@@ -273,6 +274,7 @@ for role, direction in [(role, d) for role in ["server", "client"] for d in ["ri
                         wire.expect_no_leave = False
                         driver("--clipboard-return", direction)
                         wire.until(b"COUT")
+                        driver("--cursor-visible")
                         driver("--clipboard-paste", destination, expected)
                     else:
                         wire.send(b"Barrier" + struct.pack("!HH", 1, 6))
@@ -295,7 +297,7 @@ for role, direction in [(role, d) for role in ["server", "client"] for d in ["ri
                         assert digest == hashlib.sha256(local_bytes).digest() and size == len(local_bytes)
                     assert (source / name).read_bytes() == local_bytes, "Source file changed"
                     assert (destination / name).read_bytes() == peer_bytes, "Paste contained stale or wrong bytes"
-                    print("PASS: real Windows " + role + " direction=" + direction + ", simulated TLS peer, bidirectional file clipboard, actual Explorer copy/paste, distinct peer bytes and original preserved" + (", native client edge entry/return verified" if role == "client" else ", ordinary edge jitter and intentional return verified"))
+                    print("PASS: real Windows " + role + " direction=" + direction + ", simulated TLS peer, bidirectional file clipboard, actual Explorer copy/paste, distinct peer bytes and original preserved" + (", native client edge entry/return verified" if role == "client" else ", ordinary edge jitter, hidden host cursor and intentional return verified"))
         finally:
             if core is not None:
                 if core.poll() is None: core.terminate()
