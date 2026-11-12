@@ -887,8 +887,9 @@ sealed class ShareWindow : Form
         if (names.Count == 1) peerLabel.Text = "已配對 · " + names[0] + "\r\n重新開啟後會自動連線";
         else if (names.Count > 1) peerLabel.Text = "已配對 " + names.Count + " 台 · " + String.Join("、", names);
         else peerLabel.Text = Host ? "選擇接收端，按「邀請配對」。" : "等待主控端邀請；首次需要你同意。";
-        position.Visible = Host && peers.Count <= 1; arrange.Visible = Host; positionHint.Visible = !position.Visible;
-        positionHint.Text = Host ? "已配對 " + peers.Count + " 台；按「排列螢幕」調整位置" : "由主控端設定螢幕的相對位置";
+        // Receivers are placed only through 排列螢幕, also when there is just one, so no second control can disagree with it.
+        position.Visible = false; arrange.Visible = Host; arrange.Enabled = peers.Count > 0; positionHint.Visible = true;
+        positionHint.Text = !Host ? "由主控端設定螢幕的相對位置" : peers.Count == 0 ? "配對接收端後，按「排列螢幕」設定位置" : "已配對 " + peers.Count + " 台；按「排列螢幕」調整位置";
         UpdateControls();
     }
     internal ShareLayoutEditor BuildLayout() { return new ShareLayoutEditor(peers, Font); }

@@ -587,8 +587,9 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         ShareSettings.receivers = options.host ? peers.map { $0.fingerprint } : []
         let names = peers.map { $0.name }
         peerLabel.stringValue = names.count == 1 ? "已配對 · \(names[0])\n重新開啟後會自動連線" : names.count > 1 ? "已配對 \(names.count) 台 · " + names.joined(separator: "、") : options.host ? "選擇接收端，按「邀請配對」。" : "等待主控端邀請；首次需要你同意。"
-        position.isHidden = !(options.host && peers.count <= 1); arrange.isHidden = !options.host; positionHint.isHidden = !position.isHidden
-        positionHint.stringValue = options.host ? "已配對 \(peers.count) 台；按「排列螢幕」調整位置" : "由主控端設定螢幕的相對位置"
+        // Receivers are placed only through 排列螢幕, also when there is just one, so no second control can disagree with it.
+        position.isHidden = true; arrange.isHidden = !options.host; arrange.isEnabled = !peers.isEmpty; positionHint.isHidden = false
+        positionHint.stringValue = !options.host ? "由主控端設定螢幕的相對位置" : peers.isEmpty ? "配對接收端後，按「排列螢幕」設定位置" : "已配對 \(peers.count) 台；按「排列螢幕」調整位置"
         updateControls()
     }
     func buildLayout() -> (NSAlert, ShareLayoutView) {
