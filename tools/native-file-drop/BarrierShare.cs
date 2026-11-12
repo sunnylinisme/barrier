@@ -17,8 +17,8 @@ using System.Threading.Tasks;
 using System.Windows.Forms;
 using System.Xml.Linq;
 
-[assembly: System.Reflection.AssemblyVersion("0.3.7.0")]
-[assembly: System.Reflection.AssemblyFileVersion("0.3.7.0")]
+[assembly: System.Reflection.AssemblyVersion("0.3.8.0")]
+[assembly: System.Reflection.AssemblyFileVersion("0.3.8.0")]
 
 static class ShareSettings
 {
@@ -292,7 +292,7 @@ sealed class ShareWindow : Form
     public ShareWindow(bool selfTest = false)
     {
         SuspendLayout();
-        testing = selfTest; Text = "Barrier Share";
+        testing = selfTest; Text = "Barrier Share " + ShareUpdate.Current;
         Font = new Font("Microsoft JhengHei UI", 11F); AutoScaleDimensions=new SizeF(96F,96F); AutoScaleMode=AutoScaleMode.Dpi;
         ClientSize = new Size(800, 654); BackColor = ShareStyle.Background; ForeColor = ShareStyle.Ink;
         AutoScroll=true; AutoScrollMinSize=ClientSize;
@@ -329,7 +329,7 @@ sealed class ShareWindow : Form
         At(new Label { Text="複製 → 換到另一台 → 完成後貼上", ForeColor=ShareStyle.Muted, Font=new Font(Font.FontFamily,10F), TextAlign=ContentAlignment.MiddleCenter },270,602,372,36);
         details.Multiline=true; details.ReadOnly=true; details.ScrollBars=ScrollBars.Vertical; details.Font=new Font("Consolas",9F); details.BackColor=Color.FromArgb(249,251,255); details.BorderStyle=BorderStyle.None;
         var menu = new ContextMenuStrip(); menu.Items.Add("開啟視窗", null, delegate { Show(); WindowState = FormWindowState.Normal; Activate(); });
-        menu.Items.Add("結束", null, delegate { closing = true; Close(); }); tray.Icon = Icon; tray.Text = "Barrier Share"; tray.ContextMenuStrip = menu; tray.Visible = !testing;
+        menu.Items.Add("結束", null, delegate { closing = true; Close(); }); tray.Icon = Icon; tray.Text = "Barrier Share " + ShareUpdate.Current; tray.ContextMenuStrip = menu; tray.Visible = !testing;
         tray.DoubleClick += delegate { Show(); WindowState = FormWindowState.Normal; Activate(); };
         start.Click += delegate { enabled = true; StartLink(); UpdateControls(); };
         stop.Click += delegate { enabled = false; StopLink(); StopBackend(); status.Text = "已暫停；不接受邀請，也不會自動重連。"; UpdateControls(); };

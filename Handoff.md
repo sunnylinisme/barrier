@@ -40,6 +40,8 @@
 
 ## 待辦
 
+0. 版本號統一：Windows 與 Mac 都升到 0.3.8，視窗標題顯示版本（Windows 系統匣提示也會顯示；Mac 新增「關於 Barrier Share」選單）。尚未發布：Windows 推 `windows-v0.3.8`，Mac 執行 `release-macos.sh`。
+
 1. ~~確認 `ec4d8249` 的 CI 通過~~：已通過（run 43144214817，Windows 和 macOS 都成功）。
 2. 實機驗收：Windows → Windows，主控端多螢幕，四個方向都要慢慢貼邊來回移動，確認不再彈跳、刻意切回仍正常；游標在接收端時主控端看不到游標，回來後游標樣式正常。
 3. Windows 0.3.7 已升版；推 `windows-v0.3.7` tag 即發布第一個正式 Release。Mac 0.3.5（含彈跳修正與新版通知）已於 2026-11-12 發布並在 Mac mini 上安裝驗證：診斷紀錄顯示 0.3.5（組建 8），輔助使用與輸入監控權限在更新後仍為已授權。

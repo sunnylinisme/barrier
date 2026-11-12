@@ -168,9 +168,9 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) { buildWindow() }
     func buildWindow() {
         let menu = NSMenu(), appMenu = NSMenu(), appItem = NSMenuItem()
-        appMenu.addItem(withTitle: "結束 Barrier Share", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"); appItem.submenu = appMenu; menu.addItem(appItem); NSApp.mainMenu = menu
+        appMenu.addItem(withTitle: "關於 Barrier Share", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: ""); appMenu.addItem(.separator()); appMenu.addItem(withTitle: "結束 Barrier Share", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"); appItem.submenu = appMenu; menu.addItem(appItem); NSApp.mainMenu = menu
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 840, height: 710), styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
-        window.title = "Barrier Share"; window.delegate = self; window.isReleasedWhenClosed = false
+        window.title = "Barrier Share \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "")".trimmingCharacters(in: .whitespaces); window.delegate = self; window.isReleasedWhenClosed = false
         window.contentView = FlippedView(frame: NSRect(x: 0, y: 0, width: 840, height: 710)); window.contentView!.wantsLayer = true
         window.contentView!.layer?.backgroundColor = NSColor(srgbRed: 244/255, green: 246/255, blue: 250/255, alpha: 1).cgColor
         func at(_ view: NSView, _ x: CGFloat, _ y: CGFloat, _ width: CGFloat, _ height: CGFloat) { view.frame = NSRect(x: x, y: y, width: width, height: height); window.contentView!.addSubview(view) }
