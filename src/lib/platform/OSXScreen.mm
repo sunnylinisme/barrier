@@ -272,6 +272,10 @@ OSXScreen::reconfigure(UInt32)
 void
 OSXScreen::warpCursor(SInt32 x, SInt32 y)
 {
+	std::lock_guard<std::mutex> lock(m_warpMutex);
+	// Remember where the server placed the cursor (the tap only warps to the centre).
+	if (x != m_xCenter || y != m_yCenter) { m_xEnter = x; m_yEnter = y; m_enterValid = true; }
+
 	// move cursor without generating events
 	CGPoint pos;
 	pos.x = x;
@@ -858,8 +862,14 @@ OSXScreen::enter()
 		avoidSupression();
 	}
 
-	// now on screen
+	// now on screen. On the primary, put the cursor back where the server entered it in
+	// case the tap warped it to the centre after PrimaryClient::enter() placed it.
+	std::lock_guard<std::mutex> lock(m_warpMutex);
 	m_isOnScreen = true;
+	if (m_isPrimary && m_enterValid) {
+		CGWarpMouseCursorPosition(CGPointMake(m_xEnter, m_yEnter));
+		m_xCursor = m_xEnter; m_yCursor = m_yEnter; m_cursorPosValid = true;
+	}
 }
 
 bool
@@ -898,8 +908,12 @@ OSXScreen::leave()
 
 	}
 
-	// now off screen
-	m_isOnScreen = false;
+	// now off screen; only a warp made after this counts as the next entry point
+	{
+		std::lock_guard<std::mutex> lock(m_warpMutex);
+		m_isOnScreen = false;
+		m_enterValid = false;
+	}
 
 	return true;
 }
@@ -1106,8 +1120,14 @@ OSXScreen::onMouseMove(CGFloat mx, CGFloat my)
 	}
 	else {
 		// motion on secondary screen.  warp mouse back to
-		// center.
-		warpCursor(m_xCenter, m_yCenter);
+		// center, unless this screen was entered meanwhile (then the
+		// event is stale and the cursor must stay at the entry edge).
+		{
+			std::lock_guard<std::mutex> lock(m_warpMutex);
+			if (m_isOnScreen) return true;
+			CGWarpMouseCursorPosition(CGPointMake(m_xCenter, m_yCenter));
+			m_xCursor = m_xCenter; m_yCursor = m_yCenter; m_cursorPosValid = true;
+		}
 
 		// examine the motion.  if it's about the distance
 		// from the center of the screen to an edge then

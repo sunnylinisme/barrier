@@ -17,6 +17,7 @@
  */
 
 #pragma once
+#include <mutex>
 #include <atomic>
 
 #include "platform/OSXClipboard.h"
@@ -253,6 +254,12 @@ private:
 
     // true if mouse has entered the screen
     bool                m_isOnScreen;
+    // Serialises "warp back to the centre while away" (event tap thread) with entering this
+    // screen (event queue thread). Without it a fast mouse could warp the cursor to the
+    // centre just after it was placed at the entry edge, so it reappeared mid-screen.
+    std::mutex          m_warpMutex;
+    SInt32              m_xEnter = 0, m_yEnter = 0;
+    bool                m_enterValid = false;
 
     // the display
     CGDirectDisplayID    m_displayID;
