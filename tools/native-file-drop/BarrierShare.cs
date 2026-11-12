@@ -245,7 +245,8 @@ static class ShareUpdate
 sealed class ShareAdvanced
 {
     public int SwitchDelay, DoubleTap, CornerSize = 16;
-    public bool Corners, SwapModifiers, RelativeMouse, ScreenSaver = true, SwitchKeys = true, LockKey;
+    // SwapModifiers defaults on: a Mac keyboard on Windows (and the reverse) then copies with ⌘C / Ctrl+C.
+    public bool Corners, SwapModifiers = true, RelativeMouse, ScreenSaver = true, SwitchKeys = true, LockKey;
     public string Extra = "", Targets = "";
     static int Clamp(int value, int max) { return Math.Max(0, Math.Min(max, value)); }
     public XElement ToXml()
@@ -260,7 +261,7 @@ sealed class ShareAdvanced
         Func<string, int, int> number = (name, fallback) => { int v; return Int32.TryParse((string)e.Attribute(name), out v) ? v : fallback; };
         Func<string, bool, bool> flag = (name, fallback) => { bool v; return Boolean.TryParse((string)e.Attribute(name), out v) ? v : fallback; };
         a.SwitchDelay = Clamp(number("switchDelay", 0), 5000); a.DoubleTap = Clamp(number("doubleTap", 0), 2000); a.CornerSize = Clamp(number("cornerSize", 16), 500);
-        a.Corners = flag("corners", false); a.SwapModifiers = flag("swapModifiers", false); a.RelativeMouse = flag("relativeMouse", false);
+        a.Corners = flag("corners", false); a.SwapModifiers = flag("swapModifiers", true); a.RelativeMouse = flag("relativeMouse", false);
         a.ScreenSaver = flag("screenSaver", true); a.SwitchKeys = flag("switchKeys", true); a.LockKey = flag("lockKey", false);
         a.Targets = (string)e.Attribute("targets") ?? ""; a.Extra = (string)e.Element("extra") ?? "";
         return a;
@@ -1121,6 +1122,7 @@ static class ShareProgram
             foreach (string expected in new[] { " windows:\n  ctrl = super\n  super = ctrl\n", " switchDelay = 250\n", " switchDoubleTap = 300\n", " switchCorners = all\n switchCornerSize = 24\n", " relativeMouseMoves = true\n", " screenSaverSync = false\n", " keystroke(Control+Alt+L) = lockCursorToScreen(toggle)\n", " keystroke(Control+Alt+F12) = switchToScreen(windows)\nend\n" })
                 if (!full.Contains(expected)) throw new Exception("Advanced option missing from config: " + expected.Trim() + "\n" + full);
             if (full.Contains("# comment") || ShareSettings.Advanced.TargetList() != "10.8.0.5,office-pc.local") throw new Exception("Advanced extras were not normalized");
+            if (!ShareAdvanced.FromXml(null).SwapModifiers || !ShareAdvanced.FromXml(new XElement("advanced")).SwapModifiers || ShareAdvanced.FromXml(new XElement("advanced", new XAttribute("swapModifiers", false))).SwapModifiers) throw new Exception("Ctrl/Command swap is not on by default or ignores a saved choice");
             ShareSettings.Save(true, ""); var savedAdvanced = ShareSettings.Advanced; ShareSettings.Load(out host, out address);
             if (ShareSettings.Advanced.SwitchDelay != 250 || !ShareSettings.Advanced.LockKey || ShareSettings.Advanced.ScreenSaver || ShareSettings.Advanced.Extra != savedAdvanced.Extra.Replace("\r\n", "\n") && ShareSettings.Advanced.Extra != savedAdvanced.Extra) throw new Exception("Advanced settings roundtrip failed");
             foreach (string bad in new[] { "end", "section: links" }) {

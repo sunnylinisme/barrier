@@ -25,7 +25,8 @@ struct ShareOptions: Codable {
 // Host-side Barrier options from the advanced settings dialog.
 struct ShareAdvanced: Codable, Equatable {
     var switchDelay = 0, doubleTap = 0, cornerSize = 16
-    var corners = false, swapModifiers = false, relativeMouse = false, screenSaver = true, switchKeys = true, lockKey = false
+    // swapModifiers defaults on: a Mac keyboard on Windows (and the reverse) then copies with ⌘C / Ctrl+C.
+    var corners = false, swapModifiers = true, relativeMouse = false, screenSaver = true, switchKeys = true, lockKey = false
     var extra = "", targets = ""
     init() {}
     init(from decoder: Decoder) throws {
@@ -703,7 +704,7 @@ func selfTest(_ directory: URL) throws {
     var withAdvanced = ShareOptions(); withAdvanced.advanced = full; try ShareSettings.save(withAdvanced)
     guard try ShareSettings.load().advanced == full else { throw ShareError.message("Advanced settings roundtrip failed") }
     try Data(#"{"host":false,"address":"192.168.1.9","position":"up"}"#.utf8).write(to: ShareSettings.root.appendingPathComponent("settings.json"))
-    let legacy = try ShareSettings.load(); guard !legacy.host && legacy.position == "up" && legacy.advanced == ShareAdvanced() else { throw ShareError.message("Settings from 0.3.8 did not load") }
+    let legacy = try ShareSettings.load(); guard !legacy.host && legacy.position == "up" && legacy.advanced == ShareAdvanced(), legacy.advanced.swapModifiers else { throw ShareError.message("Settings from 0.3.8 did not load") }
     let fa = "v2:sha256:" + String(repeating: "a", count: 64), fb = "v2:sha256:" + String(repeating: "b", count: 64), fc = "v2:sha256:" + String(repeating: "c", count: 64)
     var swapped = ShareAdvanced(); swapped.swapModifiers = true
     let multi = try ShareSettings.config("right", swapped, receivers: [fa, fb, fc], layout: [fb: [0, -1]])
