@@ -153,8 +153,8 @@ function Wait-Core([string]$Owner, [string]$Log, [string]$Why) {
         $core = Get-ServiceCore
         if ($core.Count -eq 1) {
             # A core that is being replaced may exit before GetOwner answers; it then has no User.
-            $owner = Invoke-CimMethod -InputObject $core[0] -MethodName GetOwner -ErrorAction SilentlyContinue
-            $user = if ($owner -and $owner.PSObject.Properties['User']) { $owner.User } else { $null }
+            $answer = Invoke-CimMethod -InputObject $core[0] -MethodName GetOwner -ErrorAction SilentlyContinue
+            $user = if ($answer -and $answer.PSObject.Properties["User"]) { $answer.User } else { $null }
             if ($user -eq $Owner) { $found = $core[0]; break }
         }
         Start-Sleep -Milliseconds 250
