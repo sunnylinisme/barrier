@@ -102,7 +102,16 @@ jobs:
       - name: Bidirectional file clipboard and actual Explorer paste
         run: python tools/native-file-drop/windows-clipboard-network-test.py build/bin/Release
       - name: LAN discovery, consent and automatic reconnection
-        run: python tools/native-file-drop/link-network-test.py build/bin/Release
+        shell: pwsh
+        run: |
+          # Earlier steps must leave nothing on the discovery port; name any process that does.
+          $owners = @(Get-NetUDPEndpoint -LocalPort 24801 -ErrorAction SilentlyContinue) + @(Get-NetTCPConnection -LocalPort 24801 -ErrorAction SilentlyContinue)
+          foreach ($owner in $owners) {
+            $process = Get-CimInstance Win32_Process -Filter "ProcessId=$($owner.OwningProcess)"
+            Write-Output "::warning title=Port 24801 in use::pid $($owner.OwningProcess) $($process.Name) $($process.CommandLine)"
+          }
+          python tools/native-file-drop/link-network-test.py build/bin/Release
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Desktop settings and pairing migration
         shell: pwsh
         run: |

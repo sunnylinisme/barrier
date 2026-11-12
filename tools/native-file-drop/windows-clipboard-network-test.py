@@ -359,3 +359,7 @@ for role, direction, via_service in runs:
 
 if SERVICE_RUN:
     service("stop", "BarrierShare"); service("delete", "BarrierShare")
+    # Leave nothing behind for later steps (the discovery test needs port 24801 free).
+    time.sleep(2)
+    for image in ["barrier-service.exe", "barrierc.exe", "barriers.exe", "barrier-link.exe"]:
+        subprocess.run(["taskkill", "/F", "/IM", image], capture_output=True)
