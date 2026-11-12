@@ -1737,6 +1737,22 @@ Server::onMouseUp(ButtonID id)
 	}
 }
 
+// Place an entering cursor a little inside the new screen so a small hand
+// movement back towards the shared edge does not switch straight back, which
+// looks like the cursor bouncing between the two screens.
+static void
+insetEntry(BaseClientProxy* dst, EDirection dir, SInt32& x, SInt32& y)
+{
+	SInt32 nx, ny, nw, nh;
+	dst->getShape(nx, ny, nw, nh);
+	const SInt32 insetX = std::min(SInt32(16), (nw - 1) / 2);
+	const SInt32 insetY = std::min(SInt32(16), (nh - 1) / 2);
+	if (dir == kRight) x = std::max(x, nx + insetX);
+	else if (dir == kLeft) x = std::min(x, nx + nw - 1 - insetX);
+	else if (dir == kBottom) y = std::max(y, ny + insetY);
+	else if (dir == kTop) y = std::min(y, ny + nh - 1 - insetY);
+}
+
 bool
 Server::onMouseMovePrimary(SInt32 x, SInt32 y)
 {
@@ -1836,15 +1852,7 @@ Server::onMouseMovePrimary(SInt32 x, SInt32 y)
                 }
                 if (!m_screen->isDraggingStarted()) return false;
                 if (!m_screen->cancelNativeSourceDrag()) return false;
-                // Leave room for small hand movements while the receiving drag starts.
-                SInt32 nx, ny, nw, nh;
-                newScreen->getShape(nx, ny, nw, nh);
-                const SInt32 insetX = std::min(SInt32(16), (nw - 1) / 2);
-                const SInt32 insetY = std::min(SInt32(16), (nh - 1) / 2);
-                if (dir == kRight) x = std::max(x, nx + insetX);
-                else if (dir == kLeft) x = std::min(x, nx + nw - 1 - insetX);
-                else if (dir == kBottom) y = std::max(y, ny + insetY);
-                else if (dir == kTop) y = std::min(y, ny + nh - 1 - insetY);
+                insetEntry(newScreen, dir, x, y);
                 switchScreen(newScreen, x, y, false);
                 if (m_active != newScreen) return false;
                 barrier::sendNativeFile(newScreen->getStream(), m_seqNum, *file);
@@ -1864,6 +1872,7 @@ Server::onMouseMovePrimary(SInt32 x, SInt32 y)
 			}
 
 			// switch screen
+			insetEntry(newScreen, dir, x, y);
 			switchScreen(newScreen, x, y, false);
 			m_waitDragInfoThread = true;
 			return true;
@@ -1965,6 +1974,7 @@ Server::onMouseMoveSecondary(SInt32 dx, SInt32 dy)
 
 	// find direction of neighbor and get the neighbor
 	bool jump = true;
+	EDirection entryDir = kNoDirection;
 	BaseClientProxy* newScreen;
 	do {
 		// clamp position to screen
@@ -2039,6 +2049,7 @@ Server::onMouseMoveSecondary(SInt32 dx, SInt32 dy)
 
 		// try to switch screen.  get the neighbor.
 		newScreen = mapToNeighbor(m_active, dir, m_x, m_y);
+		entryDir  = dir;
 
 		// see if we should switch
 		if (!isSwitchOkay(newScreen, dir, m_x, m_y, xc, yc)) {
@@ -2055,6 +2066,7 @@ Server::onMouseMoveSecondary(SInt32 dx, SInt32 dy)
 
 		SInt32 newX = m_x;
 		SInt32 newY = m_y;
+		insetEntry(newScreen, entryDir, newX, newY);
 
 		// switch screens
 		switchScreen(newScreen, newX, newY, false);
