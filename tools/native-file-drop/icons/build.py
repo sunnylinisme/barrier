@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Regenerate the checked-in macOS/Windows icons on a Mac; no third-party packages."""
 from pathlib import Path
+import shutil
 import struct
 import subprocess
 import tempfile
@@ -17,9 +18,13 @@ with tempfile.TemporaryDirectory(prefix='barrier-icons-') as temporary:
         data.append(png)
         offset += len(png)
     (root / 'BarrierShare.ico').write_bytes(struct.pack('<HHH', 0, 1, len(sizes)) + b''.join(entries + data))
-    chunks = []
-    for size, kind in [(16, b'icp4'), (32, b'icp5'), (64, b'icp6'), (128, b'ic07'), (256, b'ic08'), (512, b'ic09'), (1024, b'ic10')]:
-        png = (p / f'icon-{size}.png').read_bytes()
-        chunks.append(kind + struct.pack('>I', len(png) + 8) + png)
-    data = b''.join(chunks)
-    (root / 'BarrierShare.icns').write_bytes(b'icns' + struct.pack('>I', len(data) + 8) + data)
+    # Let macOS encode small icons correctly instead of interpreting PNG bytes as pixels.
+    iconset = p / 'BarrierShare.iconset'
+    iconset.mkdir()
+    for size in [16, 32, 128, 256, 512]:
+        for scale in [1, 2]:
+            suffix = '@2x' if scale == 2 else ''
+            shutil.copyfile(p / f'icon-{size * scale}.png',
+                            iconset / f'icon_{size}x{size}{suffix}.png')
+    subprocess.run(['iconutil', '-c', 'icns', '-o', str(root / 'BarrierShare.icns'),
+                    str(iconset)], check=True)
