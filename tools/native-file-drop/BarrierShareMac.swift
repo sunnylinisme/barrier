@@ -243,6 +243,46 @@ enum ShareLogin {
     static func set(_ on: Bool) throws { if on { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() } }
 }
 
+// Small floating window at the bottom right that shows a file transfer while it runs, so the
+// progress is visible even when the main window is hidden. It does not take keyboard focus.
+// Short transfers finish before it appears; once shown it stays until the result has been read.
+final class ShareTransferPanel {
+    let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 340, height: 96), styleMask: [.titled, .nonactivatingPanel, .utilityWindow], backing: .buffered, defer: false)
+    let title = NSTextField(labelWithString: ""), detail = NSTextField(labelWithString: ""), bar = NSProgressIndicator(), cancel = NSButton(title: "取消傳送", target: nil, action: nil)
+    var active = false, pending: DispatchWorkItem?, closing: DispatchWorkItem?
+    init(target: AnyObject, cancelAction: Selector) {
+        panel.title = "Barrier Share"; panel.level = .floating; panel.hidesOnDeactivate = false; panel.isReleasedWhenClosed = false
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]; panel.becomesKeyOnlyIfNeeded = true
+        title.font = .systemFont(ofSize: 13, weight: .semibold); title.frame = NSRect(x: 16, y: 62, width: 308, height: 18)
+        detail.font = .systemFont(ofSize: 12); detail.textColor = .secondaryLabelColor; detail.frame = NSRect(x: 16, y: 40, width: 220, height: 16)
+        bar.style = .bar; bar.isIndeterminate = true; bar.frame = NSRect(x: 16, y: 14, width: 210, height: 16)
+        cancel.bezelStyle = .rounded; cancel.target = target; cancel.action = cancelAction; cancel.frame = NSRect(x: 236, y: 8, width: 92, height: 30)
+        for view in [title, detail, bar, cancel] as [NSView] { panel.contentView!.addSubview(view) }
+    }
+    func begin(_ text: String, showAfter delay: Double = 1) {
+        closing?.cancel(); pending?.cancel(); active = true
+        title.stringValue = text; detail.stringValue = "完成前可繼續操作滑鼠與鍵盤"; cancel.isHidden = false; bar.isHidden = false; bar.startAnimation(nil)
+        let work = DispatchWorkItem { [weak self] in if let self = self, self.active { self.show() } }
+        pending = work; if delay <= 0 { work.perform() } else { DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work) }
+    }
+    func progress(_ text: String) {
+        guard active else { return }
+        let parts = text.components(separatedBy: "… ")
+        title.stringValue = parts[0] + "…"; detail.stringValue = parts.count > 1 ? parts[1] : ""
+    }
+    func finish(_ text: String, detail note: String) {
+        pending?.cancel(); active = false
+        guard panel.isVisible else { return }
+        title.stringValue = text; detail.stringValue = note; bar.stopAnimation(nil); bar.isHidden = true; cancel.isHidden = true
+        let work = DispatchWorkItem { [weak self] in self?.panel.orderOut(nil) }
+        closing = work; DispatchQueue.main.asyncAfter(deadline: .now() + 5, execute: work)
+    }
+    func show() {
+        guard let screen = NSScreen.main?.visibleFrame else { return }
+        panel.setFrameOrigin(NSPoint(x: screen.maxX - panel.frame.width - 16, y: screen.minY + 16)); panel.orderFrontRegardless()
+    }
+}
+
 // Turns "file clipboard: progress sent N bytes" log lines into a size and speed for the status card.
 struct ShareProgress {
     var lastBytes: Int64 = 0, lastTime = Date(), speed = 0.0
@@ -345,6 +385,7 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
     var updateURL: URL?, updateTimer: Timer?
     let autostart = NSButton(checkboxWithTitle: "登入時自動啟動", target: nil, action: nil)
     var transferring = false, progress = ShareProgress()
+    lazy var transferPanel = ShareTransferPanel(target: self, cancelAction: #selector(resume))
     let test: Bool
     init(test: Bool = false) { self.test = test; super.init() }
     func applicationDidFinishLaunching(_ notification: Notification) { buildWindow() }
@@ -629,13 +670,13 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         details.string = String((details.string + line + "\n").suffix(20000)); details.scrollToEndOfDocument(nil)
         if line.contains("connected to server") || line.contains("has connected") { status.stringValue = "已連線 · 雙向複製貼上已啟用" }
         let was = transferring
-        if line.contains("file clipboard: sending") { status.stringValue = "正在傳送檔案… 可繼續操作滑鼠與鍵盤"; transferring = true; progress.reset() }
-        if line.contains("file clipboard: receiving") { status.stringValue = "正在接收檔案… 完成後即可貼上"; transferring = true; progress.reset() }
-        if let moved = progress.describe(line), transferring { status.stringValue = moved }
-        if line.contains("file clipboard: sent ") { status.stringValue = "檔案已送出 · 可在另一台貼上"; transferring = false }
-        if line.contains("received and verified") { status.stringValue = "已收到檔案，可在 Finder 資料夾使用 ⌘V 貼上"; transferring = false }
-        if line.contains("WARNING") && line.contains("file clipboard:") { status.stringValue = "檔案複製未完成；請查看下方原因。"; transferring = false }
-        if line.contains("server is dead") || line.contains("disconnected") { status.stringValue = "連線中斷，正在自動重連…"; transferring = false }
+        if line.contains("file clipboard: sending") { status.stringValue = "正在傳送檔案… 可繼續操作滑鼠與鍵盤"; transferring = true; progress.reset(); transferPanel.begin("正在傳送檔案…") }
+        if line.contains("file clipboard: receiving") { status.stringValue = "正在接收檔案… 完成後即可貼上"; transferring = true; progress.reset(); transferPanel.begin("正在接收檔案…") }
+        if let moved = progress.describe(line), transferring { status.stringValue = moved; transferPanel.progress(moved) }
+        if line.contains("file clipboard: sent ") { status.stringValue = "檔案已送出 · 可在另一台貼上"; transferring = false; transferPanel.finish("檔案已送出", detail: "可在另一台貼上") }
+        if line.contains("received and verified") { status.stringValue = "已收到檔案，可在 Finder 資料夾使用 ⌘V 貼上"; transferring = false; transferPanel.finish("已收到檔案", detail: "可在 Finder 資料夾按 ⌘V 貼上") }
+        if line.contains("WARNING") && line.contains("file clipboard:") { status.stringValue = "檔案複製未完成；請查看下方原因。"; transferring = false; transferPanel.finish("檔案複製未完成", detail: "詳情見「診斷紀錄」") }
+        if line.contains("server is dead") || line.contains("disconnected") { status.stringValue = "連線中斷，正在自動重連…"; transferring = false; transferPanel.finish("連線中斷", detail: "檔案沒有傳完，請重新複製") }
         if was != transferring { updateControls() }
     }
     @objc func showDiagnostics() {
@@ -721,6 +762,15 @@ func selfTest(_ directory: URL) throws {
     let first = meter.describe("[2026-11-12T10:00:00] INFO: file clipboard: progress sent 1048576 bytes", now: t0.addingTimeInterval(1))
     let second = meter.describe("[2026-11-12T10:00:01] INFO: file clipboard: progress received 3145728 bytes", now: t0.addingTimeInterval(2))
     guard let a = first, a.contains("1.0 MB"), let b = second, b.hasPrefix("正在接收"), b.contains("3.0 MB"), b.contains("MB/s"), meter.describe("file clipboard: sent 5 bytes") == nil else { throw ShareError.message("Transfer progress parsing failed") }
+    let pop = ShareTransferPanel(target: NSObject(), cancelAction: #selector(NSWindow.orderOut(_:)))
+    pop.begin("正在接收檔案…", showAfter: 0); pop.progress(b)
+    guard pop.panel.isVisible, pop.title.stringValue == "正在接收檔案…", pop.detail.stringValue.contains("3.0 MB"), !pop.cancel.isHidden else { throw ShareError.message("Transfer window did not show progress") }
+    if let content = pop.panel.contentView, let shot = content.bitmapImageRepForCachingDisplay(in: content.bounds) {
+        content.cacheDisplay(in: content.bounds, to: shot); try shot.representation(using: .png, properties: [:])?.write(to: directory.appendingPathComponent("gui-transfer.png"))
+    }
+    pop.finish("已收到檔案", detail: "可在 Finder 資料夾按 ⌘V 貼上")
+    guard pop.title.stringValue == "已收到檔案", pop.cancel.isHidden, !pop.active else { throw ShareError.message("Transfer window did not show the result") }
+    pop.panel.orderOut(nil)
     for binary in ["barriers", "barrierc"] { if try !ShareSettings.run(binary, ["--help"], allowFailure: true).contains("--file-clipboard") { throw ShareError.message("Missing backend or file clipboard option") } }
     guard let icon = Bundle.main.url(forResource: "BarrierShare", withExtension: "icns"), NSImage(contentsOf: icon) != nil,
           Bundle.main.object(forInfoDictionaryKey: "CFBundleIconFile") as? String == "BarrierShare.icns" else { throw ShareError.message("Missing app icon") }
