@@ -379,16 +379,22 @@ int main(int argc, char** argv)
         bool passed = clipboardExplorer(barrier::fs::u8path(argv[2]).wstring().c_str(), std::strcmp(argv[1], "--clipboard-paste") == 0, expected);
         OleUninitialize(); return passed ? 0 : 1;
     }
-    if ((argc == 2 || argc == 3) && (std::strcmp(argv[1], "--clipboard-cross") == 0 || std::strcmp(argv[1], "--clipboard-return") == 0)) {
+    if ((argc == 2 || argc == 3) && (std::strcmp(argv[1], "--clipboard-cross") == 0 || std::strcmp(argv[1], "--clipboard-return") == 0 || std::strcmp(argv[1], "--clipboard-edge-jitter") == 0)) {
         std::string direction = argc == 3 ? argv[2] : "right";
         if (std::strcmp(argv[1], "--clipboard-cross") == 0) {
             DWORD x = direction == "right" ? 65535 : direction == "left" ? 0 : 30000;
             DWORD y = direction == "down" ? 65535 : direction == "up" ? 0 : 30000;
             mouse_event(MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE, x, y, 0, 0);
         } else {
-            int dx = direction == "right" ? -64 : direction == "left" ? 64 : 0;
-            int dy = direction == "down" ? -64 : direction == "up" ? 64 : 0;
+            bool jitter = std::strcmp(argv[1], "--clipboard-edge-jitter") == 0;
+            int distance = jitter ? 2 : 64;
+            int dx = direction == "right" ? -distance : direction == "left" ? distance : 0;
+            int dy = direction == "down" ? -distance : direction == "up" ? distance : 0;
             mouse_event(MOUSEEVENTF_MOVE, static_cast<DWORD>(dx), static_cast<DWORD>(dy), 0, 0);
+            if (jitter) {
+                pump(100);
+                mouse_event(MOUSEEVENTF_MOVE, static_cast<DWORD>(-dx), static_cast<DWORD>(-dy), 0, 0);
+            }
         }
         pump(500); OleUninitialize(); return 0;
     }

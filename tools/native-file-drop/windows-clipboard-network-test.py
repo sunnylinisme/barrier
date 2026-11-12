@@ -51,6 +51,7 @@ class Wire:
         self.connection = connection
         self.server = server
         self.sequence = None
+        self.expect_no_leave = False
         self.pending = collections.deque()
         self.incoming = bytearray()
         connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
@@ -73,7 +74,9 @@ class Wire:
         return bytes(result)
 
     def receive(self):
-        return self.pending.popleft() if self.pending else self.read_packet()
+        message = self.pending.popleft() if self.pending else self.read_packet()
+        assert not (self.expect_no_leave and message == b"COUT"), "Small entry-edge movement switched back before intentional return"
+        return message
 
     def read_packet(self):
         size, = struct.unpack("!I", self.exact(4))
@@ -111,6 +114,7 @@ class Wire:
                     if len(self.incoming) < size + 4:
                         break
                     message = bytes(self.incoming[4:4 + size]); del self.incoming[:4 + size]
+                    assert not (self.expect_no_leave and message == b"COUT"), "Small entry-edge movement switched back before intentional return"
                     if message == b"CALV":
                         if not self.server: self.send(b"CALV")
                     else:
@@ -255,13 +259,18 @@ for role, direction in [(role, d) for role in ["server", "client"] for d in ["ri
                         wire.send(b"FCAP" + struct.pack("!I", 2))
                         assert wire.until(b"FCAP") == b"FCAP" + struct.pack("!I", 2)
                         driver("--clipboard-copy", source, local_expected)
+                        wire.expect_no_leave = True
                         driver("--clipboard-cross", direction)
+                        entered = wire.until(b"CINN")
+                        wire.pending.appendleft(entered)
+                        driver("--clipboard-edge-jitter", direction)
                         digest, size, sequence = wire.read_clipboard()
                         assert digest == hashlib.sha256(local_bytes).digest() and size == len(local_bytes)
                         assert sequence is not None
                         wire.send(b"CCLP" + struct.pack("!BI", 0, sequence))
                         wire.clipboard(peer_bytes, sequence)
                         time.sleep(.3)
+                        wire.expect_no_leave = False
                         driver("--clipboard-return", direction)
                         wire.until(b"COUT")
                         driver("--clipboard-paste", destination, expected)
@@ -286,7 +295,7 @@ for role, direction in [(role, d) for role in ["server", "client"] for d in ["ri
                         assert digest == hashlib.sha256(local_bytes).digest() and size == len(local_bytes)
                     assert (source / name).read_bytes() == local_bytes, "Source file changed"
                     assert (destination / name).read_bytes() == peer_bytes, "Paste contained stale or wrong bytes"
-                    print("PASS: real Windows " + role + " direction=" + direction + ", simulated TLS peer, bidirectional file clipboard, actual Explorer copy/paste, distinct peer bytes and original preserved" + (", native client edge entry/return verified" if role == "client" else ""))
+                    print("PASS: real Windows " + role + " direction=" + direction + ", simulated TLS peer, bidirectional file clipboard, actual Explorer copy/paste, distinct peer bytes and original preserved" + (", native client edge entry/return verified" if role == "client" else ", ordinary edge jitter and intentional return verified"))
         finally:
             if core is not None:
                 if core.poll() is None: core.terminate()
