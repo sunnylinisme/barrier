@@ -469,6 +469,7 @@ sealed class ShareWindow : Form
     readonly CheckBox autostart = new CheckBox();
     readonly ShareProgress progress = new ShareProgress();
     ShareTransferPopup popup;
+    readonly ShareAutoPaste autoPaste = new ShareAutoPaste();
     // Set by --background (sign-in launch): start in the notification area without showing the window.
     public bool StartHidden;
     bool Host { get { return role.SelectedIndex == 0; } }
@@ -541,6 +542,7 @@ sealed class ShareWindow : Form
             enabled = true; StartLink(); UpdateControls();
         };
         popup = new ShareTransferPopup(Font); popup.CancelRequested += delegate { if (transferring) CancelTransfer(); else popup.Dismiss(); };
+        autoPaste.Requested += delegate { popup.MarkAutoPaste(); status.Text = "正在接收檔案… 傳完會自動貼上"; };
         stop.Click += delegate { enabled = false; StopLink(); StopBackend(); status.Text = "已暫停；不接受邀請，也不會自動重連。"; UpdateControls(); };
         search.Click += delegate { Send("SEARCH"); status.Text = "正在搜尋同一區網的電腦…"; };
         pair.Click += delegate { var peer = nearby.SelectedItem as NearbyDevice; if (peer != null) { StopBackend(); Send("PAIR\t" + peer.Fingerprint); status.Text = "正在發出邀請…"; } };
@@ -576,7 +578,7 @@ sealed class ShareWindow : Form
             // On sign-out or shutdown the service keeps the core running for the sign-in screen.
             if (e.CloseReason == CloseReason.WindowsShutDown) { closing = true; keepServiceCore = true; }
             if (!closing && !testing) { e.Cancel = true; Hide(); tray.ShowBalloonTip(1500, "Barrier Share", "程式已收至系統匣；可從圖示開啟或結束。", ToolTipIcon.Info); return; }
-            closing = true; retry.Stop(); updateTimer.Stop(); StopLink(); StopBackend(); popup.Dismiss(); popup.Dispose(); tray.Dispose();
+            closing = true; retry.Stop(); updateTimer.Stop(); StopLink(); StopBackend(); autoPaste.Dispose(); popup.Dismiss(); popup.Dispose(); tray.Dispose();
         };
     }
     // Runs once, on first show or right away for a hidden sign-in launch.
@@ -780,15 +782,24 @@ sealed class ShareWindow : Form
         if (line.Contains("connected to server") || line.Contains("has connected")) status.Text = "已連線 · 雙向複製貼上已啟用";
         bool wasTransferring = transferring;
         if (line.Contains("file clipboard: sending")) { status.Text = "正在傳送檔案… 可繼續操作滑鼠與鍵盤"; transferring = true; progress.Reset(); popup.Begin(true); }
-        if (line.Contains("file clipboard: receiving")) { status.Text = "正在接收檔案… 完成後即可貼上"; transferring = true; progress.Reset(); popup.Begin(false); }
+        if (line.Contains("file clipboard: receiving")) { status.Text = "正在接收檔案… 完成後即可貼上"; transferring = true; progress.Reset(); popup.Begin(false); if (!testing) autoPaste.Start(); }
         string moved = progress.Describe(line, DateTime.UtcNow);
         if (moved != null && transferring) { status.Text = moved; int cut = moved.IndexOf("… "); popup.Progress(cut >= 0 ? moved.Substring(cut + 2) : moved); }
         if (line.Contains("file clipboard: sent ")) { status.Text = "檔案已送出 · 可在另一台貼上"; transferring = false; popup.Finish("檔案已送出", "可在另一台貼上"); }
-        if (line.Contains("received and verified") && line.Contains("clipboard")) { status.Text = "已收到檔案，可在資料夾 Ctrl+V 貼上"; transferring = false; popup.Finish("已收到檔案", "可在檔案總管資料夾按 Ctrl+V 貼上"); }
-        if (line.Contains("WARNING") && line.Contains("file clipboard:")) { status.Text = "檔案複製未完成；請查看診斷紀錄。"; transferring = false; popup.Finish("檔案複製未完成", "詳情見「診斷紀錄」"); }
+        if (line.Contains("received and verified") && line.Contains("clipboard")) {
+            transferring = false; autoPaste.Stop();
+            if (autoPaste.Ready()) {
+                // The core has just put the files on the clipboard; give it a moment, then paste where the user asked.
+                status.Text = "已收到檔案，已自動貼上"; popup.Finish("已收到檔案", "已自動貼上");
+                var delay = new System.Windows.Forms.Timer { Interval = 300 };
+                delay.Tick += delegate { delay.Stop(); delay.Dispose(); if (autoPaste.Ready()) ShareAutoPaste.SendPaste(); autoPaste.Clear(); };
+                delay.Start();
+            } else { autoPaste.Clear(); status.Text = "已收到檔案，可在資料夾 Ctrl+V 貼上"; popup.Finish("已收到檔案", "可在檔案總管資料夾按 Ctrl+V 貼上"); }
+        }
+        if (line.Contains("WARNING") && line.Contains("file clipboard:")) { status.Text = "檔案複製未完成；請查看診斷紀錄。"; transferring = false; autoPaste.Clear(); popup.Finish("檔案複製未完成", "詳情見「診斷紀錄」"); }
         if (line.Contains("disconnected") || line.Contains("server is dead")) {
             status.Text = "連線中斷，正在自動重連…"; transferring = false;
-            if (wasTransferring) popup.Finish("連線中斷", "檔案沒有傳完，請重新複製"); else popup.Dismiss();
+            autoPaste.Clear(); if (wasTransferring) popup.Finish("連線中斷", "檔案沒有傳完，請重新複製"); else popup.Dismiss();
         }
         if (wasTransferring != transferring) UpdateControls();
     }
@@ -881,7 +892,7 @@ sealed class ShareWindow : Form
         } catch (IOException) { } catch (UnauthorizedAccessException) { }
     }
     // Restarting the connection drops the partial copy on both sides.
-    void CancelTransfer() { transferring = false; popup.Dismiss(); StopBackend(); StartBackend(); status.Text = "已取消檔案傳送，正在重新連線…"; }
+    void CancelTransfer() { transferring = false; autoPaste.Clear(); popup.Dismiss(); StopBackend(); StartBackend(); status.Text = "已取消檔案傳送，正在重新連線…"; }
     void Forget(string command, string question)
     {
         if (MessageBox.Show(this, question, "解除配對", MessageBoxButtons.OKCancel) != DialogResult.OK) return;
@@ -969,6 +980,47 @@ sealed class ShareWindow : Form
     }
 }
 
+// A paste pressed while files are still arriving is remembered and done once they are verified.
+// A low-level keyboard hook (installed only while receiving) sees Ctrl+V, including keys the core
+// injects for the other computer, and records the window that had the focus.
+sealed class ShareAutoPaste : IDisposable
+{
+    delegate IntPtr HookProc(int code, IntPtr wParam, IntPtr lParam);
+    [System.Runtime.InteropServices.DllImport("user32.dll", SetLastError = true)] static extern IntPtr SetWindowsHookEx(int id, HookProc proc, IntPtr module, uint thread);
+    [System.Runtime.InteropServices.DllImport("user32.dll")] static extern bool UnhookWindowsHookEx(IntPtr hook);
+    [System.Runtime.InteropServices.DllImport("user32.dll")] static extern IntPtr CallNextHookEx(IntPtr hook, int code, IntPtr wParam, IntPtr lParam);
+    [System.Runtime.InteropServices.DllImport("user32.dll")] static extern short GetAsyncKeyState(int key);
+    [System.Runtime.InteropServices.DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
+    [System.Runtime.InteropServices.DllImport("user32.dll")] static extern void keybd_event(byte vk, byte scan, uint flags, UIntPtr extra);
+    [System.Runtime.InteropServices.DllImport("kernel32.dll")] static extern IntPtr GetModuleHandle(string name);
+    readonly HookProc proc; IntPtr hook;
+    public IntPtr Target { get; private set; }
+    public event Action Requested;
+    public ShareAutoPaste() { proc = Hook; }
+    static bool Down(int vk) { return (GetAsyncKeyState(vk) & 0x8000) != 0; }
+    IntPtr Hook(int code, IntPtr wParam, IntPtr lParam)
+    {
+        // WM_KEYDOWN or WM_SYSKEYDOWN of V with Ctrl only; injected keys count too.
+        if (code >= 0 && (wParam == (IntPtr)0x0100 || wParam == (IntPtr)0x0104) && System.Runtime.InteropServices.Marshal.ReadInt32(lParam) == 0x56
+            && Down(0x11) && !Down(0x12) && !Down(0x10) && !Down(0x5B) && !Down(0x5C)) Record(GetForegroundWindow());
+        return CallNextHookEx(hook, code, wParam, lParam);
+    }
+    // Only the first paste counts.
+    internal void Record(IntPtr window) { if (Target != IntPtr.Zero || window == IntPtr.Zero) return; Target = window; var h = Requested; if (h != null) h(); }
+    public void Start() { Stop(); Target = IntPtr.Zero; hook = SetWindowsHookEx(13 /* WH_KEYBOARD_LL */, proc, GetModuleHandle(null), 0); }
+    public void Stop() { if (hook != IntPtr.Zero) { UnhookWindowsHookEx(hook); hook = IntPtr.Zero; } }
+    public void Clear() { Stop(); Target = IntPtr.Zero; }
+    // Paste again only into the window that asked, and only if it still has the focus.
+    public static bool ShouldPaste(IntPtr recorded, IntPtr foreground) { return recorded != IntPtr.Zero && recorded == foreground; }
+    public bool Ready() { return ShouldPaste(Target, GetForegroundWindow()); }
+    public static void SendPaste()
+    {
+        keybd_event(0x11, 0, 0, UIntPtr.Zero); keybd_event(0x56, 0, 0, UIntPtr.Zero);
+        keybd_event(0x56, 0, 2 /* KEYUP */, UIntPtr.Zero); keybd_event(0x11, 0, 2, UIntPtr.Zero);
+    }
+    public void Dispose() { Stop(); }
+}
+
 // Small always-on-top window above the taskbar while files are copied; never takes the focus.
 // Same behaviour as the Mac app: shown only if a transfer is still running after a second,
 // marquee bar (the total size is not known), cancel button, result shown for 5 seconds.
@@ -1007,6 +1059,8 @@ sealed class ShareTransferPopup : Form
         bar.Visible = cancel.Visible = true; if (!Visible) showTimer.Start();
     }
     public void Progress(string text) { detail.Text = text; }
+    // The title keeps this note for the rest of the transfer; Begin starts without it.
+    public void MarkAutoPaste() { const string note = "（傳完自動貼上）"; if (!title.Text.EndsWith(note)) title.Text += note; }
     // Results are shown only when the window is already up, then it closes after 5 seconds.
     public void Finish(string heading, string text)
     {
@@ -1255,8 +1309,30 @@ static class ShareProgram
                     transfer.Finish("已收到檔案", "可在檔案總管資料夾按 Ctrl+V 貼上"); Application.DoEvents();
                     if (!transfer.Visible || transfer.Busy || transfer.Heading != "已收到檔案") throw new Exception("Transfer window result state wrong");
                     using (var bitmap = new Bitmap(transfer.Width, transfer.Height)) { transfer.DrawToBitmap(bitmap, new Rectangle(Point.Empty, transfer.Size)); bitmap.Save(Path.Combine(directory, "gui-transfer-done.png")); }
+                    transfer.Begin(false); transfer.MarkAutoPaste(); transfer.Progress("已收 4.0 MB"); transfer.MarkAutoPaste();
+                    if (transfer.Heading != "正在接收檔案…（傳完自動貼上）") throw new Exception("Auto-paste note missing or repeated: " + transfer.Heading);
                     transfer.Dismiss(); transfer.Begin(true); transfer.Finish("檔案已送出", "可在另一台貼上"); Application.DoEvents();
                     if (transfer.Visible) throw new Exception("Result shown for a transfer whose window never appeared");
+                }
+                // Auto-paste: nothing pressed -> no paste; same window still focused -> paste; focus moved -> no paste.
+                IntPtr explorer = new IntPtr(0x1234), other = new IntPtr(0x5678);
+                if (ShareAutoPaste.ShouldPaste(IntPtr.Zero, explorer) || !ShareAutoPaste.ShouldPaste(explorer, explorer) || ShareAutoPaste.ShouldPaste(explorer, other)) throw new Exception("Auto-paste decision wrong");
+                using (var paste = new ShareAutoPaste()) {
+                    int requests = 0; paste.Requested += delegate { ++requests; };
+                    paste.Record(explorer); paste.Record(other);
+                    if (paste.Target != explorer || requests != 1) throw new Exception("Auto-paste did not keep only the first paste");
+                    paste.Clear(); if (paste.Target != IntPtr.Zero) throw new Exception("Auto-paste record not cleared");
+                    // The real hook must see an injected Ctrl+V, the way keys from the other computer arrive.
+                    using (var target = new Form { Text = "auto-paste target", ShowInTaskbar = false }) {
+                        target.Show(); target.Activate(); Application.DoEvents();
+                        paste.Start(); ShareAutoPaste.SendPaste();
+                        var until = DateTime.UtcNow.AddSeconds(2);
+                        while (paste.Target == IntPtr.Zero && DateTime.UtcNow < until) { Application.DoEvents(); Thread.Sleep(20); }
+                        paste.Stop();
+                        if (paste.Target == IntPtr.Zero) throw new Exception("Keyboard hook did not see an injected Ctrl+V");
+                        File.WriteAllText(Path.Combine(directory, "AUTOPASTE.txt"), "Injected Ctrl+V recorded; target is the test window: " + (paste.Target == target.Handle));
+                        target.Close();
+                    }
                 }
                 window.ShowUpdate(null);
                 using (var bitmap = new Bitmap(window.Width, window.Height)) { window.DrawToBitmap(bitmap, new Rectangle(Point.Empty, window.Size)); bitmap.Save(Path.Combine(directory, "gui.png")); }
