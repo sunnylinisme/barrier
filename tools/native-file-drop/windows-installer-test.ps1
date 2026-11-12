@@ -32,10 +32,10 @@ foreach ($path in @($profile, $uninstallKey, $machineKey) + $shortcuts) {
 $installDir = Join-Path $TestRoot '安裝測試 with spaces\Barrier Share'
 New-Item -ItemType Directory -Path $TestRoot, $profile | Out-Null
 
-function Invoke-TestProcess([string]$File, [string[]]$Arguments, [int]$TimeoutSeconds = 90) {
+function Invoke-TestProcess([string]$File, [string[]]$Arguments, [int]$TimeoutSeconds = 90, [bool]$ShellExecute = $false) {
     $info = [Diagnostics.ProcessStartInfo]::new()
     $info.FileName = $File
-    $info.UseShellExecute = $false
+    $info.UseShellExecute = $ShellExecute
     foreach ($argument in $Arguments) { $info.ArgumentList.Add($argument) }
     $process = [Diagnostics.Process]::new()
     $process.StartInfo = $info
@@ -82,14 +82,28 @@ function Assert-Installed {
     }
     $uninstaller = Join-Path $installDir 'unins000.exe'
     if (-not (Test-Path -LiteralPath $uninstaller) -or -not $entry.UninstallString.Contains($uninstaller)) { throw 'Uninstall command does not target this test installation.' }
-    $shell = New-Object -ComObject WScript.Shell
+    # Read the native Shell link instead of WScript's legacy TargetPath projection.
+    $shell = New-Object -ComObject Shell.Application
     try {
         foreach ($path in $shortcuts) {
             if (-not (Test-Path -LiteralPath $path)) { throw "Shortcut was not created: $path" }
-            $shortcut = $shell.CreateShortcut($path)
+            $folder = $item = $shortcut = $null
             try {
-                if ($shortcut.TargetPath -ine (Join-Path $installDir 'BarrierShare.exe')) { throw "Shortcut targets the wrong application: $path" }
-            } finally { [void][Runtime.InteropServices.Marshal]::ReleaseComObject($shortcut) }
+                $folder = $shell.NameSpace([IO.Path]::GetDirectoryName($path))
+                $item = $folder.ParseName([IO.Path]::GetFileName($path))
+                if (-not $item.IsLink) { throw "Not a Shell shortcut: $path" }
+                $shortcut = $item.GetLink
+                $target = [string]$shortcut.Path
+                $expected = Join-Path $installDir 'BarrierShare.exe'
+                Add-Content -LiteralPath (Join-Path $TestRoot 'shortcuts.log') -Encoding utf8 -Value "Shortcut=$path; Target=$target; Expected=$expected; WorkingDirectory=$($shortcut.WorkingDirectory)"
+                if (-not $target -or [IO.Path]::GetFullPath($target) -ine [IO.Path]::GetFullPath($expected)) {
+                    throw "Shortcut targets the wrong application: $path; actual=[$target]; expected=[$expected]"
+                }
+            } finally {
+                foreach ($object in @($shortcut, $item, $folder)) {
+                    if ($null -ne $object) { [void][Runtime.InteropServices.Marshal]::ReleaseComObject($object) }
+                }
+            }
         }
     } finally { [void][Runtime.InteropServices.Marshal]::ReleaseComObject($shell) }
 }
@@ -103,8 +117,8 @@ Assert-Installed
 Assert-Profile $beforeInstall
 
 $startupRoot = Join-Path $TestRoot '已安裝啟動 startup'
-Invoke-TestProcess (Join-Path $installDir 'BarrierShare.exe') @('--startup-test', $startupRoot) 45
-if (-not (Test-Path -LiteralPath (Join-Path $startupRoot 'STARTUP-PASS.txt'))) { throw 'Installed application did not pass normal startup/discovery checks.' }
+Invoke-TestProcess $shortcuts[0] @('--startup-test', $startupRoot) 45 $true
+if (-not (Test-Path -LiteralPath (Join-Path $startupRoot 'STARTUP-PASS.txt'))) { throw 'Installed Start Menu shortcut did not pass normal startup/discovery checks.' }
 Assert-Profile $beforeInstall
 
 # Reinstall over existing files exercises the updater path without inventing an older release.
@@ -122,5 +136,5 @@ foreach ($path in @($uninstallKey, $machineKey) + $shortcuts) {
     if (Test-Path -LiteralPath $path) { throw "Uninstall left registration or shortcut: $path" }
 }
 Assert-Profile $beforeReinstall
-Set-Content -LiteralPath (Join-Path $TestRoot 'INSTALLER-PASS.txt') -Value 'Per-user silent installation to a Unicode path with spaces; payload hashes and shortcuts match; installed normal startup passes; repeat installation and uninstall preserve an existing profile; uninstall removes payload, shortcuts and registration. This is a same-version reinstall, not an old-release migration test.' -Encoding utf8
+Set-Content -LiteralPath (Join-Path $TestRoot 'INSTALLER-PASS.txt') -Value 'Per-user silent installation to a Unicode path with spaces; payload hashes and shortcuts match; installed Start Menu shortcut startup passes; repeat installation and uninstall preserve an existing profile; uninstall removes payload, shortcuts and registration. This is a same-version reinstall, not an old-release migration test.' -Encoding utf8
 Get-Content -LiteralPath (Join-Path $TestRoot 'INSTALLER-PASS.txt')
