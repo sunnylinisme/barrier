@@ -136,5 +136,35 @@ foreach ($path in @($uninstallKey, $machineKey) + $shortcuts) {
     if (Test-Path -LiteralPath $path) { throw "Uninstall left registration or shortcut: $path" }
 }
 Assert-Profile $beforeReinstall
-Set-Content -LiteralPath (Join-Path $TestRoot 'INSTALLER-PASS.txt') -Value 'Per-user silent installation to a Unicode path with spaces; payload hashes and shortcuts match; installed Start Menu shortcut startup passes; repeat installation and uninstall preserve an existing profile; uninstall removes payload, shortcuts and registration. This is a same-version reinstall, not an old-release migration test.' -Encoding utf8
+
+# Updating over a running copy closes it cleanly and starts it again; uninstall closes it and
+# removes the launch-at-sign-in value. The running app may write its own profile from here on.
+function Wait-Until([scriptblock]$Condition, [string]$Failure, [int]$Seconds = 20) {
+    $deadline = [DateTime]::UtcNow.AddSeconds($Seconds)
+    while (-not (& $Condition)) {
+        if ([DateTime]::UtcNow -gt $deadline) { throw $Failure }
+        Start-Sleep -Milliseconds 200
+    }
+}
+function Test-AppRunning { $mutex = $null; $open = [Threading.Mutex]::TryOpenExisting('Local\BarrierShare.Desktop', [ref]$mutex); if ($mutex) { $mutex.Dispose() }; return $open }
+$app = Join-Path $installDir 'BarrierShare.exe'
+$runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
+if ($null -ne (Get-ItemProperty -LiteralPath $runKey -Name BarrierShare -ErrorAction SilentlyContinue)) { throw 'Refusing to alter an existing launch-at-sign-in entry.' }
+Invoke-TestProcess $InstallerPath ($arguments + "/LOG=$(Join-Path $TestRoot 'install-for-update.log')")
+$first = Start-Process -FilePath $app -ArgumentList '--background' -PassThru
+Wait-Until { Test-AppRunning } 'Installed app did not start in the background.'
+Start-Sleep -Seconds 2
+$updateLog = Join-Path $TestRoot 'update-running.log'
+Invoke-TestProcess $InstallerPath ($arguments + "/LOG=$updateLog")
+if (-not $first.WaitForExit(1000)) { throw 'Setup replaced files without closing the running copy.' }
+if ((Get-Content -LiteralPath $updateLog -Raw).Contains('did not quit on request')) { throw 'Running copy ignored the quit signal and had to be killed.' }
+Wait-Until { @(Get-Process BarrierShare -ErrorAction SilentlyContinue | Where-Object { $_.Id -ne $first.Id -and $_.Path -ieq $app }).Count -eq 1 } 'Setup did not start the updated copy again.'
+$second = Get-Process BarrierShare | Where-Object { $_.Path -ieq $app }
+Set-ItemProperty -LiteralPath $runKey -Name BarrierShare -Value ('"' + $app + '" --background')
+Invoke-TestProcess (Join-Path $installDir 'unins000.exe') @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/LOG=$(Join-Path $TestRoot 'uninstall-running.log')")
+if (-not $second.WaitForExit(1000)) { throw 'Uninstall left the app running.' }
+if ($null -ne (Get-ItemProperty -LiteralPath $runKey -Name BarrierShare -ErrorAction SilentlyContinue)) { throw 'Uninstall left the launch-at-sign-in entry.' }
+if (Test-Path -LiteralPath $app) { throw 'Uninstall could not remove the app that was running.' }
+
+Set-Content -LiteralPath (Join-Path $TestRoot 'INSTALLER-PASS.txt') -Value 'Per-user silent installation to a Unicode path with spaces; payload hashes and shortcuts match; installed Start Menu shortcut startup passes; repeat installation and uninstall preserve an existing profile; uninstall removes payload, shortcuts and registration; updating over a running background copy closes it through the quit signal and starts it again; uninstall closes a running copy and removes the launch-at-sign-in entry. This is a same-version reinstall, not an old-release migration test.' -Encoding utf8
 Get-Content -LiteralPath (Join-Path $TestRoot 'INSTALLER-PASS.txt')

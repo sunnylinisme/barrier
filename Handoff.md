@@ -39,6 +39,13 @@
 - 舊版相容：0.3.8 以前的 App 只認得 `windows-v*`／`mac-v*`。所以 release job 公開 `vX.Y.Z` 之後，會自動再建立 `windows-vX.Y.Z`（附 Windows 兩個檔案）和 `mac-vX.Y.Z`（附 Mac ZIP）兩個副本 Release，不標成 latest，說明連回共用 Release。這樣舊版 App 也能收到新版通知。等所有電腦都更新到 0.3.9 以上，就可以刪掉 workflow 裡的這段。
 - `gh` 推送含 workflow 檔的 commit 需要 `workflow` scope（`gh auth refresh -s workflow`）。
 
+### 0.3.9（尚未發布）：登入時啟動、傳輸進度、快捷鍵、安裝時自動關閉
+
+- 登入時自動啟動：Windows 寫 `HKCU\...\Run\BarrierShare` = `"BarrierShare.exe" --background`（`ShareLogin`；路徑變了會自動更新，解除安裝會刪掉這個值）；`--background` 不顯示視窗、直接在系統匣啟動。Mac 用 `SMAppService.mainApp`，以登入項目啟動時不開視窗。
+- 傳輸進度：核心 `FileClipboardTransfer.cpp` 每 0.5 秒記一行 `file clipboard: progress sent|received N bytes`；兩個 GUI 從紀錄解析，顯示已傳大小和速度。總大小事先不知道（串流協定沒傳總量），所以沒有百分比。傳輸中「恢復連線」變成「取消傳送」，做法是重啟背景程式，兩邊的暫存都會清掉。
+- 快捷鍵：主控端設定檔加上 `keystroke(Control+Alt+<方向>) = switchInDirection(<方向>)`，只綁設定的那一軸（朝接收端和反方向）。Mac 上 Alt 是 Option。
+- 安裝時自動關閉：拿掉 `AppMutex`，改在 `PrepareToInstall`／`InitializeUninstall` 觸發 `Local\BarrierShare.Quit` 事件讓 App 正常結束（會還原游標、停掉背景程式）；0.3.8 以前沒有這個事件，或 8 秒內沒結束，就 `taskkill /F /T` 再用 `SPI_SETCURSORS` 還原游標。之前有在執行的話，裝完會再開啟（靜默安裝也會）。`windows-installer-test.ps1` 有測試：背景執行中更新、更新後重新開啟、執行中解除安裝。
+
 ## 待辦
 
 0. 版本號統一：Windows 與 Mac 都在 0.3.8（2026-11-12 以 `windows-v0.3.8`、`mac-v0.3.8` 分開發布，是最後一次分開發布），視窗標題顯示版本（Windows 系統匣提示也會顯示；Mac 新增「關於 Barrier Share」選單）。

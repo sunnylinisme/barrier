@@ -17,8 +17,8 @@ using System.Threading.Tasks;
 using System.Windows.Forms;
 using System.Xml.Linq;
 
-[assembly: System.Reflection.AssemblyVersion("0.3.8.0")]
-[assembly: System.Reflection.AssemblyFileVersion("0.3.8.0")]
+[assembly: System.Reflection.AssemblyVersion("0.3.9.0")]
+[assembly: System.Reflection.AssemblyFileVersion("0.3.9.0")]
 
 static class ShareSettings
 {
@@ -119,7 +119,13 @@ static class ShareSettings
     {
         if (!Directions.Contains(Position)) throw new IOException("請選擇有效的螢幕位置。");
         string opposite = new[] { "left", "right", "down", "up" }[Array.IndexOf(Directions, Position)];
-        return ("section: screens\n windows-host:\n windows:\nend\nsection: links\n windows-host:\n  right = windows\n windows:\n  left = windows-host\nend\nsection: options\n clipboardSharing = " + (clipboard ? "true" : "false") + "\nend\n").Replace("right = windows", Position + " = windows").Replace("left = windows-host", opposite + " = windows-host");
+        return ("section: screens\n windows-host:\n windows:\nend\nsection: links\n windows-host:\n  right = windows\n windows:\n  left = windows-host\nend\nsection: options\n clipboardSharing = " + (clipboard ? "true" : "false") + "\n" + Hotkeys(Position, opposite) + "end\n").Replace("right = windows", Position + " = windows").Replace("left = windows-host", opposite + " = windows-host");
+    }
+    // Ctrl+Alt+arrow toward the other screen switches without reaching the edge; only the configured axis is bound.
+    public static string Hotkeys(string direction, string opposite)
+    {
+        Func<string, string> key = d => Char.ToUpperInvariant(d[0]) + d.Substring(1);
+        return " keystroke(Control+Alt+" + key(direction) + ") = switchInDirection(" + direction + ")\n keystroke(Control+Alt+" + key(opposite) + ") = switchInDirection(" + opposite + ")\n";
     }
     public static ProcessStartInfo Backend(bool host, string address)
     {
@@ -173,6 +179,49 @@ static class ShareUpdate
         request.UserAgent = "BarrierShare-UpdateCheck"; request.Accept = "application/vnd.github+json"; request.Timeout = 15000;
         using (var response = request.GetResponse()) using (var reader = new StreamReader(response.GetResponseStream(), Encoding.UTF8))
             return Newer(reader.ReadToEnd(), Current);
+    }
+}
+
+// Launch at sign-in through the per-user Run key; the value follows the exe if the app is moved.
+static class ShareLogin
+{
+    const string RunKey = @"Software\Microsoft\Windows\CurrentVersion\Run";
+    public static string Name = "BarrierShare";
+    public static string Command { get { return ShareSettings.Quote(Application.ExecutablePath) + " --background"; } }
+    public static bool Enabled
+    {
+        get { using (var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(RunKey)) return key != null && key.GetValue(Name) != null; }
+        set {
+            using (var key = Microsoft.Win32.Registry.CurrentUser.CreateSubKey(RunKey)) {
+                if (value) key.SetValue(Name, Command); else key.DeleteValue(Name, false);
+            }
+        }
+    }
+    public static void Refresh() { try { if (Enabled && !Command.Equals(ReadValue())) Enabled = true; } catch (Exception) { } }
+    public static string ReadValue() { using (var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(RunKey)) return key == null ? null : key.GetValue(Name) as string; }
+}
+
+// Turns "file clipboard: progress sent N bytes" log lines into a size and speed for the status card.
+sealed class ShareProgress
+{
+    static readonly Regex Line = new Regex(@"file clipboard: progress (sent|received) (\d+) bytes");
+    long lastBytes; DateTime lastTime; double speed;
+    public void Reset() { lastBytes = 0; lastTime = DateTime.UtcNow; speed = 0; }
+    public string Describe(string line, DateTime now)
+    {
+        var match = Line.Match(line);
+        if (!match.Success) return null;
+        long bytes = Int64.Parse(match.Groups[2].Value);
+        double seconds = (now - lastTime).TotalSeconds;
+        if (seconds > 0.05 && bytes >= lastBytes) { double current = (bytes - lastBytes) / seconds; speed = speed == 0 ? current : speed * 0.6 + current * 0.4; }
+        lastBytes = bytes; lastTime = now;
+        return (match.Groups[1].Value == "sent" ? "正在傳送檔案… 已傳 " : "正在接收檔案… 已收 ") + Size(bytes) + (speed > 0 ? " · " + Size((long)speed) + "/s" : "");
+    }
+    public static string Size(long bytes)
+    {
+        string[] units = { "B", "KB", "MB", "GB", "TB" }; double value = bytes; int unit = 0;
+        while (value >= 1024 && unit < units.Length - 1) { value /= 1024; ++unit; }
+        return (unit == 0 ? value.ToString("0") : value.ToString(value < 10 ? "0.0" : "0")) + " " + units[unit];
     }
 }
 
@@ -279,8 +328,19 @@ sealed class ShareWindow : Form
     Process backend, link;
     Form consent, diagnostics;
     string consentId, connectedAddress = "", savedPeer = "";
-    bool closing, loading = true, enabled = true, discoveryReady;
+    bool closing, loading = true, enabled = true, discoveryReady, started, transferring;
+    readonly CheckBox autostart = new CheckBox();
+    readonly ShareProgress progress = new ShareProgress();
+    // Set by --background (sign-in launch): start in the notification area without showing the window.
+    public bool StartHidden;
     bool Host { get { return role.SelectedIndex == 0; } }
+    protected override void SetVisibleCore(bool value)
+    {
+        if (value && StartHidden && !IsHandleCreated) { StartHidden = false; CreateHandle(); base.SetVisibleCore(false); BeginInvoke((Action)Startup); return; }
+        base.SetVisibleCore(value);
+    }
+    // Lets the installer close a running copy cleanly so cursors and both helpers are restored.
+    public void Quit() { if (IsHandleCreated) BeginInvoke((Action)delegate { closing = true; Close(); }); }
     void At(Control c, int x, int y, int width, int height)
     {
         var bounds = new Rectangle(x,y,width,height);
@@ -328,12 +388,19 @@ sealed class ShareWindow : Form
         positionHint.Text="由主控端設定兩台螢幕的相對位置"; positionHint.BackColor=Color.White; positionHint.ForeColor=ShareStyle.Muted; At(positionHint,260,522,492,42);
         forget.Text="解除配對"; clear.Text="清除暫存"; forget.BackColor=clear.BackColor=ShareStyle.Background; forget.Font=clear.Font=new Font(Font.FontFamily,10F); At(forget,24,602,108,36); At(clear,144,602,108,36); forget.TabIndex=4; clear.TabIndex=5;
         var diagnosticButton = new ShareButton { Text="診斷紀錄", BackColor=ShareStyle.Background, Font=new Font(Font.FontFamily,10F), TabIndex=6 }; At(diagnosticButton,656,602,120,36); diagnosticButton.Click += delegate { ShowDiagnostics(); };
-        At(new Label { Text="複製 → 換到另一台 → 完成後貼上", ForeColor=ShareStyle.Muted, Font=new Font(Font.FontFamily,10F), TextAlign=ContentAlignment.MiddleCenter },270,602,372,36);
+        autostart.Text="登入時自動啟動"; autostart.BackColor=ShareStyle.Background; autostart.Font=new Font(Font.FontFamily,10F); autostart.TabIndex=5; At(autostart,272,602,170,36);
+        try { autostart.Checked = !selfTest && ShareLogin.Enabled; } catch (Exception) { }
+        autostart.CheckedChanged += delegate { if (!testing) try { ShareLogin.Enabled = autostart.Checked; } catch (Exception e) { Error(e); } };
+        At(new Label { Text="複製 → 換台 → 貼上", ForeColor=ShareStyle.Muted, Font=new Font(Font.FontFamily,10F), TextAlign=ContentAlignment.MiddleRight },448,602,196,36);
         details.Multiline=true; details.ReadOnly=true; details.ScrollBars=ScrollBars.Vertical; details.Font=new Font("Consolas",9F); details.BackColor=Color.FromArgb(249,251,255); details.BorderStyle=BorderStyle.None;
         var menu = new ContextMenuStrip(); menu.Items.Add("開啟視窗", null, delegate { Show(); WindowState = FormWindowState.Normal; Activate(); });
         menu.Items.Add("結束", null, delegate { closing = true; Close(); }); tray.Icon = Icon; tray.Text = "Barrier Share " + ShareUpdate.Current; tray.ContextMenuStrip = menu; tray.Visible = !testing;
         tray.DoubleClick += delegate { Show(); WindowState = FormWindowState.Normal; Activate(); };
-        start.Click += delegate { enabled = true; StartLink(); UpdateControls(); };
+        start.Click += delegate {
+            // While a file is moving the same button cancels it: restarting the connection drops the partial copy on both sides.
+            if (transferring) { transferring = false; StopBackend(); StartBackend(); status.Text = "已取消檔案傳送，正在重新連線…"; return; }
+            enabled = true; StartLink(); UpdateControls();
+        };
         stop.Click += delegate { enabled = false; StopLink(); StopBackend(); status.Text = "已暫停；不接受邀請，也不會自動重連。"; UpdateControls(); };
         search.Click += delegate { Send("SEARCH"); status.Text = "正在搜尋同一區網的電腦…"; };
         pair.Click += delegate { var peer = nearby.SelectedItem as NearbyDevice; if (peer != null) { StopBackend(); Send("PAIR\t" + peer.Fingerprint); status.Text = "正在發出邀請…"; } };
@@ -349,19 +416,25 @@ sealed class ShareWindow : Form
         updateTimer.Tick += delegate { CheckUpdate(); };
         ResumeLayout(false);
         Shown += delegate {
-            if (!testing) ShareCursor.Restore();
             var available=Screen.FromControl(this).WorkingArea;
             if (Width>available.Width || Height>available.Height) { Size=new Size(Math.Min(Width,available.Width),Math.Min(Height,available.Height)); Location=available.Location; }
-            try {
-                ShareSettings.Import(ShareSettings.Bin, true, false); ShareSettings.Import(ShareSettings.Bin, false, false);
-                bool host; string ip; ShareSettings.Load(out host, out ip); role.SelectedIndex = host ? 0 : 1; address.Text = ip; position.SelectedIndex = Array.IndexOf(ShareSettings.Directions, ShareSettings.Position);
-                loading = false; RefreshRole(); if (!testing) { StartLink(); retry.Start(); CheckUpdate(); updateTimer.Start(); }
-            } catch (Exception e) { loading = false; Error(e); }
+            Startup();
         };
         FormClosing += delegate(object sender, FormClosingEventArgs e) {
             if (!closing && !testing) { e.Cancel = true; Hide(); tray.ShowBalloonTip(1500, "Barrier Share", "程式已收至系統匣；可從圖示開啟或結束。", ToolTipIcon.Info); return; }
             closing = true; retry.Stop(); updateTimer.Stop(); StopLink(); StopBackend(); tray.Dispose();
         };
+    }
+    // Runs once, on first show or right away for a hidden sign-in launch.
+    void Startup()
+    {
+        if (started) return; started = true;
+        if (!testing) { ShareCursor.Restore(); ShareLogin.Refresh(); }
+        try {
+            ShareSettings.Import(ShareSettings.Bin, true, false); ShareSettings.Import(ShareSettings.Bin, false, false);
+            bool host; string ip; ShareSettings.Load(out host, out ip); role.SelectedIndex = host ? 0 : 1; address.Text = ip; position.SelectedIndex = Array.IndexOf(ShareSettings.Directions, ShareSettings.Position);
+            loading = false; RefreshRole(); if (!testing) { StartLink(); retry.Start(); CheckUpdate(); updateTimer.Start(); }
+        } catch (Exception e) { loading = false; Error(e); }
     }
     // Exercise the same window and startup path as a normal launch, including both live roles.
     public void CheckProductionStartup(string directory)
@@ -419,12 +492,13 @@ sealed class ShareWindow : Form
         if (found == null) return;
         updateUrl = found.Url; update.Text = "有新版 " + found.Version + "，前往下載 ↗";
         string version = found.Version.ToString();
-        if (announcedUpdate != version && !testing) { announcedUpdate = version; tray.ShowBalloonTip(5000, "Barrier Share 有新版", "版本 " + version + " 已發布。從視窗右上角前往下載；安裝前先從系統匣選「結束」。", ToolTipIcon.Info); }
+        if (announcedUpdate != version && !testing) { announcedUpdate = version; tray.ShowBalloonTip(5000, "Barrier Share 有新版", "版本 " + version + " 已發布。從視窗右上角前往下載；安裝程式會自動關閉並重新開啟 Barrier Share。", ToolTipIcon.Info); }
     }
     void Save() { try { ShareSettings.Save(Host, address.Text.Trim()); } catch (Exception e) { Error(e); } }
     void UpdateControls()
     {
-        start.Enabled = !enabled || link == null; stop.Enabled = enabled;
+        transferring &= backend != null; start.Text = transferring ? "取消傳送" : "恢復連線";
+        start.Enabled = transferring || !enabled || link == null; stop.Enabled = enabled;
         status.ForeColor = enabled ? ShareStyle.Blue : ShareStyle.Muted;
         emptyNearby.Text = !enabled ? "搜尋已暫停\r\n恢復連線後，會重新尋找附近電腦。" : Host ? "正在尋找接收端…\r\n請在另一台選擇「接收端」，保持程式開啟。" : "尚未找到主控端。\r\n請在另一台選擇「主控端」，發出配對邀請。";
         nearby.Visible = nearby.Items.Count > 0; emptyNearby.Visible = !nearby.Visible; pair.Text = Host ? "邀請配對  →" : "等待主控端邀請";
@@ -527,11 +601,16 @@ sealed class ShareWindow : Form
     {
         if (details.TextLength > 24000) details.Text = details.Text.Substring(details.TextLength - 12000); details.AppendText(line + Environment.NewLine);
         if (line.Contains("connected to server") || line.Contains("has connected")) status.Text = "已連線 · 雙向複製貼上已啟用";
-        if (line.Contains("file clipboard: sending")) status.Text = "正在傳送檔案… 可繼續操作滑鼠與鍵盤";
-        if (line.Contains("file clipboard: receiving")) status.Text = "正在接收檔案… 完成後即可貼上";
-        if (line.Contains("received and verified") && line.Contains("clipboard")) status.Text = "已收到檔案，可在資料夾 Ctrl+V 貼上";
-        if (line.Contains("WARNING") && line.Contains("file clipboard:")) status.Text = "檔案複製未完成；請查看診斷紀錄。";
-        if (line.Contains("disconnected") || line.Contains("server is dead")) status.Text = "連線中斷，正在自動重連…";
+        bool wasTransferring = transferring;
+        if (line.Contains("file clipboard: sending")) { status.Text = "正在傳送檔案… 可繼續操作滑鼠與鍵盤"; transferring = true; progress.Reset(); }
+        if (line.Contains("file clipboard: receiving")) { status.Text = "正在接收檔案… 完成後即可貼上"; transferring = true; progress.Reset(); }
+        string moved = progress.Describe(line, DateTime.UtcNow);
+        if (moved != null && transferring) status.Text = moved;
+        if (line.Contains("file clipboard: sent ")) { status.Text = "檔案已送出 · 可在另一台貼上"; transferring = false; }
+        if (line.Contains("received and verified") && line.Contains("clipboard")) { status.Text = "已收到檔案，可在資料夾 Ctrl+V 貼上"; transferring = false; }
+        if (line.Contains("WARNING") && line.Contains("file clipboard:")) { status.Text = "檔案複製未完成；請查看診斷紀錄。"; transferring = false; }
+        if (line.Contains("disconnected") || line.Contains("server is dead")) { status.Text = "連線中斷，正在自動重連…"; transferring = false; }
+        if (wasTransferring != transferring) UpdateControls();
     }
     void ShowDiagnostics()
     {
@@ -619,6 +698,8 @@ sealed class ShareWindow : Form
 
 static class ShareProgram
 {
+    // windows-setup.iss signals this before replacing files; keep the name in sync.
+    public const string QuitEvent = "Local\\BarrierShare.Quit";
     [STAThread]
     static int Main(string[] args)
     {
@@ -627,12 +708,16 @@ static class ShareProgram
         bool created;
         using (var mutex = new Mutex(true, "Local\\BarrierShare.Desktop", out created)) {
             if (!created) { MessageBox.Show("Barrier Share 已在執行，請從右下角圖示開啟。", "Barrier Share"); return 0; }
+            using (var quit = new EventWaitHandle(false, EventResetMode.AutoReset, QuitEvent))
             using (var window = new ShareWindow()) {
                 if (args.Length == 2 && args[0] == "--startup-test") {
                     ShareSettings.Root = Path.Combine(Path.GetFullPath(args[1]), "startup-profile");
                     window.CheckProductionStartup(Path.GetFullPath(args[1]));
                 }
+                window.StartHidden = args.Length == 1 && args[0] == "--background";
+                var wait = ThreadPool.RegisterWaitForSingleObject(quit, delegate { window.Quit(); }, null, Timeout.Infinite, true);
                 Application.Run(window);
+                wait.Unregister(null);
             }
         }
         return Environment.ExitCode;
@@ -665,7 +750,22 @@ static class ShareProgram
                 string config = ShareSettings.Config(true);
                 string opposite = new[] { "left", "right", "down", "up" }[Array.IndexOf(ShareSettings.Directions, direction)];
                 if (!config.Contains(direction + " = windows\n") || !config.Contains(opposite + " = windows-host\n")) throw new Exception("Screen position mapping failed");
+                if (!config.Contains("= switchInDirection(" + direction + ")\n") || !config.Contains("= switchInDirection(" + opposite + ")\n") || Regex.Matches(config, "keystroke").Count != 2) throw new Exception("Switch hotkeys missing for " + direction);
             }
+            ShareSettings.Position = "right";
+            if (!ShareSettings.Config(true).Contains(" keystroke(Control+Alt+Right) = switchInDirection(right)\n keystroke(Control+Alt+Left) = switchInDirection(left)\nend\n")) throw new Exception("Hotkey syntax changed");
+            var meter = new ShareProgress(); meter.Reset(); var t0 = DateTime.UtcNow;
+            string first = meter.Describe("[2026-11-12T10:00:00] INFO: file clipboard: progress sent 1048576 bytes", t0.AddSeconds(1));
+            string second = meter.Describe("[2026-11-12T10:00:01] INFO: file clipboard: progress received 3145728 bytes", t0.AddSeconds(2));
+            if (first == null || !first.Contains("1.0 MB") || second == null || !second.StartsWith("正在接收") || !second.Contains("3.0 MB") || !second.Contains("MB/s") || meter.Describe("file clipboard: sent 5 bytes", t0) != null)
+                throw new Exception("Transfer progress parsing failed: " + first + " / " + second);
+            ShareLogin.Name = "BarrierShare-SelfTest-" + Guid.NewGuid().ToString("N");
+            try {
+                ShareLogin.Enabled = true;
+                if (!ShareLogin.Enabled || ShareLogin.ReadValue() != ShareLogin.Command || !ShareLogin.Command.EndsWith("\" --background")) throw new Exception("Launch-at-login entry not written");
+                ShareLogin.Enabled = false;
+                if (ShareLogin.Enabled) throw new Exception("Launch-at-login entry not removed");
+            } finally { ShareLogin.Enabled = false; ShareLogin.Name = "BarrierShare"; }
             using (var core = Process.Start(ShareSettings.Backend(true, ""))) {
                 Thread.Sleep(1500);
                 if (core.HasExited) throw new Exception("Hidden backend failed: " + core.StandardError.ReadToEnd());
@@ -692,7 +792,7 @@ static class ShareProgram
                 using (var bitmap = new Bitmap(window.Width, window.Height)) { window.DrawToBitmap(bitmap, new Rectangle(Point.Empty, window.Size)); bitmap.Save(Path.Combine(directory, "gui.png")); }
                 window.Close();
             }
-            File.WriteAllText(Path.Combine(directory, "PASS.txt"), "Settings persist; old pairing and trust preserved; hidden backend starts/stops; GUI states render with accessible, unclipped controls; update notice selects only newer published Windows releases.");
+            File.WriteAllText(Path.Combine(directory, "PASS.txt"), "Settings persist; old pairing and trust preserved; hidden backend starts/stops; GUI states render with accessible, unclipped controls; update notice selects only newer published Windows releases; switch hotkeys, transfer progress and the launch-at-login entry work.");
             return 0;
         } catch (Exception e) { Directory.CreateDirectory(directory); File.WriteAllText(Path.Combine(directory, "FAIL.txt"), e.ToString()); return 1; }
     }

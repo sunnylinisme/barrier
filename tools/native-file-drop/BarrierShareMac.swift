@@ -2,6 +2,7 @@
 import AppKit
 import ApplicationServices
 import Foundation
+import ServiceManagement
 
 struct ShareOptions: Codable {
     var host = true
@@ -46,7 +47,11 @@ final class ShareSettings {
     static func config(_ direction: String) throws -> String {
         guard let index = directions.firstIndex(of: direction) else { throw ShareError.message("請選擇有效的螢幕位置。") }
         let opposite = ["left", "right", "down", "up"][index]
-        return "section: screens\n windows-host:\n windows:\nend\nsection: links\n windows-host:\n  \(direction) = windows\n windows:\n  \(opposite) = windows-host\nend\nsection: options\n clipboardSharing = true\nend\n"
+        return "section: screens\n windows-host:\n windows:\nend\nsection: links\n windows-host:\n  \(direction) = windows\n windows:\n  \(opposite) = windows-host\nend\nsection: options\n clipboardSharing = true\n" + hotkeys(direction, opposite) + "end\n"
+    }
+    // Control+Option+arrow toward the other screen switches without reaching the edge; only the configured axis is bound.
+    static func hotkeys(_ direction: String, _ opposite: String) -> String {
+        [direction, opposite].map { " keystroke(Control+Alt+\($0.prefix(1).uppercased() + $0.dropFirst())) = switchInDirection(\($0))\n" }.joined()
     }
     static func command(_ options: ShareOptions) throws -> Process {
         let p = profile(options.host), process = Process()
@@ -137,6 +142,32 @@ enum ShareUpdate {
     }
 }
 
+// Launch at login through the system login items (macOS 13+).
+enum ShareLogin {
+    static var enabled: Bool { SMAppService.mainApp.status == .enabled }
+    static func set(_ on: Bool) throws { if on { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() } }
+}
+
+// Turns "file clipboard: progress sent N bytes" log lines into a size and speed for the status card.
+struct ShareProgress {
+    var lastBytes: Int64 = 0, lastTime = Date(), speed = 0.0
+    mutating func reset() { lastBytes = 0; lastTime = Date(); speed = 0 }
+    mutating func describe(_ line: String, now: Date = Date()) -> String? {
+        guard let range = line.range(of: #"file clipboard: progress (sent|received) [0-9]+ bytes"#, options: .regularExpression) else { return nil }
+        let words = line[range].split(separator: " "), sent = words[3] == "sent"
+        guard let bytes = Int64(words[4]) else { return nil }
+        let seconds = now.timeIntervalSince(lastTime)
+        if seconds > 0.05 && bytes >= lastBytes { let current = Double(bytes - lastBytes) / seconds; speed = speed == 0 ? current : speed * 0.6 + current * 0.4 }
+        lastBytes = bytes; lastTime = now
+        return (sent ? "正在傳送檔案… 已傳 " : "正在接收檔案… 已收 ") + ShareProgress.size(bytes) + (speed > 0 ? " · " + ShareProgress.size(Int64(speed)) + "/s" : "")
+    }
+    static func size(_ bytes: Int64) -> String {
+        let units = ["B", "KB", "MB", "GB", "TB"]; var value = Double(bytes), unit = 0
+        while value >= 1024 && unit < units.count - 1 { value /= 1024; unit += 1 }
+        return (unit == 0 ? String(format: "%.0f", value) : String(format: value < 10 ? "%.1f" : "%.0f", value)) + " " + units[unit]
+    }
+}
+
 final class ShareActionButton: NSButton {
     override func draw(_ dirtyRect: NSRect) {
         let blue = NSColor(srgbRed:47/255,green:101/255,blue:235/255,alpha:1)
@@ -164,6 +195,8 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
     var computers: [NearbyComputer] = [], savedPeer = "", connectedAddress = "", consent: NSAlert?, consentId: String?, enabled = true, loading = true, promptedPermissions = false
     let network = NSTextField(labelWithString: "●  區域網路"), update = NSButton(title: "", target: nil, action: nil)
     var updateURL: URL?, updateTimer: Timer?
+    let autostart = NSButton(checkboxWithTitle: "登入時自動啟動", target: nil, action: nil)
+    var transferring = false, progress = ShareProgress()
     let test: Bool
     init(test: Bool = false) { self.test = test; super.init() }
     func applicationDidFinishLaunching(_ notification: Notification) { buildWindow() }
@@ -200,6 +233,7 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         positionHint.stringValue="由主控端設定兩台螢幕的相對位置"; positionHint.textColor=muted; at(positionHint,220,553,566,32)
         clear.title="清除暫存"; for (button,x,action) in [(forget,CGFloat(28),#selector(forgetPeer)),(clear,156,#selector(clearCache))] { button.bezelStyle = .rounded; button.target=self; button.action=action; at(button,x,632,124,38) }
         let permissions = NSButton(title:"權限設定",target:self,action:#selector(openPermissions)); permissions.bezelStyle = .rounded; at(permissions,284,632,124,38)
+        autostart.target = self; autostart.action = #selector(toggleLogin); autostart.state = !test && ShareLogin.enabled ? .on : .off; at(autostart,424,640,240,22)
         let records = NSButton(title:"診斷紀錄",target:self,action:#selector(showDiagnostics)); records.bezelStyle = .rounded; at(records,676,632,136,38)
         label("複製 → 換到另一台 → 等接收完成後貼上",34,682,740,12,color:muted)
         details.isEditable=false; details.font = .monospacedSystemFont(ofSize:12,weight:.regular); details.isVerticallyResizable=true; details.autoresizingMask = [.width]
@@ -213,9 +247,17 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
             if !test { startLink(); retry = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in if let self = self, self.enabled && self.link == nil { self.startLink() } } }
             if !test { checkUpdate(); updateTimer = Timer.scheduledTimer(withTimeInterval: 24 * 60 * 60, repeats: true) { [weak self] _ in self?.checkUpdate() } }
         } catch { loading = false; showError(error) }
-        window.center(); window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
+        window.center()
+        // A login-item launch stays in the menu bar; opening the app again shows the window.
+        let loginLaunch = NSAppleEventManager.shared().currentAppleEvent?.paramDescriptor(forKeyword: AEKeyword(keyAELaunchedAsLogInItem)) != nil
+        if !loginLaunch || test { window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true) }
     }
-    func updateControls() { nearby.isHidden = computers.isEmpty; emptyNearby.isHidden = !computers.isEmpty; pair.title = options.host ? "邀請配對  →" : "等待主控端邀請"; start.isEnabled = !enabled || link == nil; stop.isEnabled = enabled; search.isEnabled = link != nil; pair.isEnabled = options.host && link != nil && nearby.indexOfSelectedItem >= 0 && consent == nil; forget.isEnabled = link != nil && !savedPeer.isEmpty; clear.isEnabled = !enabled && core == nil }
+    @objc func toggleLogin() {
+        do { try ShareLogin.set(autostart.state == .on) } catch { showError(error) }
+        autostart.state = ShareLogin.enabled ? .on : .off
+        if autostart.state == .off && SMAppService.mainApp.status == .requiresApproval { status.stringValue = "請到「系統設定 › 一般 › 登入項目」允許 Barrier Share。" }
+    }
+    func updateControls() { transferring = transferring && core != nil; start.title = transferring ? "取消傳送" : "恢復連線"; nearby.isHidden = computers.isEmpty; emptyNearby.isHidden = !computers.isEmpty; pair.title = options.host ? "邀請配對  →" : "等待主控端邀請"; start.isEnabled = transferring || !enabled || link == nil; stop.isEnabled = enabled; search.isEnabled = link != nil; pair.isEnabled = options.host && link != nil && nearby.indexOfSelectedItem >= 0 && consent == nil; forget.isEnabled = link != nil && !savedPeer.isEmpty; clear.isEnabled = !enabled && core == nil }
     func refreshRole() throws {
         position.isHidden = !options.host; positionHint.isHidden = options.host; savedPeer = ""; computers.removeAll(); nearby.removeAllItems()
         _ = try ShareSettings.initialize(options.host); try ShareSettings.save(options)
@@ -246,7 +288,11 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
     @objc func selectionChanged() { updateControls() }
     @objc func searchNow() { send("SEARCH"); status.stringValue = "正在搜尋同一區網的電腦…" }
     @objc func invite() { let index = nearby.indexOfSelectedItem; guard index >= 0 && index < computers.count else { return }; stopBackend(); send("PAIR\t" + computers[index].fingerprint); status.stringValue = "正在發出邀請…" }
-    @objc func resume() { enabled = true; startLink(); updateControls() }
+    @objc func resume() {
+        // While a file is moving the same button cancels it: restarting the connection drops the partial copy on both sides.
+        if transferring { transferring = false; stopBackend(); startBackend(); status.stringValue = "已取消檔案傳送，正在重新連線…"; return }
+        enabled = true; startLink(); updateControls()
+    }
     @objc func pause() { enabled = false; stopLink(); stopBackend(); status.stringValue = "已暫停；不接受邀請，也不會自動重連。"; updateControls() }
     @objc func openPermissions() { NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!) }
     func startLink() {
@@ -336,11 +382,15 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func log(_ line: String) {
         details.string = String((details.string + line + "\n").suffix(20000)); details.scrollToEndOfDocument(nil)
         if line.contains("connected to server") || line.contains("has connected") { status.stringValue = "已連線 · 雙向複製貼上已啟用" }
-        if line.contains("file clipboard: sending") { status.stringValue = "正在傳送檔案… 可繼續操作滑鼠與鍵盤" }
-        if line.contains("file clipboard: receiving") { status.stringValue = "正在接收檔案… 完成後即可貼上" }
-        if line.contains("received and verified") { status.stringValue = "已收到檔案，可在 Finder 資料夾使用 ⌘V 貼上" }
-        if line.contains("WARNING") && line.contains("file clipboard:") { status.stringValue = "檔案複製未完成；請查看下方原因。" }
-        if line.contains("server is dead") || line.contains("disconnected") { status.stringValue = "連線中斷，正在自動重連…" }
+        let was = transferring
+        if line.contains("file clipboard: sending") { status.stringValue = "正在傳送檔案… 可繼續操作滑鼠與鍵盤"; transferring = true; progress.reset() }
+        if line.contains("file clipboard: receiving") { status.stringValue = "正在接收檔案… 完成後即可貼上"; transferring = true; progress.reset() }
+        if let moved = progress.describe(line), transferring { status.stringValue = moved }
+        if line.contains("file clipboard: sent ") { status.stringValue = "檔案已送出 · 可在另一台貼上"; transferring = false }
+        if line.contains("received and verified") { status.stringValue = "已收到檔案，可在 Finder 資料夾使用 ⌘V 貼上"; transferring = false }
+        if line.contains("WARNING") && line.contains("file clipboard:") { status.stringValue = "檔案複製未完成；請查看下方原因。"; transferring = false }
+        if line.contains("server is dead") || line.contains("disconnected") { status.stringValue = "連線中斷，正在自動重連…"; transferring = false }
+        if was != transferring { updateControls() }
     }
     @objc func showDiagnostics() {
         if !test {
@@ -394,7 +444,13 @@ func selfTest(_ directory: URL) throws {
     for direction in ShareSettings.directions {
         let configuration = try ShareSettings.config(direction), opposite = ["left", "right", "down", "up"][ShareSettings.directions.firstIndex(of: direction)!]
         if !configuration.contains("\(direction) = windows\n") || !configuration.contains("\(opposite) = windows-host\n") { throw ShareError.message("Invalid screen topology") }
+        if !configuration.contains("= switchInDirection(\(direction))\n") || !configuration.contains("= switchInDirection(\(opposite))\n") || configuration.components(separatedBy: "keystroke").count != 3 { throw ShareError.message("Switch hotkeys missing for \(direction)") }
     }
+    guard try ShareSettings.config("right").contains(" keystroke(Control+Alt+Right) = switchInDirection(right)\n keystroke(Control+Alt+Left) = switchInDirection(left)\nend\n") else { throw ShareError.message("Hotkey syntax changed") }
+    var meter = ShareProgress(); meter.reset(); let t0 = Date()
+    let first = meter.describe("[2026-11-12T10:00:00] INFO: file clipboard: progress sent 1048576 bytes", now: t0.addingTimeInterval(1))
+    let second = meter.describe("[2026-11-12T10:00:01] INFO: file clipboard: progress received 3145728 bytes", now: t0.addingTimeInterval(2))
+    guard let a = first, a.contains("1.0 MB"), let b = second, b.hasPrefix("正在接收"), b.contains("3.0 MB"), b.contains("MB/s"), meter.describe("file clipboard: sent 5 bytes") == nil else { throw ShareError.message("Transfer progress parsing failed") }
     for binary in ["barriers", "barrierc"] { if try !ShareSettings.run(binary, ["--help"], allowFailure: true).contains("--file-clipboard") { throw ShareError.message("Missing backend or file clipboard option") } }
     guard let icon = Bundle.main.url(forResource: "BarrierShare", withExtension: "icns"), NSImage(contentsOf: icon) != nil,
           Bundle.main.object(forInfoDictionaryKey: "CFBundleIconFile") as? String == "BarrierShare.icns" else { throw ShareError.message("Missing app icon") }
@@ -443,7 +499,7 @@ func selfTest(_ directory: URL) throws {
     view.cacheDisplay(in: view.bounds, to: updateBitmap)
     try updateBitmap.representation(using: .png, properties: [:])!.write(to: directory.appendingPathComponent("gui-mac-update.png"))
     app.window.orderOut(nil); NSStatusBar.system.removeStatusItem(app.tray)
-    try "PASS: both pairing roles, saved IP/position, four screen directions, bundled backends, native GUI render and update notice selection".write(to: directory.appendingPathComponent("PASS.txt"), atomically: true, encoding: .utf8)
+    try "PASS: both pairing roles, saved IP/position, four screen directions, bundled backends, native GUI render, update notice selection, switch hotkeys and transfer progress".write(to: directory.appendingPathComponent("PASS.txt"), atomically: true, encoding: .utf8)
 }
 
 signal(SIGPIPE, SIG_IGN)

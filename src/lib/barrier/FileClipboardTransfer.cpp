@@ -7,6 +7,7 @@
 #include <openssl/evp.h>
 #include <openssl/rand.h>
 #include <algorithm>
+#include <chrono>
 #include <cstring>
 #include <deque>
 #include <fstream>
@@ -57,6 +58,13 @@ void safeRelative(const std::string& path) {
     }
     throw std::runtime_error("Invalid trailing path separator");
 }
+// Throttled progress line; the desktop apps read it from the log to show the transferred size and speed.
+void progress(const char* verb, uint64_t total, std::chrono::steady_clock::time_point& last) {
+    auto now = std::chrono::steady_clock::now();
+    if (now - last < std::chrono::milliseconds(500)) return;
+    last = now;
+    LOG((CLOG_INFO "file clipboard: progress %s %s bytes", verb, std::to_string(total).c_str()));
+}
 struct Digest {
     EVP_MD_CTX* context = EVP_MD_CTX_new();
     Digest() { if (!context || EVP_DigestInit_ex(context, EVP_sha256(), nullptr) != 1) { EVP_MD_CTX_free(context); throw std::runtime_error("Cannot initialize SHA-256"); } }
@@ -104,6 +112,7 @@ struct FileClipboardTransfer::Impl {
         std::ifstream input; std::unique_ptr<Digest> digest;
         fs::path path; uint64_t size = 0, sent = 0, total = 0;
         fs::file_time_type modified;
+        std::chrono::steady_clock::time_point reported = std::chrono::steady_clock::now();
         bool endingFile = false, endingTransfer = false;
         bool next(fs::path& absolute, std::string& relative) {
             if (iterator) {
@@ -127,6 +136,7 @@ struct FileClipboardTransfer::Impl {
         fs::path directory, current; std::vector<fs::path> roots;
         std::ofstream output; std::unique_ptr<Digest> digest;
         uint64_t size = 0, received = 0, total = 0; size_t entries = 0;
+        std::chrono::steady_clock::time_point reported = std::chrono::steady_clock::now();
         bool committed = false;
         ~Receiver() { output.close(); if (!committed) { std::error_code ec; fs::remove_all(directory, ec); } }
     };
@@ -141,7 +151,7 @@ struct FileClipboardTransfer::Impl {
             if (s.sent < s.size) {
                 std::string bytes(static_cast<size_t>(std::min<uint64_t>(chunkSize, s.size - s.sent)), '\0');
                 if (!s.input.read(&bytes[0], bytes.size())) throw std::runtime_error("Source file changed or became unreadable");
-                s.digest->add(bytes); s.sent += bytes.size(); s.total += bytes.size();
+                s.digest->add(bytes); s.sent += bytes.size(); s.total += bytes.size(); progress("sent", s.total, s.reported);
                 ProtocolUtil::writef(stream, chunk, s.id, &bytes); return;
             }
             if (s.input.peek() != EOF || fs::last_write_time(s.path) != s.modified || fs::file_size(s.path) != s.size)
@@ -251,7 +261,7 @@ bool FileClipboardTransfer::receive(const unsigned char* code) {
                 throw std::runtime_error("Unexpected or oversized file chunk");
             auto& r = *p.rx; r.output.write(bytes.data(), bytes.size());
             if (!r.output) throw std::runtime_error("Cannot write received file; check disk space");
-            r.digest->add(bytes); r.received += bytes.size(); r.total += bytes.size();
+            r.digest->add(bytes); r.received += bytes.size(); r.total += bytes.size(); progress("received", r.total, r.reported);
         } else if (memcmp(code, fileEnd, 4) == 0) {
             std::string hash;
             if (!ProtocolUtil::readf(p.stream, fileEnd + 4, &id, &hash)) throw std::runtime_error("Invalid file completion");

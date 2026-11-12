@@ -9,7 +9,7 @@ fi
 APP="$BUILD/Barrier Share.app"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Helpers" "$APP/Contents/Resources/licenses" "$APP/Contents/Frameworks"
 xcrun swiftc -swift-version 5 -target "$(uname -m)-apple-macos15.0" -O \
-    -framework AppKit -framework ApplicationServices \
+    -framework AppKit -framework ApplicationServices -framework ServiceManagement \
     tools/native-file-drop/BarrierShareMac.swift -o "$APP/Contents/MacOS/BarrierShare"
 cp "$BUILD/bin/barriers" "$BUILD/bin/barrierc" "$BUILD/bin/barrier-pair" "$BUILD/bin/barrier-link" "$APP/Contents/Helpers/"
 cp tools/native-file-drop/GUI-README.txt LICENSE "$APP/Contents/Resources/"
@@ -23,7 +23,7 @@ contents = app / 'Contents'
 with (contents / 'Info.plist').open('wb') as out:
     plistlib.dump(dict(CFBundleIdentifier='org.barriershare.desktop', CFBundleName='Barrier Share',
         CFBundleDisplayName='Barrier Share', CFBundleExecutable='BarrierShare', CFBundlePackageType='APPL',
-        CFBundleVersion='9', CFBundleShortVersionString='0.3.8', CFBundleIconFile='BarrierShare.icns', LSMinimumSystemVersion='15.0',
+        CFBundleVersion='10', CFBundleShortVersionString='0.3.9', CFBundleIconFile='BarrierShare.icns', LSMinimumSystemVersion='15.0',
         NSHighResolutionCapable=True, NSPrincipalClass='NSApplication',
         NSLocalNetworkUsageDescription='搜尋同一區域網路的電腦，經雙方同意後配對，共用鍵鼠與複製檔案。'), out)
 # Homebrew builds need their OpenSSL libraries bundled; local static builds have none.
