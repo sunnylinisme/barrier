@@ -468,6 +468,7 @@ sealed class ShareWindow : Form
     bool closing, loading = true, enabled = true, discoveryReady, started, transferring, keepServiceCore;
     readonly CheckBox autostart = new CheckBox();
     readonly ShareProgress progress = new ShareProgress();
+    ShareTransferPopup popup;
     // Set by --background (sign-in launch): start in the notification area without showing the window.
     public bool StartHidden;
     bool Host { get { return role.SelectedIndex == 0; } }
@@ -536,9 +537,10 @@ sealed class ShareWindow : Form
         tray.DoubleClick += delegate { Show(); WindowState = FormWindowState.Normal; Activate(); };
         start.Click += delegate {
             // While a file is moving the same button cancels it: restarting the connection drops the partial copy on both sides.
-            if (transferring) { transferring = false; StopBackend(); StartBackend(); status.Text = "已取消檔案傳送，正在重新連線…"; return; }
+            if (transferring) { CancelTransfer(); return; }
             enabled = true; StartLink(); UpdateControls();
         };
+        popup = new ShareTransferPopup(Font); popup.CancelRequested += delegate { if (transferring) CancelTransfer(); else popup.Dismiss(); };
         stop.Click += delegate { enabled = false; StopLink(); StopBackend(); status.Text = "已暫停；不接受邀請，也不會自動重連。"; UpdateControls(); };
         search.Click += delegate { Send("SEARCH"); status.Text = "正在搜尋同一區網的電腦…"; };
         pair.Click += delegate { var peer = nearby.SelectedItem as NearbyDevice; if (peer != null) { StopBackend(); Send("PAIR\t" + peer.Fingerprint); status.Text = "正在發出邀請…"; } };
@@ -574,7 +576,7 @@ sealed class ShareWindow : Form
             // On sign-out or shutdown the service keeps the core running for the sign-in screen.
             if (e.CloseReason == CloseReason.WindowsShutDown) { closing = true; keepServiceCore = true; }
             if (!closing && !testing) { e.Cancel = true; Hide(); tray.ShowBalloonTip(1500, "Barrier Share", "程式已收至系統匣；可從圖示開啟或結束。", ToolTipIcon.Info); return; }
-            closing = true; retry.Stop(); updateTimer.Stop(); StopLink(); StopBackend(); tray.Dispose();
+            closing = true; retry.Stop(); updateTimer.Stop(); StopLink(); StopBackend(); popup.Dismiss(); popup.Dispose(); tray.Dispose();
         };
     }
     // Runs once, on first show or right away for a hidden sign-in launch.
@@ -777,14 +779,17 @@ sealed class ShareWindow : Form
         if (details.TextLength > 24000) details.Text = details.Text.Substring(details.TextLength - 12000); details.AppendText(line + Environment.NewLine);
         if (line.Contains("connected to server") || line.Contains("has connected")) status.Text = "已連線 · 雙向複製貼上已啟用";
         bool wasTransferring = transferring;
-        if (line.Contains("file clipboard: sending")) { status.Text = "正在傳送檔案… 可繼續操作滑鼠與鍵盤"; transferring = true; progress.Reset(); }
-        if (line.Contains("file clipboard: receiving")) { status.Text = "正在接收檔案… 完成後即可貼上"; transferring = true; progress.Reset(); }
+        if (line.Contains("file clipboard: sending")) { status.Text = "正在傳送檔案… 可繼續操作滑鼠與鍵盤"; transferring = true; progress.Reset(); popup.Begin(true); }
+        if (line.Contains("file clipboard: receiving")) { status.Text = "正在接收檔案… 完成後即可貼上"; transferring = true; progress.Reset(); popup.Begin(false); }
         string moved = progress.Describe(line, DateTime.UtcNow);
-        if (moved != null && transferring) status.Text = moved;
-        if (line.Contains("file clipboard: sent ")) { status.Text = "檔案已送出 · 可在另一台貼上"; transferring = false; }
-        if (line.Contains("received and verified") && line.Contains("clipboard")) { status.Text = "已收到檔案，可在資料夾 Ctrl+V 貼上"; transferring = false; }
-        if (line.Contains("WARNING") && line.Contains("file clipboard:")) { status.Text = "檔案複製未完成；請查看診斷紀錄。"; transferring = false; }
-        if (line.Contains("disconnected") || line.Contains("server is dead")) { status.Text = "連線中斷，正在自動重連…"; transferring = false; }
+        if (moved != null && transferring) { status.Text = moved; int cut = moved.IndexOf("… "); popup.Progress(cut >= 0 ? moved.Substring(cut + 2) : moved); }
+        if (line.Contains("file clipboard: sent ")) { status.Text = "檔案已送出 · 可在另一台貼上"; transferring = false; popup.Finish("檔案已送出", "可在另一台貼上"); }
+        if (line.Contains("received and verified") && line.Contains("clipboard")) { status.Text = "已收到檔案，可在資料夾 Ctrl+V 貼上"; transferring = false; popup.Finish("已收到檔案", "可在檔案總管資料夾按 Ctrl+V 貼上"); }
+        if (line.Contains("WARNING") && line.Contains("file clipboard:")) { status.Text = "檔案複製未完成；請查看診斷紀錄。"; transferring = false; popup.Finish("檔案複製未完成", "詳情見「診斷紀錄」"); }
+        if (line.Contains("disconnected") || line.Contains("server is dead")) {
+            status.Text = "連線中斷，正在自動重連…"; transferring = false;
+            if (wasTransferring) popup.Finish("連線中斷", "檔案沒有傳完，請重新複製"); else popup.Dismiss();
+        }
         if (wasTransferring != transferring) UpdateControls();
     }
     void ShowDiagnostics()
@@ -875,6 +880,8 @@ sealed class ShareWindow : Form
             }
         } catch (IOException) { } catch (UnauthorizedAccessException) { }
     }
+    // Restarting the connection drops the partial copy on both sides.
+    void CancelTransfer() { transferring = false; popup.Dismiss(); StopBackend(); StartBackend(); status.Text = "已取消檔案傳送，正在重新連線…"; }
     void Forget(string command, string question)
     {
         if (MessageBox.Show(this, question, "解除配對", MessageBoxButtons.OKCancel) != DialogResult.OK) return;
@@ -960,6 +967,58 @@ sealed class ShareWindow : Form
             status.Text = "已清除接收檔案暫存。";
         } catch (Exception e) { Error(e); }
     }
+}
+
+// Small always-on-top window above the taskbar while files are copied; never takes the focus.
+// Same behaviour as the Mac app: shown only if a transfer is still running after a second,
+// marquee bar (the total size is not known), cancel button, result shown for 5 seconds.
+sealed class ShareTransferPopup : Form
+{
+    readonly Label title = new Label(), detail = new Label();
+    readonly ProgressBar bar = new ProgressBar { Style = ProgressBarStyle.Marquee, MarqueeAnimationSpeed = 30 };
+    readonly ShareButton cancel = new ShareButton { Text = "取消傳送" };
+    readonly System.Windows.Forms.Timer showTimer = new System.Windows.Forms.Timer { Interval = 1000 }, closeTimer = new System.Windows.Forms.Timer { Interval = 5000 };
+    public event Action CancelRequested;
+    public ShareTransferPopup(Font font)
+    {
+        FormBorderStyle = FormBorderStyle.None; ShowInTaskbar = false; TopMost = true; StartPosition = FormStartPosition.Manual;
+        BackColor = Color.White; ForeColor = ShareStyle.Ink; Font = new Font(font.FontFamily, 10F);
+        AutoScaleDimensions = new SizeF(96F, 96F); AutoScaleMode = AutoScaleMode.Dpi; ClientSize = new Size(340, 96);
+        title.Font = new Font(font.FontFamily, 11F, FontStyle.Bold); title.Bounds = new Rectangle(16, 10, 308, 24);
+        detail.ForeColor = ShareStyle.Muted; detail.Bounds = new Rectangle(16, 36, 308, 22); detail.AutoEllipsis = true;
+        bar.Bounds = new Rectangle(16, 66, 196, 14);
+        cancel.BackColor = Color.White; cancel.Bounds = new Rectangle(224, 58, 100, 30); cancel.Click += delegate { var handler = CancelRequested; if (handler != null) handler(); };
+        Controls.AddRange(new Control[] { title, detail, bar, cancel });
+        showTimer.Tick += delegate { showTimer.Stop(); Place(); Show(); };
+        closeTimer.Tick += delegate { closeTimer.Stop(); Hide(); };
+    }
+    protected override bool ShowWithoutActivation { get { return true; } }
+    protected override CreateParams CreateParams
+    {
+        // WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_TOPMOST: no focus, no taskbar button, above other windows.
+        get { var p = base.CreateParams; p.ExStyle |= 0x08000000 | 0x00000080 | 0x00000008; return p; }
+    }
+    protected override void OnPaint(PaintEventArgs e) { base.OnPaint(e); using (var pen = new Pen(ShareStyle.Border)) e.Graphics.DrawRectangle(pen, 0, 0, Width - 1, Height - 1); }
+    void Place() { var area = Screen.PrimaryScreen.WorkingArea; Location = new Point(area.Right - Width - 12, area.Bottom - Height - 12); }
+    // A transfer started; the window appears only if it is still running a second later.
+    public void Begin(bool sending)
+    {
+        closeTimer.Stop(); title.Text = sending ? "正在傳送檔案…" : "正在接收檔案…"; detail.Text = sending ? "準備中" : "準備中";
+        bar.Visible = cancel.Visible = true; if (!Visible) showTimer.Start();
+    }
+    public void Progress(string text) { detail.Text = text; }
+    // Results are shown only when the window is already up, then it closes after 5 seconds.
+    public void Finish(string heading, string text)
+    {
+        showTimer.Stop();
+        if (!Visible) return;
+        title.Text = heading; detail.Text = text; bar.Visible = cancel.Visible = false; closeTimer.Stop(); closeTimer.Start();
+    }
+    public void Dismiss() { showTimer.Stop(); closeTimer.Stop(); Hide(); }
+    internal void ShowNow() { showTimer.Stop(); Place(); Show(); }
+    internal bool Busy { get { return bar.Visible && cancel.Visible; } }
+    internal string Heading { get { return title.Text; } }
+    internal string Detail { get { return detail.Text; } }
 }
 
 // Drag the paired receivers around this host on a 5x5 grid. Neighbouring cells are linked edges;
@@ -1187,6 +1246,18 @@ static class ShareProgram
                     layout.Close();
                 }
                 ShareSettings.Receivers = new List<string>(); ShareSettings.Layout = new Dictionary<string, Point>();
+                using (var transfer = new ShareTransferPopup(window.Font)) {
+                    transfer.Begin(false); Application.DoEvents();
+                    if (transfer.Visible) throw new Exception("Transfer window appeared before one second");
+                    transfer.ShowNow(); transfer.Progress("已收 3.0 MB · 1.4 MB/s"); Application.DoEvents();
+                    if (!transfer.Visible || !transfer.Busy || transfer.Heading != "正在接收檔案…" || transfer.Detail != "已收 3.0 MB · 1.4 MB/s" || !transfer.TopMost || transfer.ShowInTaskbar) throw new Exception("Transfer window progress state wrong");
+                    using (var bitmap = new Bitmap(transfer.Width, transfer.Height)) { transfer.DrawToBitmap(bitmap, new Rectangle(Point.Empty, transfer.Size)); bitmap.Save(Path.Combine(directory, "gui-transfer.png")); }
+                    transfer.Finish("已收到檔案", "可在檔案總管資料夾按 Ctrl+V 貼上"); Application.DoEvents();
+                    if (!transfer.Visible || transfer.Busy || transfer.Heading != "已收到檔案") throw new Exception("Transfer window result state wrong");
+                    using (var bitmap = new Bitmap(transfer.Width, transfer.Height)) { transfer.DrawToBitmap(bitmap, new Rectangle(Point.Empty, transfer.Size)); bitmap.Save(Path.Combine(directory, "gui-transfer-done.png")); }
+                    transfer.Dismiss(); transfer.Begin(true); transfer.Finish("檔案已送出", "可在另一台貼上"); Application.DoEvents();
+                    if (transfer.Visible) throw new Exception("Result shown for a transfer whose window never appeared");
+                }
                 window.ShowUpdate(null);
                 using (var bitmap = new Bitmap(window.Width, window.Height)) { window.DrawToBitmap(bitmap, new Rectangle(Point.Empty, window.Size)); bitmap.Save(Path.Combine(directory, "gui.png")); }
                 window.Close();
