@@ -110,6 +110,32 @@ final class ShareSettings {
     }
 }
 
+// Looks up the newest published Mac release; only the public release list is requested, nothing is sent.
+enum ShareUpdate {
+    static let releases = URL(string: "https://api.github.com/repos/sunnylinisme/barrier/releases?per_page=30")!
+    static let prefix = "mac-v"
+    struct Release: Decodable { let tag_name: String; let html_url: String; let draft: Bool?; let prerelease: Bool? }
+    static func parts(_ text: String) -> [Int]? {
+        let pieces = text.split(separator: ".", omittingEmptySubsequences: false).map { Int($0) }
+        guard (1...3).contains(pieces.count), !pieces.contains(where: { $0 == nil || $0! < 0 }) else { return nil }
+        return (pieces.map { $0! } + [0, 0]).prefix(3).map { $0 }
+    }
+    static var current: [Int] { parts(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "") ?? [0, 0, 0] }
+    // Returns the highest non-draft, non-prerelease Mac release newer than current, or nil.
+    static func newer(_ data: Data, current: [Int]) -> (version: String, url: URL)? {
+        guard let list = try? JSONDecoder().decode([Release].self, from: data) else { return nil }
+        var best: ([Int], URL)?
+        for release in list where release.draft != true && release.prerelease != true && release.tag_name.hasPrefix(prefix) {
+            guard let version = parts(String(release.tag_name.dropFirst(prefix.count))), let url = URL(string: release.html_url),
+                  release.html_url.hasPrefix("https://github.com/sunnylinisme/barrier/releases/") else { continue }
+            if version.lexicographicallyPrecedes(current) || version == current { continue }
+            if best == nil || best!.0.lexicographicallyPrecedes(version) { best = (version, url) }
+        }
+        guard let best = best else { return nil }
+        return (best.0.map(String.init).joined(separator: "."), best.1)
+    }
+}
+
 final class ShareActionButton: NSButton {
     override func draw(_ dirtyRect: NSRect) {
         let blue = NSColor(srgbRed:47/255,green:101/255,blue:235/255,alpha:1)
@@ -135,6 +161,8 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
     let details = NSTextView()
     var tray: NSStatusItem!, core: Process?, corePipe: Pipe?, link: Process?, linkOutput: Pipe?, linkInput: Pipe?, pendingCore = Data(), pendingLink = Data(), retry: Timer?
     var computers: [NearbyComputer] = [], savedPeer = "", connectedAddress = "", consent: NSAlert?, consentId: String?, enabled = true, loading = true, promptedPermissions = false
+    let network = NSTextField(labelWithString: "●  區域網路"), update = NSButton(title: "", target: nil, action: nil)
+    var updateURL: URL?, updateTimer: Timer?
     let test: Bool
     init(test: Bool = false) { self.test = test; super.init() }
     func applicationDidFinishLaunching(_ notification: Notification) { buildWindow() }
@@ -149,7 +177,8 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         func label(_ text: String, _ x: CGFloat, _ y: CGFloat, _ width: CGFloat, _ size: CGFloat = 14, bold: Bool = false, color: NSColor? = nil) { let l = NSTextField(labelWithString: text); l.font = .systemFont(ofSize: size, weight: bold ? .semibold : .regular); l.textColor = color ?? ink; l.lineBreakMode = .byTruncatingTail; at(l,x,y,width,size+14) }
         label("Barrier Share",32,24,550,30,bold:true)
         label("同一張桌面，連上兩台電腦。",34,77,600,14,color:muted)
-        label("●  區域網路",690,42,118,13,color:blue)
+        network.font = .systemFont(ofSize: 13); network.textColor = blue; network.alignment = .right; at(network,640,42,168,27)
+        update.isBordered = false; update.alignment = .right; update.target = self; update.action = #selector(openUpdate); update.isHidden = true; at(update,560,40,248,28)
         for rect in [NSRect(x:32,y:118,width:776,height:112), NSRect(x:32,y:250,width:468,height:250), NSRect(x:520,y:250,width:288,height:250), NSRect(x:32,y:520,width:776,height:94)] {
             let card = NSBox(); card.boxType = .custom; card.borderWidth = 1; card.cornerRadius = 16; card.fillColor = .white; card.borderColor = NSColor(srgbRed:228/255,green:233/255,blue:242/255,alpha:1); at(card,rect.minX,rect.minY,rect.width,rect.height)
         }
@@ -181,6 +210,7 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
             options = try ShareSettings.load(); role.selectItem(at: options.host ? 0 : 1); position.selectItem(at: ShareSettings.directions.firstIndex(of: options.position) ?? 0)
             loading = false; try refreshRole()
             if !test { startLink(); retry = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in if let self = self, self.enabled && self.link == nil { self.startLink() } } }
+            if !test { checkUpdate(); updateTimer = Timer.scheduledTimer(withTimeInterval: 24 * 60 * 60, repeats: true) { [weak self] _ in self?.checkUpdate() } }
         } catch { loading = false; showError(error) }
         window.center(); window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
     }
@@ -192,6 +222,24 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         status.stringValue = enabled ? "正在啟用區網搜尋…" : "已暫停"; updateControls()
     }
     func showError(_ error: Error) { status.stringValue = "操作未完成：" + error.localizedDescription }
+    // Offline or rate-limited checks stay silent; the local network connection never depends on them.
+    func checkUpdate() {
+        var request = URLRequest(url: ShareUpdate.releases, timeoutInterval: 15)
+        request.setValue("BarrierShare-UpdateCheck", forHTTPHeaderField: "User-Agent"); request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+        URLSession.shared.dataTask(with: request) { [weak self] data, _, error in
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                if let data = data { self.showUpdate(ShareUpdate.newer(data, current: ShareUpdate.current)) } else if let error = error { self.log("檢查更新失敗：" + error.localizedDescription) }
+            }
+        }.resume()
+    }
+    func showUpdate(_ found: (version: String, url: URL)?) {
+        update.isHidden = found == nil; network.isHidden = found != nil
+        guard let found = found else { return }
+        updateURL = found.url
+        update.attributedTitle = NSAttributedString(string: "有新版 \(found.version)，前往下載 ↗", attributes: [.font: NSFont.systemFont(ofSize: 13, weight: .semibold), .foregroundColor: blue, .underlineStyle: NSUnderlineStyle.single.rawValue])
+    }
+    @objc func openUpdate() { if let url = updateURL { NSWorkspace.shared.open(url) } }
     @objc func roleChanged() { guard !loading else { return }; stopLink(); stopBackend(); options.host = role.indexOfSelectedItem == 0; do { try refreshRole(); if enabled { startLink() } } catch { showError(error) } }
     @objc func positionChanged() { guard !loading else { return }; options.position = ShareSettings.directions[position.indexOfSelectedItem]; do { try ShareSettings.save(options); if core != nil { stopBackend() } } catch { showError(error) } }
     @objc func selectionChanged() { updateControls() }
@@ -322,7 +370,7 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
     @objc func showWindow() { window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true) }
     func windowShouldClose(_ sender: NSWindow) -> Bool { sender.orderOut(nil); return false }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool { showWindow(); return true }
-    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply { enabled = false; retry?.invalidate(); stopLink(); stopBackend(); return .terminateNow }
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply { enabled = false; retry?.invalidate(); updateTimer?.invalidate(); stopLink(); stopBackend(); return .terminateNow }
 }
 
 func selfTest(_ directory: URL) throws {
@@ -349,6 +397,16 @@ func selfTest(_ directory: URL) throws {
     for binary in ["barriers", "barrierc"] { if try !ShareSettings.run(binary, ["--help"], allowFailure: true).contains("--file-clipboard") { throw ShareError.message("Missing backend or file clipboard option") } }
     guard let icon = Bundle.main.url(forResource: "BarrierShare", withExtension: "icns"), NSImage(contentsOf: icon) != nil,
           Bundle.main.object(forInfoDictionaryKey: "CFBundleIconFile") as? String == "BarrierShare.icns" else { throw ShareError.message("Missing app icon") }
+    let base = "https://github.com/sunnylinisme/barrier/releases/tag/"
+    let releases = Data("""
+    [{"tag_name":"windows-v9.0.0","html_url":"\(base)windows-v9.0.0","draft":false,"prerelease":false},
+     {"tag_name":"mac-v0.4.0","html_url":"\(base)mac-v0.4.0","draft":true,"prerelease":false},
+     {"tag_name":"mac-v0.3.9","html_url":"\(base)mac-v0.3.9","draft":false,"prerelease":false},
+     {"tag_name":"mac-v0.3.10","html_url":"https://example.com/elsewhere","draft":false,"prerelease":false},
+     {"tag_name":"mac-v0.3.8","html_url":"\(base)mac-v0.3.8","draft":false,"prerelease":false}]
+    """.utf8)
+    guard let found = ShareUpdate.newer(releases, current: [0, 3, 4]), found.version == "0.3.9", found.url.absoluteString.hasSuffix("/mac-v0.3.9") else { throw ShareError.message("Update selection ignored platform, draft or origin rules") }
+    guard ShareUpdate.newer(releases, current: [0, 3, 9]) == nil, ShareUpdate.newer(Data("{\"message\":\"rate limited\"}".utf8), current: [0, 0, 0]) == nil else { throw ShareError.message("Update reported without a newer release") }
     NSApp.finishLaunching()
     let app = ShareApp(test: true); app.buildWindow(); app.options.host = true; app.role.selectItem(at: 0); try app.refreshRole()
     let peer = "v2:sha256:" + String(repeating: "a", count: 64), name = Data("另一台電腦".utf8).base64EncodedString()
@@ -376,8 +434,12 @@ func selfTest(_ directory: URL) throws {
     view.cacheDisplay(in: view.bounds, to: bitmap)
     guard let image = bitmap.representation(using: .png, properties: [:]) else { throw ShareError.message("Cannot render PNG") }
     try image.write(to: directory.appendingPathComponent("gui-mac.png"))
+    app.showUpdate(found); RunLoop.current.run(until: Date().addingTimeInterval(0.2)); app.window.displayIfNeeded()
+    guard let updateBitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { throw ShareError.message("Cannot render update notice") }
+    view.cacheDisplay(in: view.bounds, to: updateBitmap)
+    try updateBitmap.representation(using: .png, properties: [:])!.write(to: directory.appendingPathComponent("gui-mac-update.png"))
     app.window.orderOut(nil); NSStatusBar.system.removeStatusItem(app.tray)
-    try "PASS: both pairing roles, saved IP/position, four screen directions, bundled backends and native GUI render".write(to: directory.appendingPathComponent("PASS.txt"), atomically: true, encoding: .utf8)
+    try "PASS: both pairing roles, saved IP/position, four screen directions, bundled backends, native GUI render and update notice selection".write(to: directory.appendingPathComponent("PASS.txt"), atomically: true, encoding: .utf8)
 }
 
 signal(SIGPIPE, SIG_IGN)

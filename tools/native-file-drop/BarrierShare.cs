@@ -11,6 +11,7 @@ using System.Net;
 using System.Net.Sockets;
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Web.Script.Serialization;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
@@ -138,6 +139,41 @@ static class ShareSettings
     }
 }
 
+// Looks up the newest published Windows release; only the public release list is requested, nothing is sent.
+static class ShareUpdate
+{
+    public const string Releases = "https://api.github.com/repos/sunnylinisme/barrier/releases?per_page=30";
+    public const string Prefix = "windows-v";
+    public static Version Current { get { var v = typeof(ShareUpdate).Assembly.GetName().Version; return new Version(v.Major, v.Minor, Math.Max(0, v.Build)); } }
+    public sealed class Found { public Version Version; public string Url; }
+    // Returns the highest non-draft, non-prerelease Windows release newer than current, or null.
+    public static Found Newer(string json, Version current)
+    {
+        Found best = null;
+        var releases = new JavaScriptSerializer().DeserializeObject(json) as object[];
+        if (releases == null) return null;
+        foreach (var item in releases.OfType<Dictionary<string, object>>()) {
+            object tag, url, draft, pre;
+            if (!item.TryGetValue("tag_name", out tag) || !item.TryGetValue("html_url", out url)) continue;
+            if ((item.TryGetValue("draft", out draft) && true.Equals(draft)) || (item.TryGetValue("prerelease", out pre) && true.Equals(pre))) continue;
+            string name = tag as string, link = url as string; Version version;
+            if (name == null || link == null || !name.StartsWith(Prefix) || !Version.TryParse(name.Substring(Prefix.Length), out version)) continue;
+            if (!link.StartsWith("https://github.com/sunnylinisme/barrier/releases/")) continue;
+            version = new Version(version.Major, version.Minor, Math.Max(0, version.Build));
+            if (version > current && (best == null || version > best.Version)) best = new Found { Version = version, Url = link };
+        }
+        return best;
+    }
+    public static Found Check()
+    {
+        ServicePointManager.SecurityProtocol |= SecurityProtocolType.Tls12;
+        var request = (HttpWebRequest)WebRequest.Create(Releases);
+        request.UserAgent = "BarrierShare-UpdateCheck"; request.Accept = "application/vnd.github+json"; request.Timeout = 15000;
+        using (var response = request.GetResponse()) using (var reader = new StreamReader(response.GetResponseStream(), Encoding.UTF8))
+            return Newer(reader.ReadToEnd(), Current);
+    }
+}
+
 static class ShareStyle
 {
     public static readonly Color Background = Color.FromArgb(244, 246, 250), Ink = Color.FromArgb(24, 37, 57), Muted = Color.FromArgb(88, 105, 129), Blue = Color.FromArgb(47, 101, 235);
@@ -218,7 +254,10 @@ sealed class NearbyDevice
 sealed class ShareWindow : Form
 {
     readonly ShareComboBox role = new ShareComboBox(), position = new ShareComboBox(), nearby = new ShareComboBox();
-    readonly Label positionHint = new Label(), status = new Label(), peerLabel = new Label(), emptyNearby = new Label();
+    readonly Label positionHint = new Label(), status = new Label(), peerLabel = new Label(), emptyNearby = new Label(), network = new Label();
+    readonly LinkLabel update = new LinkLabel();
+    readonly System.Windows.Forms.Timer updateTimer = new System.Windows.Forms.Timer { Interval = 24 * 60 * 60 * 1000 };
+    string updateUrl, announcedUpdate;
     readonly TextBox address = new TextBox(), details = new TextBox();
     readonly ShareButton start = new ShareButton(), stop = new ShareButton(), search = new ShareButton(), pair = new ShareButton { Primary = true }, forget = new ShareButton(), clear = new ShareButton();
     readonly NotifyIcon tray = new NotifyIcon();
@@ -251,7 +290,9 @@ sealed class ShareWindow : Form
         FormBorderStyle = FormBorderStyle.FixedSingle; MaximizeBox = false; StartPosition = FormStartPosition.CenterScreen; Icon = System.Drawing.Icon.ExtractAssociatedIcon(Application.ExecutablePath);
         At(new Label { Text = "Barrier Share", Font = new Font("Segoe UI", 24F, FontStyle.Bold), ForeColor = ShareStyle.Ink }, 24, 20, 520, 44);
         At(new Label { Text = "同一張桌面，連上兩台電腦。", ForeColor = ShareStyle.Muted }, 26, 68, 600, 26);
-        At(new Label { Text = "●  區域網路", ForeColor = ShareStyle.Blue, Font=new Font(Font.FontFamily,10F), TextAlign = ContentAlignment.MiddleRight }, 620, 34, 156, 30);
+        network.Text = "●  區域網路"; network.ForeColor = ShareStyle.Blue; network.Font = new Font(Font.FontFamily,10F); network.TextAlign = ContentAlignment.MiddleRight; At(network, 620, 34, 156, 30);
+        update.Font = new Font(Font.FontFamily,10F,FontStyle.Bold); update.TextAlign = ContentAlignment.MiddleRight; update.LinkColor = update.ActiveLinkColor = ShareStyle.Blue; update.Visible = false; update.TabIndex = 7; At(update, 552, 34, 224, 30);
+        update.LinkClicked += delegate { if (updateUrl != null) try { Process.Start(new ProcessStartInfo(updateUrl) { UseShellExecute = true }); } catch (Exception e) { Error(e); } };
         foreach (var bounds in new[] { new Rectangle(24,108,752,108), new Rectangle(24,232,444,244), new Rectangle(484,232,292,244), new Rectangle(24,492,752,92) }) At(new ShareCard(),bounds.X,bounds.Y,bounds.Width,bounds.Height);
         At(new ComputerMark { BackColor = Color.White },44,138,48,48);
         At(new Label { Text = "這台電腦", BackColor = Color.White, ForeColor = ShareStyle.Muted, Font = new Font(Font.FontFamily,10F) },108,125,280,24);
@@ -294,6 +335,7 @@ sealed class ShareWindow : Form
         position.SelectedIndexChanged += delegate { if (!loading && position.SelectedIndex >= 0) { ShareSettings.Position = ShareSettings.Directions[position.SelectedIndex]; Save(); if (backend != null) StopBackend(); } };
         nearby.SelectedIndexChanged += delegate { UpdateControls(); };
         retry.Tick += delegate { if (enabled && link == null && !testing && !closing) StartLink(); };
+        updateTimer.Tick += delegate { CheckUpdate(); };
         ResumeLayout(false);
         Shown += delegate {
             var available=Screen.FromControl(this).WorkingArea;
@@ -301,12 +343,12 @@ sealed class ShareWindow : Form
             try {
                 ShareSettings.Import(ShareSettings.Bin, true, false); ShareSettings.Import(ShareSettings.Bin, false, false);
                 bool host; string ip; ShareSettings.Load(out host, out ip); role.SelectedIndex = host ? 0 : 1; address.Text = ip; position.SelectedIndex = Array.IndexOf(ShareSettings.Directions, ShareSettings.Position);
-                loading = false; RefreshRole(); if (!testing) { StartLink(); retry.Start(); }
+                loading = false; RefreshRole(); if (!testing) { StartLink(); retry.Start(); CheckUpdate(); updateTimer.Start(); }
             } catch (Exception e) { loading = false; Error(e); }
         };
         FormClosing += delegate(object sender, FormClosingEventArgs e) {
             if (!closing && !testing) { e.Cancel = true; Hide(); tray.ShowBalloonTip(1500, "Barrier Share", "程式已收至系統匣；可從圖示開啟或結束。", ToolTipIcon.Info); return; }
-            closing = true; retry.Stop(); StopLink(); StopBackend(); tray.Dispose();
+            closing = true; retry.Stop(); updateTimer.Stop(); StopLink(); StopBackend(); tray.Dispose();
         };
     }
     // Exercise the same window and startup path as a normal launch, including both live roles.
@@ -350,6 +392,23 @@ sealed class ShareWindow : Form
         Shown += delegate { timer.Start(); };
     }
     void Error(Exception e) { status.Text = "操作未完成：" + e.Message; }
+    // Offline or rate-limited checks stay silent; the local network connection never depends on them.
+    void CheckUpdate()
+    {
+        Task.Factory.StartNew(() => ShareUpdate.Check()).ContinueWith(task => {
+            if (closing || !IsHandleCreated) return;
+            try { BeginInvoke((Action)delegate { if (task.Status == TaskStatus.RanToCompletion) ShowUpdate(task.Result); else LogLine("檢查更新失敗：" + task.Exception.GetBaseException().Message); }); }
+            catch (InvalidOperationException) { }
+        });
+    }
+    internal void ShowUpdate(ShareUpdate.Found found)
+    {
+        update.Visible = found != null; network.Visible = found == null;
+        if (found == null) return;
+        updateUrl = found.Url; update.Text = "有新版 " + found.Version + "，前往下載 ↗";
+        string version = found.Version.ToString();
+        if (announcedUpdate != version && !testing) { announcedUpdate = version; tray.ShowBalloonTip(5000, "Barrier Share 有新版", "版本 " + version + " 已發布。從視窗右上角前往下載；安裝前先從系統匣選「結束」。", ToolTipIcon.Info); }
+    }
     void Save() { try { ShareSettings.Save(Host, address.Text.Trim()); } catch (Exception e) { Error(e); } }
     void UpdateControls()
     {
@@ -601,12 +660,23 @@ static class ShareProgram
                 if (core.MainWindowHandle != IntPtr.Zero) throw new Exception("Backend opened a console");
                 core.Kill(); core.WaitForExit(5000);
             }
+            string releases = "[{\"tag_name\":\"mac-v9.0.0\",\"html_url\":\"https://github.com/sunnylinisme/barrier/releases/tag/mac-v9.0.0\",\"draft\":false,\"prerelease\":false}," +
+                "{\"tag_name\":\"windows-v0.4.0\",\"html_url\":\"https://github.com/sunnylinisme/barrier/releases/tag/windows-v0.4.0\",\"draft\":true,\"prerelease\":false}," +
+                "{\"tag_name\":\"windows-v0.3.9\",\"html_url\":\"https://github.com/sunnylinisme/barrier/releases/tag/windows-v0.3.9\",\"draft\":false,\"prerelease\":false}," +
+                "{\"tag_name\":\"windows-v0.3.8\",\"html_url\":\"https://github.com/sunnylinisme/barrier/releases/tag/windows-v0.3.8\",\"draft\":false,\"prerelease\":false}," +
+                "{\"tag_name\":\"windows-v0.3.10\",\"html_url\":\"https://example.com/elsewhere\",\"draft\":false,\"prerelease\":false}]";
+            var found = ShareUpdate.Newer(releases, new Version(0, 3, 7));
+            if (found == null || found.Version != new Version(0, 3, 9) || !found.Url.EndsWith("/windows-v0.3.9")) throw new Exception("Update selection ignored platform, draft or origin rules");
+            if (ShareUpdate.Newer(releases, new Version(0, 3, 9)) != null || ShareUpdate.Newer("{\"message\":\"rate limited\"}", ShareUpdate.Current) != null) throw new Exception("Update reported without a newer release");
             using (var window = new ShareWindow(true)) {
                 window.Show(); Application.DoEvents(); window.TestDiscovery(directory);
+                window.ShowUpdate(found); Application.DoEvents();
+                using (var bitmap = new Bitmap(window.Width, window.Height)) { window.DrawToBitmap(bitmap, new Rectangle(Point.Empty, window.Size)); bitmap.Save(Path.Combine(directory, "gui-update.png")); }
+                window.ShowUpdate(null);
                 using (var bitmap = new Bitmap(window.Width, window.Height)) { window.DrawToBitmap(bitmap, new Rectangle(Point.Empty, window.Size)); bitmap.Save(Path.Combine(directory, "gui.png")); }
                 window.Close();
             }
-            File.WriteAllText(Path.Combine(directory, "PASS.txt"), "Settings persist; old pairing and trust preserved; hidden backend starts/stops; GUI states render with accessible, unclipped controls.");
+            File.WriteAllText(Path.Combine(directory, "PASS.txt"), "Settings persist; old pairing and trust preserved; hidden backend starts/stops; GUI states render with accessible, unclipped controls; update notice selects only newer published Windows releases.");
             return 0;
         } catch (Exception e) { Directory.CreateDirectory(directory); File.WriteAllText(Path.Combine(directory, "FAIL.txt"), e.ToString()); return 1; }
     }
