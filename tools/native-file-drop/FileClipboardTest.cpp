@@ -75,6 +75,11 @@ int main() {
         check(files->roots.size() == 2 && equalFiles(large, files->roots[0]), "large file changed");
         check(equalFiles(nested, files->roots[1] / fs::u8path("內容.txt")) && fs::is_directory(files->roots[1] / "empty"), "folder transfer failed");
         check(first.peak < 70000 && second.peak < 70000, "large file buffered in memory");
+        // An unchanged selection keeps its handle, so switching screens does not restart a transfer.
+        auto again = registerClipboardFiles({nested});
+        check(again == registerClipboardFiles({nested}), "unchanged selection got a new handle");
+        { std::ofstream grow; open_utf8_path(grow, nested, std::ios::binary | std::ios::app); grow << "more"; }
+        check(registerClipboardFiles({nested}) != again, "changed file kept the old handle");
         received.clear(); sender.start(registerClipboardFiles({nested}), 0, 42);
         while (!first.packets.empty() || !second.packets.empty()) {
             if (!first.packets.empty()) pass(first, second, receiver, true);

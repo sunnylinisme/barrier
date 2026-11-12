@@ -30,6 +30,10 @@ constexpr const char* rejected = "FCNO%4i%s";
 std::mutex registryMutex;
 std::map<std::string, std::shared_ptr<const ClipboardFiles>> registry;
 std::deque<std::string> history;
+// Selection (paths, sizes, modification times) -> handle, so reading an unchanged
+// clipboard again yields the same handle. Otherwise every screen switch looked like a
+// new copy to the server, which cancelled and restarted a transfer still in progress.
+std::map<std::string, std::string> handleBySelection;
 std::string randomName() {
     unsigned char bytes[16];
     if (RAND_bytes(bytes, sizeof(bytes)) != 1) throw std::runtime_error("Cannot create transfer identity");
@@ -89,10 +93,22 @@ std::string registerClipboardFiles(const std::vector<fs::path>& paths) {
         if (!names.insert(name).second) throw std::runtime_error("Selected items have conflicting names");
         files->roots.push_back(absolute);
     }
-    auto handle = "FLOCAL2:" + randomName();
+    std::string selection;
+    for (const auto& root : files->roots) {
+        std::error_code ec;
+        auto modified = fs::last_write_time(root, ec).time_since_epoch().count();
+        auto size = fs::is_regular_file(root, ec) ? fs::file_size(root, ec) : 0;
+        selection += root.u8string() + '\n' + std::to_string(modified) + ' ' + std::to_string(size) + '\n';
+    }
     std::lock_guard<std::mutex> lock(registryMutex);
-    registry[handle] = files; history.push_back(handle);
-    while (history.size() > 32) { registry.erase(history.front()); history.pop_front(); }
+    auto known = handleBySelection.find(selection);
+    if (known != handleBySelection.end() && registry.count(known->second)) return known->second;
+    auto handle = "FLOCAL2:" + randomName();
+    registry[handle] = files; history.push_back(handle); handleBySelection[selection] = handle;
+    while (history.size() > 32) {
+        registry.erase(history.front()); history.pop_front();
+        for (auto i = handleBySelection.begin(); i != handleBySelection.end();) i = registry.count(i->second) ? std::next(i) : handleBySelection.erase(i);
+    }
     return handle;
 }
 std::shared_ptr<const ClipboardFiles> clipboardFiles(const std::string& handle) {
