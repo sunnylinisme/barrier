@@ -151,7 +151,12 @@ function Wait-Core([string]$Owner, [string]$Log, [string]$Why) {
     $deadline = [DateTime]::UtcNow.AddSeconds(20); $found = $null
     while ([DateTime]::UtcNow -lt $deadline) {
         $core = Get-ServiceCore
-        if ($core.Count -eq 1) { $owner = Invoke-CimMethod -InputObject $core[0] -MethodName GetOwner; if ($owner.User -eq $Owner) { $found = $core[0]; break } }
+        if ($core.Count -eq 1) {
+            # A core that is being replaced may exit before GetOwner answers; it then has no User.
+            $owner = Invoke-CimMethod -InputObject $core[0] -MethodName GetOwner -ErrorAction SilentlyContinue
+            $user = if ($owner -and $owner.PSObject.Properties['User']) { $owner.User } else { $null }
+            if ($user -eq $Owner) { $found = $core[0]; break }
+        }
         Start-Sleep -Milliseconds 250
     }
     $notes = (Get-ChildItem -LiteralPath $stateRoot -Recurse -Filter service.log -ErrorAction SilentlyContinue | ForEach-Object { Get-Content -LiteralPath $_.FullName -Raw }) -join ' '
