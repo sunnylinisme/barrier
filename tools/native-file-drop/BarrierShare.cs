@@ -354,6 +354,8 @@ sealed class ShareWindow : Form
     void UpdateControls()
     {
         start.Enabled = !enabled || link == null; stop.Enabled = enabled;
+        status.ForeColor = enabled ? ShareStyle.Blue : ShareStyle.Muted;
+        emptyNearby.Text = !enabled ? "搜尋已暫停\r\n恢復連線後，會重新尋找附近電腦。" : Host ? "正在尋找接收端…\r\n請在另一台選擇「接收端」，保持程式開啟。" : "尚未找到主控端。\r\n請在另一台選擇「主控端」，發出配對邀請。";
         nearby.Visible = nearby.Items.Count > 0; emptyNearby.Visible = !nearby.Visible; pair.Text = Host ? "邀請配對  →" : "等待主控端邀請";
         search.Enabled = link != null; pair.Enabled = Host && link != null && nearby.SelectedItem != null && consent == null;
         forget.Enabled = link != null && savedPeer.Length != 0; clear.Enabled = !enabled && backend == null;
