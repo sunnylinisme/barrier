@@ -294,6 +294,14 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if line.contains("server is dead") || line.contains("disconnected") { status.stringValue = "連線中斷，正在自動重連…" }
     }
     @objc func showDiagnostics() {
+        if !test {
+            let accessibility = AXIsProcessTrusted(), inputMonitoring = CGPreflightListenEventAccess()
+            let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "未知"
+            let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "未知"
+            log("權限診斷 · 輔助使用：\(accessibility ? "已授權" : "未授權")；輸入監控：\(inputMonitoring ? "已授權" : "未授權")")
+            log("執行版本：\(version)；組建：\(build)；PID：\(ProcessInfo.processInfo.processIdentifier)")
+            log("App 路徑：\(Bundle.main.bundleURL.path)")
+        }
         if diagnostics == nil {
             let panel = NSWindow(contentRect:NSRect(x:0,y:0,width:760,height:400),styleMask:[.titled,.closable,.resizable],backing:.buffered,defer:false); panel.title="Barrier Share · 診斷紀錄"; panel.delegate=self; panel.isReleasedWhenClosed=false
             let scroll=NSScrollView(frame:panel.contentView!.bounds.insetBy(dx:18,dy:18)); scroll.autoresizingMask=[.width,.height]; scroll.hasVerticalScroller=true; scroll.documentView=details; details.frame=scroll.bounds; panel.contentView!.addSubview(scroll); diagnostics=panel; panel.center()
