@@ -151,6 +151,8 @@ $app = Join-Path $installDir 'BarrierShare.exe'
 function Step([string]$Text) { Write-Output "::notice title=Installer step::$Text" }
 $runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
 if ($null -ne (Get-ItemProperty -LiteralPath $runKey -Name BarrierShare -ErrorAction SilentlyContinue)) { throw 'Refusing to alter an existing launch-at-sign-in entry.' }
+# The previous uninstaller removes itself shortly after exiting; let it finish before installing again.
+Wait-Until { -not (Test-Path -LiteralPath (Join-Path $installDir 'unins000.exe')) } 'Previous uninstaller did not finish removing itself.' 30
 Invoke-TestProcess $InstallerPath ($arguments + "/LOG=$(Join-Path $TestRoot 'install-for-update.log')")
 $first = Start-Process -FilePath $app -ArgumentList '--background' -PassThru
 Step "started background copy $($first.Id)"
