@@ -306,3 +306,6 @@ for role, direction in [(role, d) for role in ["server", "client"] for d in ["ri
             for filename in ["core.log", "console.log"]:
                 path = root / filename
                 if path.exists(): print(path.read_text(errors="replace"))
+            if (root / "core.log").exists():
+                for line in (root / "core.log").read_text(errors="replace").splitlines():
+                    if "hider:" in line: print("::notice::" + role + " " + direction + " " + line.strip()[-160:])

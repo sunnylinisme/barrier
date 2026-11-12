@@ -520,6 +520,7 @@ MSWindowsDesks::deskEnter(Desk* desk)
         ReleaseCapture();
     }
     ShowCursor(TRUE);
+    LOG((CLOG_DEBUG "hider: enter ex=%x", (unsigned)GetWindowLong(desk->m_window, GWL_EXSTYLE)));
     SetWindowPos(desk->m_window, HWND_BOTTOM, 0, 0, 0, 0,
                             SWP_NOMOVE | SWP_NOSIZE |
                             SWP_NOACTIVATE | SWP_HIDEWINDOW);
@@ -558,8 +559,10 @@ MSWindowsDesks::deskLeave(Desk* desk, HKL keyLayout)
         h = 1;
         // Stay above windows that become foreground or always-on-top later;
         // deskEnter's HWND_BOTTOM clears the topmost status again.
-        SetWindowPos(desk->m_window, HWND_TOPMOST, x, y, w, h,
+        BOOL placed = SetWindowPos(desk->m_window, HWND_TOPMOST, x, y, w, h,
                             SWP_NOACTIVATE | SWP_SHOWWINDOW);
+        LOG((CLOG_DEBUG "hider: leave placed=%d error=%d ex=%x", placed, placed ? 0 : (int)GetLastError(),
+            (unsigned)GetWindowLong(desk->m_window, GWL_EXSTYLE)));
 
         // since we're using low-level hooks, disable the foreground window
         // so it can't mess up any of our keyboard events.  the console
@@ -578,8 +581,9 @@ MSWindowsDesks::deskLeave(Desk* desk, HKL keyLayout)
             DWORD thatThread =
                 GetWindowThreadProcessId(desk->m_foregroundWindow, NULL);
             AttachThreadInput(thatThread, thisThread, TRUE);
-            SetForegroundWindow(desk->m_window);
+            BOOL foreground = SetForegroundWindow(desk->m_window);
             AttachThreadInput(thatThread, thisThread, FALSE);
+            LOG((CLOG_DEBUG "hider: foreground=%d ex=%x", foreground, (unsigned)GetWindowLong(desk->m_window, GWL_EXSTYLE)));
         }
 
         // switch to requested keyboard layout
