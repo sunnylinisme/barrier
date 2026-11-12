@@ -386,6 +386,18 @@ bool cursorInvisible(std::string& detail)
     }
     if (icon.hbmColor) DeleteObject(icon.hbmColor);
     if (icon.hbmMask) DeleteObject(icon.hbmMask);
+    // Describe what the system hit-tests under the cursor and where Barrier's hider window is.
+    auto describe = [](HWND window) {
+        std::ostringstream out; char name[128] = {};
+        DWORD pid = 0, tid = window ? GetWindowThreadProcessId(window, &pid) : 0;
+        GetClassNameA(window, name, sizeof(name)); RECT rect = {}; GetWindowRect(window, &rect);
+        out << name << " pid=" << pid << " tid=" << tid << " visible=" << (window && IsWindowVisible(window))
+            << " enabled=" << (window && IsWindowEnabled(window)) << " ex=" << std::hex << GetWindowLongW(window, GWL_EXSTYLE) << std::dec
+            << " rect=" << rect.left << "," << rect.top << "," << rect.right << "," << rect.bottom;
+        return out.str();
+    };
+    HWND under = WindowFromPoint(info.ptScreenPos), hider = FindWindowA("BarrierDesk", nullptr);
+    text << " under=[" << describe(under) << "] hider=[" << describe(hider) << "] foreground=[" << describe(GetForegroundWindow()) << "]";
     detail = text.str() + (blank ? " blank image" : " visible image");
     return blank;
 }
