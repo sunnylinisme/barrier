@@ -472,7 +472,7 @@ sealed class ShareWindow : Form
     readonly ShareComboBox role = new ShareComboBox(), position = new ShareComboBox(), nearby = new ShareComboBox();
     readonly Label positionHint = new Label(), status = new Label(), peerLabel = new Label(), emptyNearby = new Label(), network = new Label();
     readonly LinkLabel update = new LinkLabel();
-    readonly System.Windows.Forms.Timer updateTimer = new System.Windows.Forms.Timer { Interval = 24 * 60 * 60 * 1000 };
+    readonly System.Windows.Forms.Timer updateTimer = new System.Windows.Forms.Timer { Interval = 6 * 60 * 60 * 1000 };
     string updateUrl, announcedUpdate;
     readonly TextBox address = new TextBox(), details = new TextBox();
     readonly ShareButton start = new ShareButton(), stop = new ShareButton(), search = new ShareButton(), pair = new ShareButton { Primary = true }, forget = new ShareButton(), clear = new ShareButton();
