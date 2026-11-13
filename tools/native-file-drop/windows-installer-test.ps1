@@ -208,7 +208,7 @@ foreach ($file in Get-ChildItem -LiteralPath $PackageDir -File -Recurse) {
     if (Test-Path -LiteralPath (Join-Path $installDir ([IO.Path]::GetRelativePath($PackageDir, $file.FullName)))) { throw "Uninstall left packaged file: $($file.Name)" }
 }
 if (Get-Service BarrierShare -ErrorAction SilentlyContinue) { throw 'Uninstall left the Barrier Share service.' }
-if ((Get-FirewallPrograms).Count -ne 0) { throw 'Uninstall left the firewall rules.' }
+if (@(Get-FirewallPrograms).Count -ne 0) { throw 'Uninstall left the firewall rules.' }
 if (Test-Path -LiteralPath (Join-Path $installDir 'state')) { throw 'Uninstall left the service state folder.' }
 foreach ($path in @($uninstallKey, $machineKey) + $shortcuts) {
     if (Test-Path -LiteralPath $path) { throw "Uninstall left registration or shortcut: $path" }
