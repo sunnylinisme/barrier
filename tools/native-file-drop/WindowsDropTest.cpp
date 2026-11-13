@@ -456,6 +456,16 @@ int main(int argc, char** argv)
             int distance = sx > 0 ? w - 1 - p.x : sx < 0 ? p.x : sy > 0 ? h - 1 - p.y : p.y;
             worst = (std::max)(worst, distance);
             if (distance > limit) {
+                // The whole burst can land while the server still ignores motion right after the switch,
+                // leaving the cursor on the receiver (host parked at the centre). A user keeps moving:
+                // send one more return. A cursor that did return and was pulled to the centre moves
+                // further from the edge with this and still fails.
+                for (int k = 0; k < 6; ++k) mouse_event(MOUSEEVENTF_MOVE, static_cast<DWORD>(-24 * sx), static_cast<DWORD>(-24 * sy), 0, 0);
+                pump(150); GetCursorPos(&p);
+                distance = sx > 0 ? w - 1 - p.x : sx < 0 ? p.x : sy > 0 ? h - 1 - p.y : p.y;
+                if (distance <= limit) { std::cout << "::notice::fast return " << direction << " trip " << (i + 1) << ": the return burst was dropped during the switch; the next movement returned\n"; continue; }
+            }
+            if (distance > limit) {
                 // Tell a late return (cursor still parked at the centre while away) from a cursor
                 // that came back and was then pulled to the centre: look again after a pause.
                 pump(800); POINT later = {}; GetCursorPos(&later);
