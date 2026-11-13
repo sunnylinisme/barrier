@@ -17,8 +17,8 @@ using System.Threading.Tasks;
 using System.Windows.Forms;
 using System.Xml.Linq;
 
-[assembly: System.Reflection.AssemblyVersion("0.3.12.0")]
-[assembly: System.Reflection.AssemblyFileVersion("0.3.12.0")]
+[assembly: System.Reflection.AssemblyVersion("0.3.13.0")]
+[assembly: System.Reflection.AssemblyFileVersion("0.3.13.0")]
 
 static class ShareSettings
 {
