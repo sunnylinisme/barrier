@@ -1332,10 +1332,10 @@ sealed class ShareWindow : Form
         var tap = choice(new[] { 0, 250, 400 }, v => v == 0 ? "關閉" : (v / 1000.0).ToString("0.##") + " 秒內", a.DoubleTap);
         row("連碰兩下邊緣才切換", null, tap);
         var corners = check(a.Corners); row("螢幕角落不切換", "方便點角落的開始按鈕或關閉鈕", corners);
-        var keys = check(a.SwitchKeys); row("快速鍵切換", "Ctrl+Alt+方向鍵", keys);
+        var keys = check(a.SwitchKeys); row("啟用切換快捷鍵", "開啟後，按 Ctrl+Alt+方向鍵切到另一台", keys);
         y += 16; section("鍵盤與滑鼠");
         var swap = check(a.SwapModifiers); row("Mac 上對調 Ctrl 與 Command", "Windows 鍵盤在 Mac 上可按 Ctrl+C／V", swap);
-        var lockKey = check(a.LockKey); row("鎖定游標在目前螢幕", "Ctrl+Alt+L 切換", lockKey);
+        var lockKey = check(a.LockKey); row("啟用鎖定游標快捷鍵", "開啟後按 Ctrl+Alt+L 鎖定或解除，游標不會跑到另一台", lockKey);
         var relative = check(a.RelativeMouse); row("相對滑鼠移動", "全螢幕遊戲用", relative);
         var saver = check(a.ScreenSaver); row("同步螢幕保護程式", null, saver);
         y += 16; section("連線");
