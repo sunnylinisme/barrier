@@ -59,6 +59,8 @@
 
 ## 待辦
 
+- 原版 Barrier 功能補齊（2026-11-13，Mac `38b79541`＋核心 `ec12a158`，Windows `476c2d7a`）：跳到指定電腦快捷鍵、按住按鍵才切換、鍵盤廣播快捷鍵、接收端 Caps Lock 修正、保留視窗焦點、共用剪貼簿開關、接收端滾輪速度／反轉（barrierc --wheel-scale／--wheel-invert）、排列螢幕的半段相接。預設值都不改變原本的設定檔。只有自動測試（設定檔逐行檢查、真的 barriers 讀檔），使用者表示無法實機測，依原版 Barrier 的行為直接納入；之後有回報再修。
+
 - ~~【Mac session 先做】0.3.9 的 Mac 程式還沒編譯過~~：已完成（2026-11-12，Mac mini，Apple Silicon，`22c7b38a`）。照上面的指令（另加 `-DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DCMAKE_OSX_DEPLOYMENT_TARGET=15.0 -DCMAKE_OSX_SYSROOT="$(xcrun --show-sdk-path)"`，並設定 `BARRIER_CODESIGN_IDENTITY` 固定簽章）全部通過，不需要修改程式：編譯無錯誤；ctest 5/5；`link-network-test.py` 通過；`package-macos.sh` 打出 0.3.9；`--self-test` 通過（配對兩種角色、四方向位置、新版通知、切換快捷鍵、傳輸進度），GUI 截圖中「排列螢幕…」「登入時自動啟動」「進階設定」顯示正常。CI 的 macos job 仍需等 GitHub runner 恢復後重跑。
 - 接收端位置只用「排列螢幕」（`2088142e`，Windows 與 Mac）：只配一台時，原本的「螢幕位置」選單和「排列螢幕」會同時出現且互相矛盾，所以主控端一律隱藏選單、只留「排列螢幕…」（未配對時停用）。選單程式碼仍在但永遠隱藏，`position` 設定只當作新接收端的預設方向。請勿把選單加回來。
 - 實機驗收發現並已處理（2026-11-12，Mac mini 主控端 → Windows 接收端）：
