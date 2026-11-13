@@ -466,7 +466,14 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuD
         label("複製 → 換到另一台 → 等接收完成後貼上",34,682,740,12,color:muted)
         details.isEditable=false; details.font = .monospacedSystemFont(ofSize:12,weight:.regular); details.isVerticallyResizable=true; details.autoresizingMask = [.width]
         role.target = self; role.action = #selector(roleChanged); position.target = self; position.action = #selector(positionChanged); nearby.target = self; nearby.action = #selector(selectionChanged)
-        tray = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength); tray.button?.title = "⇄"; let trayMenu = NSMenu()
+        tray = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        // The app icon itself (same as the Dock and the Windows tray). It is a full-colour tile with
+        // its own light background, so it stays legible on light and dark menu bars; not a template image.
+        if let url = Bundle.main.url(forResource: "BarrierShare", withExtension: "icns"), let icon = NSImage(contentsOf: url) {
+            icon.size = NSSize(width: 18, height: 18); icon.isTemplate = false
+            tray.button?.image = icon; tray.button?.imageScaling = .scaleProportionallyDown; tray.button?.title = ""
+        } else { tray.button?.title = "⇄" }
+        tray.button?.toolTip = "Barrier Share"; let trayMenu = NSMenu()
         trayMenu.delegate = self; trayMenu.autoenablesItems = false; tray.menu = trayMenu
         do {
             if !test { let old = Bundle.main.bundleURL.deletingLastPathComponent(); try ShareSettings.importPairing(old, true, replace: false); try ShareSettings.importPairing(old, false, replace: false) }
@@ -891,6 +898,7 @@ func selfTest(_ directory: URL) throws {
     guard ShareUpdate.newer(releases, current: [0, 3, 11]) == nil, ShareUpdate.newer(Data("{\"message\":\"rate limited\"}".utf8), current: [0, 0, 0]) == nil else { throw ShareError.message("Update reported without a newer release") }
     NSApp.finishLaunching()
     let app = ShareApp(test: true); app.buildWindow(); app.options.host = true; app.role.selectItem(at: 0); try app.refreshRole()
+    guard let trayIcon = app.tray?.button?.image, trayIcon.size == NSSize(width: 18, height: 18), !trayIcon.isTemplate else { throw ShareError.message("Menu bar icon is not the 18 pt app icon") }
     _ = app.windowShouldClose(app.window)
     guard NSApp.activationPolicy() == .accessory, !app.window.isVisible else { throw ShareError.message("Closing the window left the Dock icon") }
     app.showWindow()
