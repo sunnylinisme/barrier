@@ -26,6 +26,7 @@ static class ShareSettings
     public static string Bin = AppDomain.CurrentDomain.BaseDirectory;
     public static readonly string[] Directions = { "right", "left", "up", "down" };
     public static string Position = "right";
+    public static Action<string> Warn;
     public static string Profile(bool host) { return Path.Combine(Root, host ? "profile-server" : "profile"); }
     public static string Quote(string value)
     {
@@ -198,7 +199,11 @@ static class ShareSettings
         b.Append(" screenSaverSync = " + (a.ScreenSaver ? "true" : "false") + "\n");
         if (a.SwitchKeys) foreach (string d in UsedDirections(cells)) b.Append(" keystroke(Control+Alt+" + Char.ToUpperInvariant(d[0]) + d.Substring(1) + ") = switchInDirection(" + d + ")\n");
         if (a.LockKey) b.Append(" keystroke(Control+Alt+L) = lockCursorToScreen(toggle)\n");
-        foreach (string line in a.ExtraLines()) b.Append(" " + line + "\n");
+        // Old saved extra options can no longer be seen or fixed, so a bad one is skipped rather than stopping the core.
+        List<string> extra;
+        try { extra = a.ExtraLines().ToList(); }
+        catch (IOException e) { extra = new List<string>(); if (Warn != null) Warn("已略過舊的自訂 Barrier 選項：" + e.Message); }
+        foreach (string line in extra) b.Append(" " + line + "\n");
         return b.Append("end\n").ToString();
     }
     public static string ReceiverName { get { return OwnFingerprint != null ? ScreenName(OwnFingerprint) : "windows"; } }
@@ -830,6 +835,7 @@ sealed class ShareWindow : Form
     {
         if (started) return; started = true; Diagnose(ShareUpdate.Details);
         Diagnose("權限：" + ShareElevation.Describe());
+        ShareSettings.Warn = text => { if (IsHandleCreated) BeginInvoke((Action)(() => Diagnose(text))); };
         if (!testing) { ShareCursor.Restore(); ShareLogin.Refresh(); }
         try {
             ShareSettings.Import(ShareSettings.Bin, true, false); ShareSettings.Import(ShareSettings.Bin, false, false);
@@ -1796,6 +1802,9 @@ static class ShareProgram
                 bool refused = false; try { new ShareAdvanced { Extra = bad }.ExtraLines().ToList(); } catch (IOException) { refused = true; }
                 if (!refused) throw new Exception("Section boundary accepted in extra settings: " + bad);
             }
+            var keptAdvanced = ShareSettings.Advanced; ShareSettings.Advanced = new ShareAdvanced { Extra = "end" };
+            try { if (ShareSettings.Config(true).Contains("\n end\n")) throw new Exception("Invalid extra settings reached the config"); }
+            finally { ShareSettings.Advanced = keptAdvanced; }
             bool badTarget = false; try { new ShareAdvanced { Targets = "1.2.3.4 & calc" }.TargetList(); } catch (IOException) { badTarget = true; }
             if (!badTarget) throw new Exception("Invalid direct address accepted");
             // Three receivers: one in the default spot, one placed on the grid, one placed automatically.
