@@ -653,7 +653,7 @@ sealed class ShareWindow : Form
     readonly TextBox filter = new TextBox();
     readonly ShareButton cancelSend = new ShareButton(), bannerDownload = new ShareButton { Primary = true }, bannerClose = new ShareButton { Quiet = true };
     // dismissedUpdate: the version whose banner was closed; connections: core sessions currently up.
-    string dismissedUpdate; int connections;
+    string dismissedUpdate, nearbyShown; int connections; bool? invitable;
     readonly System.Windows.Forms.Timer updateTimer = new System.Windows.Forms.Timer { Interval = 6 * 60 * 60 * 1000 };
     string updateUrl, announcedUpdate;
     readonly TextBox address = new TextBox(), details = new TextBox();
@@ -891,6 +891,10 @@ sealed class ShareWindow : Form
         Func<NearbyDevice, bool> match = d => query.Length == 0 || d.Name.ToLowerInvariant().Contains(query) || d.Address.Contains(query);
         var paired = peers.Select(p => { NearbyDevice d; return devices.TryGetValue(p.Key, out d) ? d : new NearbyDevice { Fingerprint = p.Key, Name = p.Value, Address = "", Offline = true }; }).Where(match).ToList();
         var others = devices.Values.Where(d => !peers.ContainsKey(d.Fingerprint)).Where(match).OrderBy(d => d.Name, StringComparer.CurrentCultureIgnoreCase).ToList();
+        // Discovery repeats every few seconds; redraw only when something shown has changed.
+        string shown = String.Join("\n", paired.Concat(others).Select(d => (d.Offline ? "-" : peers.ContainsKey(d.Fingerprint) ? "+" : " ") + d.Fingerprint + "\t" + d.Name + "\t" + d.Address + "\t" + nearby.System(d)));
+        if (shown == nearbyShown && nearby.Items.Count > 0 == paired.Count + others.Count > 0) { UpdateControls(); return; }
+        nearbyShown = shown;
         int top = nearby.TopIndex; nearby.BeginUpdate(); nearby.Items.Clear();
         if (paired.Count > 0) { nearby.Items.Add(new ListHeader("已配對")); foreach (var d in paired) nearby.Items.Add(d); }
         if (others.Count > 0) { if (paired.Count > 0) nearby.Items.Add(new ListHeader("其他電腦")); foreach (var d in others) nearby.Items.Add(d); }
@@ -982,7 +986,8 @@ sealed class ShareWindow : Form
         var selected = SelectedDevice;
         search.Enabled = link != null; pair.Enabled = Host && link != null && selected != null && !selected.Offline && !peers.ContainsKey(selected.Fingerprint) && consent == null;
         forget.Enabled = link != null && peers.Count != 0; clear.Enabled = !enabled && backend == null;
-        nearby.Invalidate(); UpdateCard();
+        bool canInvite = nearby.CanInvite(); if (invitable != canInvite) { invitable = canInvite; nearby.Invalidate(); }
+        UpdateCard();
     }
     void RefreshRole()
     {
