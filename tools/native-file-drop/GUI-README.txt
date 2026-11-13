@@ -7,7 +7,7 @@ Barrier Share — Windows／Mac 雙向複製通用測試版
 
 搜尋與配對
 1. 停止舊版連線程式，再開啟新版。
-   Windows：開啟 BarrierShare-Setup-0.3.13-x64.exe 安裝，再從開始功能表開啟 Barrier Share。
+   Windows：開啟 BarrierShare-Setup-0.3.14-x64.exe 安裝，再從開始功能表開啟 Barrier Share。
    安裝需要系統管理員權限（會詢問一次「是否允許」），裝在 Program Files，並安裝「Barrier Share」背景服務。
    安裝程式會自動關閉執行中的舊版並移除 0.3.8 以前的個人安裝，裝完再開啟；配對及設定都會保留。
    也可使用可攜 ZIP，解壓後雙擊 BarrierShare.exe。
@@ -23,6 +23,13 @@ Barrier Share — Windows／Mac 雙向複製通用測試版
 5. Mac 首次需允許「區域網路」、「輔助使用」及「輸入監控」。若系統列出 barriers／barrierc，也需允許。
    按「權限設定」可開啟設定；必要時重開程式。
    Windows 安裝程式會自動允許 Barrier Share 使用私人／網域網路；若網路被設為「公用」，請改成「私人」。
+
+0.3.14 更新（Windows）
+進階設定、排列螢幕與診斷紀錄的按鈕不再貼著視窗邊緣；排列螢幕的「儲存」與右緣也留出距離。
+診斷紀錄的「全部複製」改為右下角的按鈕。
+
+0.3.14 更新（Mac）
+進階設定、主視窗底部與診斷紀錄的按鈕不再貼著視窗邊緣，進階設定的按鈕上方加了分隔線。
 
 0.3.13 更新（Windows）
 進階設定新增原版 Barrier 的功能（預設都關閉或維持原樣，不影響現在的用法）：

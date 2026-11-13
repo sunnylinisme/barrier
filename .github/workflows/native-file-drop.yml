@@ -173,7 +173,7 @@ jobs:
           & $compiler /Qp "/DPackageDir=$PWD\build\package" "/DOutputDir=$PWD\build" "$PWD\tools\native-file-drop\windows-setup.iss"
           if ($LASTEXITCODE -ne 0) { Write-Output "::error title=Installer compile::ISCC exited with $LASTEXITCODE"; exit $LASTEXITCODE }
           try {
-            & tools/native-file-drop/windows-installer-test.ps1 -InstallerPath "$PWD/build/BarrierShare-Setup-0.3.13-x64.exe" -PackageDir "$PWD/build/package" -TestRoot "$PWD/build/installer-test"
+            & tools/native-file-drop/windows-installer-test.ps1 -InstallerPath "$PWD/build/BarrierShare-Setup-0.3.14-x64.exe" -PackageDir "$PWD/build/package" -TestRoot "$PWD/build/installer-test"
           } catch {
             # Annotations are readable on the checks page without signing in; logs and artifacts are not.
             $reason = ("$($_.Exception.Message) (line $($_.InvocationInfo.ScriptLineNumber))" -replace "`r?`n", ' ')
@@ -198,7 +198,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: barriershare-windows-setup
-          path: build/BarrierShare-Setup-0.3.13-x64.exe
+          path: build/BarrierShare-Setup-0.3.14-x64.exe
           if-no-files-found: error
           retention-days: 30
       - uses: actions/upload-artifact@v4
