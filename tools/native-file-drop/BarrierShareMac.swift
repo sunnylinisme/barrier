@@ -14,6 +14,8 @@ struct ShareOptions: Codable {
     var layout: [String: [Int]] = [:]
     // Operating system each paired computer reported over the link: fingerprint -> mac / windows / linux.
     var platforms: [String: String] = [:]
+    // Part of the shared edge each receiver next to this host uses: fingerprint -> all / first / second.
+    var edgeRange: [String: String] = [:]
     init() {}
     // Settings saved by older versions lack newer keys; keep their defaults.
     init(from decoder: Decoder) throws {
@@ -23,6 +25,7 @@ struct ShareOptions: Codable {
         position = try c.decodeIfPresent(String.self, forKey: .position) ?? "right"
         advanced = (try? c.decodeIfPresent(ShareAdvanced.self, forKey: .advanced)) ?? ShareAdvanced()
         platforms = (try? c.decodeIfPresent([String: String].self, forKey: .platforms)) ?? [:]
+        edgeRange = ((try? c.decodeIfPresent([String: String].self, forKey: .edgeRange)) ?? [:]).filter { ["first", "second"].contains($0.value) }
         layout = ((try? c.decodeIfPresent([String: [Int]].self, forKey: .layout)) ?? [:]).filter { $0.value.count == 2 && abs($0.value[0]) <= 2 && abs($0.value[1]) <= 2 }
     }
 }
@@ -32,6 +35,9 @@ struct ShareAdvanced: Codable, Equatable {
     // swapModifiers defaults on: a Mac keyboard on Windows (and the reverse) then copies with ⌘C / Ctrl+C.
     var corners = false, swapModifiers = true, relativeMouse = false, screenSaver = true, switchKeys = true, lockKey = false
     var extra = "", targets = ""
+    // Added with the original Barrier features; defaults keep the earlier behaviour.
+    var directKeys = false, broadcastKey = false, capsLockFix = false, preserveFocus = false, clipboard = true, wheelInvert = false
+    var switchNeeds = "", wheelScale = 100   // switchNeeds: "" / shift / control / alt
     init() {}
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self), d = ShareAdvanced()
@@ -46,6 +52,14 @@ struct ShareAdvanced: Codable, Equatable {
         lockKey = try c.decodeIfPresent(Bool.self, forKey: .lockKey) ?? d.lockKey
         extra = try c.decodeIfPresent(String.self, forKey: .extra) ?? ""
         targets = try c.decodeIfPresent(String.self, forKey: .targets) ?? ""
+        directKeys = try c.decodeIfPresent(Bool.self, forKey: .directKeys) ?? d.directKeys
+        broadcastKey = try c.decodeIfPresent(Bool.self, forKey: .broadcastKey) ?? d.broadcastKey
+        capsLockFix = try c.decodeIfPresent(Bool.self, forKey: .capsLockFix) ?? d.capsLockFix
+        preserveFocus = try c.decodeIfPresent(Bool.self, forKey: .preserveFocus) ?? d.preserveFocus
+        clipboard = try c.decodeIfPresent(Bool.self, forKey: .clipboard) ?? d.clipboard
+        wheelInvert = try c.decodeIfPresent(Bool.self, forKey: .wheelInvert) ?? d.wheelInvert
+        let needs = try c.decodeIfPresent(String.self, forKey: .switchNeeds) ?? ""; switchNeeds = ["shift", "control", "alt"].contains(needs) ? needs : ""
+        wheelScale = try min(500, max(10, c.decodeIfPresent(Int.self, forKey: .wheelScale) ?? d.wheelScale))
     }
     // Extra lines go into the options section; section boundaries would break the generated file.
     func extraLines() throws -> [String] {
@@ -119,7 +133,7 @@ final class ShareSettings {
         }
         return result
     }
-    static func config(_ direction: String, _ a: ShareAdvanced = ShareAdvanced(), receivers: [String] = [], layout: [String: [Int]] = [:], platforms: [String: String] = [:]) throws -> String {
+    static func config(_ direction: String, _ a: ShareAdvanced = ShareAdvanced(), receivers: [String] = [], layout: [String: [Int]] = [:], platforms: [String: String] = [:], edgeRange: [String: String] = [:]) throws -> String {
         guard directions.contains(direction) else { throw ShareError.message("請選擇有效的螢幕位置。") }
         let grid = cells(direction, receivers: receivers, layout: layout)
         var text = "section: screens\n"
@@ -129,6 +143,8 @@ final class ShareSettings {
             // Mac to Mac needs no swap; a receiver whose system is unknown is treated as Windows.
             let platform = receivers.first(where: { screenName($0) == name }).flatMap { platforms[$0] }
             if a.swapModifiers && name != hostName && platform != "mac" { text += "  ctrl = super\n  super = ctrl\n" }
+            if a.capsLockFix && name != hostName { text += "  halfDuplexCapsLock = true\n" }
+            if a.preserveFocus && name == hostName { text += "  preserveFocus = true\n" }
         }
         // The first receiver also answers to "windows", the name receivers used before 0.3.9.
         if let first = receivers.first { text += "end\nsection: aliases\n \(screenName(first)):\n  windows\n" }
@@ -139,10 +155,18 @@ final class ShareSettings {
             text += " \(name):\n"
             for d in order {
                 let next = Cell(x: cell.x + step(d).x, y: cell.y + step(d).y)
-                for (other, place) in grid where place == next { text += "  \(d) = \(other)\n"; if !used.contains(d) { used.append(d) } }
+                for (other, place) in grid where place == next {
+                    // Part of the edge shared by the host and a receiver right next to it.
+                    let hostLink = name == hostName ? other : other == hostName ? name : nil
+                    let range = hostLink.flatMap { link in receivers.first { screenName($0) == link } }.flatMap { edgeRange[$0] }
+                    let part = range == "first" ? "(0,50)" : range == "second" ? "(50,100)" : ""
+                    if name == hostName { text += "  \(d)\(part) = \(other)\n" } else { text += "  \(d) = \(other)\(part)\n" }
+                    if !used.contains(d) { used.append(d) }
+                }
             }
         }
-        text += "end\nsection: options\n clipboardSharing = true\n"
+        text += "end\nsection: options\n clipboardSharing = \(a.clipboard ? "true" : "false")\n"
+        if !a.switchNeeds.isEmpty { text += " switchNeeds\(a.switchNeeds.prefix(1).uppercased() + a.switchNeeds.dropFirst()) = true\n" }
         if a.switchDelay > 0 { text += " switchDelay = \(a.switchDelay)\n" }
         if a.doubleTap > 0 { text += " switchDoubleTap = \(a.doubleTap)\n" }
         if a.corners { text += " switchCorners = all\n switchCornerSize = \(a.cornerSize)\n" }
@@ -150,6 +174,9 @@ final class ShareSettings {
         text += " screenSaverSync = \(a.screenSaver ? "true" : "false")\n"
         if a.switchKeys { for d in order where used.contains(d) { text += " keystroke(Control+Alt+\(d.prefix(1).uppercased() + d.dropFirst())) = switchInDirection(\(d))\n" } }
         if a.lockKey { text += " keystroke(Control+Alt+L) = lockCursorToScreen(toggle)\n" }
+        if a.broadcastKey { text += " keystroke(Control+Alt+B) = keyboardBroadcast(toggle)\n" }
+        // Control+Alt+1 is this host, 2-9 the receivers in pairing order (as listed in 排列螢幕).
+        if a.directKeys { for (i, (name, _)) in grid.prefix(9).enumerated() { text += " keystroke(Control+Alt+\(i + 1)) = switchToScreen(\(name))\n" } }
         // Extra options from the removed expert box: skipped if invalid, so they can never stop the core from starting.
         for line in (try? a.extraLines()) ?? [] { text += " \(line)\n" }
         return text + "end\n"
@@ -161,11 +188,14 @@ final class ShareSettings {
         var args = ["-f", "--no-tray", "--file-clipboard", "--profile-dir", p.path, "--log", p.appendingPathComponent(options.host ? "server.log" : "mac.log").path, "--name", options.host ? hostName : receiverName]
         if options.host {
             let path = p.appendingPathComponent("screens.conf")
-            try config(options.position, options.advanced, receivers: receivers, layout: options.layout, platforms: options.platforms).write(to: path, atomically: true, encoding: .utf8)
+            try config(options.position, options.advanced, receivers: receivers, layout: options.layout, platforms: options.platforms, edgeRange: options.edgeRange).write(to: path, atomically: true, encoding: .utf8)
             args += ["-c", path.path]
         } else {
             var ip = in_addr()
             guard options.address.withCString({ inet_pton(AF_INET, $0, &ip) }) == 1 else { throw ShareError.message("請輸入主控端的區網 IPv4 位址，例如 192.168.1.20。") }
+            // Receiver-side wheel settings (這台當接收端時).
+            if options.advanced.wheelScale != 100 { args += ["--wheel-scale", String(options.advanced.wheelScale)] }
+            if options.advanced.wheelInvert { args += ["--wheel-invert"] }
             args += [options.address]
         }
         process.arguments = args; process.standardInput = FileHandle.nullDevice
@@ -369,6 +399,12 @@ final class ShareBlockTarget: NSObject {
     let action: (Bool) -> Void; var open = false
     init(_ action: @escaping (Bool) -> Void) { self.action = action }
     @objc func toggle() { open.toggle(); action(open) }
+}
+// Remembers the edge range chosen for each receiver in the arrange editor.
+final class ShareRangeTarget: NSObject {
+    var ranges: [String: String]
+    init(_ ranges: [String: String]) { self.ranges = ranges }
+    @objc func changed(_ sender: NSPopUpButton) { if let fp = sender.identifier?.rawValue { ranges[fp] = ["all", "first", "second"][max(0, sender.indexOfSelectedItem)] } }
 }
 // Ends a modal panel with accept or cancel.
 final class ShareModalCloser: NSObject {
@@ -912,11 +948,24 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuD
         let tap = choice([0, 250, 400], { $0 == 0 ? "關閉" : seconds($0) + "內" }, a.doubleTap); row("連碰兩下邊緣才切換", nil, tap)
         let corners = toggle(a.corners); row("螢幕角落不切換", "方便點角落的選單或關閉鈕", corners)
         let keys = toggle(a.switchKeys); row("啟用切換快捷鍵", "開啟後，按 Control+Option+方向鍵切到另一台", keys)
+        let direct = toggle(a.directKeys); row("啟用跳到指定電腦快捷鍵", "按 Control+Option+1 回到這台，2 以後依排列螢幕的順序", direct)
+        let needs = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 140, height: 26)); needs.addItems(withTitles: ["不需要", "Shift", "Control", "Option"])
+        needs.selectItem(at: ["", "shift", "control", "alt"].firstIndex(of: a.switchNeeds) ?? 0)
+        row("按住按鍵才切換", "要按住這個鍵，滑鼠碰到邊緣才會切換", needs)
         y += 16; section("鍵盤與滑鼠")
         let swap = toggle(a.swapModifiers); row("在 Windows 上對調 Control 與 Command", "Mac 鍵盤在 Windows 上可按 ⌘C／⌘V；兩台都是 Mac 時不對調", swap)
         let lock = toggle(a.lockKey); row("啟用鎖定游標快捷鍵", "開啟後，按 Control+Option+L 鎖定或解除；鎖定時游標不會跑到另一台", lock)
         let relative = toggle(a.relativeMouse); row("相對滑鼠移動", "全螢幕遊戲用", relative)
         let saver = toggle(a.screenSaver); row("同步螢幕保護程式", nil, saver)
+        let broadcast = toggle(a.broadcastKey); row("啟用鍵盤廣播快捷鍵", "開啟後，按 Control+Option+B 開始或停止：打的字會同時送到所有電腦", broadcast)
+        let caps = toggle(a.capsLockFix); row("接收端的 Caps Lock 修正", "接收端的大小寫或 Caps Lock 燈號跟按鍵對不上時再開啟", caps)
+        let focus = toggle(a.preserveFocus); row("切走時保留這台的視窗焦點", "游標移到另一台時，這台目前使用中的視窗不會失去焦點", focus)
+        y += 16; section("剪貼簿")
+        let clip = toggle(a.clipboard); row("共用剪貼簿", "關閉後，兩台不再同步複製的文字和檔案", clip)
+        y += 16; section("這台當接收端時（只影響這台）")
+        let wheelValues = [50, 75, 100, 150, 200]
+        let wheel = choice(wheelValues, { "\($0)%" }, a.wheelScale); row("滾輪速度", "另一台的滑鼠在這台捲動時的速度", wheel)
+        let invert = toggle(a.wheelInvert); row("反轉滾輪方向", "Mac 自然捲動和 Windows 方向相反時開啟", invert)
         y += 16; section("連線")
         let targetScroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 200, height: 44)); targetScroll.hasVerticalScroller = true; targetScroll.borderType = .bezelBorder
         let targets = NSTextView(frame: targetScroll.bounds); targets.isRichText = false; targets.font = .monospacedSystemFont(ofSize: 12, weight: .regular); targets.autoresizingMask = [.width]
@@ -928,11 +977,19 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuD
         let cancel = NSButton(title: "取消", target: nil, action: nil); cancel.bezelStyle = .rounded; cancel.keyEquivalent = "\u{1b}"; cancel.frame = NSRect(x: W + 24 - 232, y: buttonsY, width: 108, height: 32); view.addSubview(cancel)
         let save = SharePrimaryButton(title: "儲存", target: nil, action: nil); save.frame = NSRect(x: W + 24 - 112, y: buttonsY, width: 112, height: 32); view.addSubview(save)
         let closer = ShareModalCloser(panel); save.target = closer; save.action = #selector(ShareModalCloser.accept); cancel.target = closer; cancel.action = #selector(ShareModalCloser.cancel)
-        let size = NSSize(width: width, height: buttonsY + 52); view.frame.size = size; panel.setContentSize(size)
+        // Rows scroll; the buttons stay fixed underneath.
+        let rowsHeight = buttonsY, visible = min(rowsHeight, 600)
+        let root = FlippedView(frame: NSRect(x: 0, y: 0, width: width, height: visible + 56)); root.wantsLayer = true; root.layer?.backgroundColor = NSColor.white.cgColor
+        let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: width, height: visible)); scroll.hasVerticalScroller = true; scroll.autohidesScrollers = true; scroll.drawsBackground = false
+        view.frame.size = NSSize(width: width, height: rowsHeight); scroll.documentView = view; root.addSubview(scroll)
+        for b in [reset, cancel, save] { b.removeFromSuperview(); b.frame.origin.y = visible + 12; root.addSubview(b) }
+        panel.contentView = root; panel.setContentSize(root.frame.size)
         let resetter = ShareBlockTarget { _ in
             let d = ShareAdvanced()
             delay.selectItem(withTag: d.switchDelay); tap.selectItem(withTag: d.doubleTap)
-            for (box, on) in [(corners, d.corners), (keys, d.switchKeys), (swap, d.swapModifiers), (lock, d.lockKey), (relative, d.relativeMouse), (saver, d.screenSaver)] { box.state = on ? .on : .off }
+            for (box, on) in [(corners, d.corners), (keys, d.switchKeys), (swap, d.swapModifiers), (lock, d.lockKey), (relative, d.relativeMouse), (saver, d.screenSaver),
+                              (direct, d.directKeys), (broadcast, d.broadcastKey), (caps, d.capsLockFix), (focus, d.preserveFocus), (clip, d.clipboard), (invert, d.wheelInvert)] { box.state = on ? .on : .off }
+            needs.selectItem(at: 0); wheel.selectItem(withTag: d.wheelScale)
         }
         reset.target = resetter; reset.action = #selector(ShareBlockTarget.toggle)
         objc_setAssociatedObject(panel, "targets", [closer, resetter], .OBJC_ASSOCIATION_RETAIN)
@@ -941,6 +998,9 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuD
             v.switchDelay = delay.selectedTag(); v.doubleTap = tap.selectedTag()
             v.corners = corners.state == .on; v.swapModifiers = swap.state == .on; v.relativeMouse = relative.state == .on; v.screenSaver = saver.state == .on
             v.switchKeys = keys.state == .on; v.lockKey = lock.state == .on
+            v.directKeys = direct.state == .on; v.broadcastKey = broadcast.state == .on; v.capsLockFix = caps.state == .on; v.preserveFocus = focus.state == .on
+            v.clipboard = clip.state == .on; v.wheelInvert = invert.state == .on; v.wheelScale = wheel.selectedTag()
+            v.switchNeeds = ["", "shift", "control", "alt"][max(0, needs.indexOfSelectedItem)]
             v.targets = targets.string.components(separatedBy: .newlines).map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }.joined(separator: ", ")
             // The expert Barrier options box was removed; a value saved by an older version is kept.
             v.extra = a.extra
@@ -960,7 +1020,7 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuD
                 options.advanced = value; try ShareSettings.save(options); sendTargets()
                 // The host core reads options at start; the saved pairing reconnects it right away.
                 if options.host && core != nil { stopBackend() }
-                status.stringValue = "已儲存進階設定。"; return
+                status.stringValue = "已儲存進階設定。"; peersChanged(); return
             } catch { let alert = NSAlert(); alert.messageText = "進階設定"; alert.informativeText = error.localizedDescription; alert.runModal() }
         }
     }
@@ -1096,10 +1156,11 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuD
         } else if names.count == 1 { peerLabel.stringValue = "已配對主控端 · \(names[0])" }
         else if names.count > 1 { peerLabel.stringValue = "已配對 \(names.count) 台 · " + names.joined(separator: "、") }
         else { peerLabel.stringValue = options.host ? "在下方選擇接收端，按「邀請配對」。" : "等待主控端邀請；首次需要你同意。" }
+        if options.host && !options.advanced.clipboard { peerLabel.stringValue += " · 剪貼簿未共用" }
         updateControls()
     }
     // Arrange screens: coloured tiles on a grid, a list of where each one sits, restore/cancel/save.
-    func buildLayout() -> (NSWindow, ShareLayoutView, () -> Bool) {
+    func buildLayout() -> (NSWindow, ShareLayoutView, () -> Bool, ShareRangeTarget) {
         let grid = ShareSettings.cells(options.position, receivers: peers.map { $0.fingerprint }, layout: options.layout)
         var placement: [String: ShareSettings.Cell] = [:]
         for p in peers { if let cell = grid.first(where: { $0.0 == ShareSettings.screenName(p.fingerprint) })?.1 { placement[p.fingerprint] = cell } }
@@ -1109,9 +1170,10 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuD
         let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: width, height: height), styleMask: [.titled], backing: .buffered, defer: false); panel.title = "排列螢幕"
         let view = FlippedView(frame: NSRect(x: 0, y: 0, width: width, height: height)); view.wantsLayer = true; view.layer?.backgroundColor = NSColor.white.cgColor; panel.contentView = view
         let title = NSTextField(labelWithString: "排列螢幕"); title.font = .systemFont(ofSize: 18, weight: .bold); title.frame = NSRect(x: 24, y: 18, width: 300, height: 24); view.addSubview(title)
-        let hint = NSTextField(labelWithString: "拖曳電腦到這台的上下左右；相鄰的邊就是游標可以移過去的地方。"); hint.textColor = ShareStyle.muted; hint.font = .systemFont(ofSize: 12); hint.frame = NSRect(x: 24, y: 46, width: width - 48, height: 18); view.addSubview(hint)
+        let hint = NSTextField(labelWithString: "拖曳電腦到這台的上下左右；相鄰的邊就是游標可以移過去的地方。螢幕大小不同時，可在右側選擇只相接上半段或下半段。"); hint.textColor = ShareStyle.muted; hint.font = .systemFont(ofSize: 12); hint.frame = NSRect(x: 24, y: 46, width: width - 48, height: 18); view.addSubview(hint)
         layoutView.frame.origin = NSPoint(x: 24, y: 76); view.addSubview(layoutView)
         let list = FlippedView(frame: NSRect(x: layoutView.frame.maxX + 20, y: 76, width: 204, height: layoutView.frame.height)); view.addSubview(list)
+        let ranges = ShareRangeTarget(options.edgeRange)
         let warning = NSTextField(wrappingLabelWithString: ""); warning.textColor = ShareStyle.danger; warning.font = .systemFont(ofSize: 12); warning.frame = NSRect(x: 24, y: layoutView.frame.maxY + 10, width: width - 48, height: 32); view.addSubview(warning)
         let buttonsY = height - 56
         let reset = NSButton(title: "恢復預設", target: nil, action: nil); reset.bezelStyle = .rounded; reset.frame = NSRect(x: 24, y: buttonsY, width: 100, height: 32); view.addSubview(reset)
@@ -1121,12 +1183,25 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuD
         let refresh = { [weak layoutView, weak list, weak warning, weak save] in
             guard let layoutView = layoutView, let list = list else { return }
             list.subviews.forEach { $0.removeFromSuperview() }
+            var y: CGFloat = 0
             for (i, p) in self.peers.enumerated() {
-                let y = CGFloat(i) * 46
                 let dot = NSView(frame: NSRect(x: 0, y: y + 8, width: 12, height: 12)); dot.wantsLayer = true; dot.layer?.cornerRadius = 6; dot.layer?.backgroundColor = ShareStyle.peer(i).cgColor; list.addSubview(dot)
                 let name = NSTextField(labelWithString: p.name); name.font = .systemFont(ofSize: 13, weight: .semibold); name.lineBreakMode = .byTruncatingTail; name.frame = NSRect(x: 20, y: y + 4, width: 184, height: 18); list.addSubview(name)
                 let cell = layoutView.placement[p.fingerprint]
-                let place = NSTextField(labelWithString: cell.flatMap { words[$0] }.map { "在這台的\($0)邊" } ?? "經由其他螢幕"); place.font = .systemFont(ofSize: 12); place.textColor = ShareStyle.muted; place.frame = NSRect(x: 20, y: y + 22, width: 184, height: 16); list.addSubview(place)
+                var where_ = cell.flatMap { words[$0] }.map { "在這台的\($0)邊" } ?? "經由其他螢幕"
+                if self.options.advanced.directKeys && i < 8 { where_ += " · 快捷鍵 Control+Option+\(i + 2)" }
+                let place = NSTextField(labelWithString: where_); place.font = .systemFont(ofSize: 11); place.textColor = ShareStyle.muted; place.lineBreakMode = .byTruncatingTail; place.frame = NSRect(x: 20, y: y + 22, width: 184, height: 16); list.addSubview(place)
+                y += 42
+                // Only a receiver right next to this host shares an edge whose range can be limited.
+                if let c = cell, words[c] != nil {
+                    let horizontal = c.y == 0
+                    let range = NSPopUpButton(frame: NSRect(x: 20, y: y - 2, width: 184, height: 24)); range.controlSize = .small; range.font = .systemFont(ofSize: 11)
+                    range.addItems(withTitles: ["相接：整個邊", horizontal ? "相接：上半段" : "相接：左半段", horizontal ? "相接：下半段" : "相接：右半段"])
+                    range.selectItem(at: ["all", "first", "second"].firstIndex(of: ranges.ranges[p.fingerprint] ?? "all") ?? 0)
+                    range.identifier = NSUserInterfaceItemIdentifier(p.fingerprint); range.target = ranges; range.action = #selector(ShareRangeTarget.changed(_:))
+                    range.toolTip = "兩台螢幕大小不同時，只讓邊的一段可以過去"; list.addSubview(range); y += 30
+                }
+                y += 8
             }
             let ok = layoutView.reachable()
             warning?.stringValue = ok ? "" : "有螢幕和這台連不上。請讓每台都緊鄰這台或其他螢幕。"; save?.isEnabled = ok
@@ -1141,15 +1216,16 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuD
         var saved = false
         cancel.target = panel; cancel.action = #selector(NSWindow.close)
         let closer = ShareModalCloser(panel); save.target = closer; save.action = #selector(ShareModalCloser.accept); cancel.target = closer; cancel.action = #selector(ShareModalCloser.cancel)
-        objc_setAssociatedObject(panel, "closer", closer, .OBJC_ASSOCIATION_RETAIN)
+        objc_setAssociatedObject(panel, "closer", [closer, ranges], .OBJC_ASSOCIATION_RETAIN)
         refresh()
-        return (panel, layoutView, { saved = closer.accepted; return saved })
+        return (panel, layoutView, { saved = closer.accepted; return saved }, ranges)
     }
     @objc func showLayout() {
-        let (panel, view, accepted) = buildLayout()
+        let (panel, view, accepted, ranges) = buildLayout()
         panel.center(); NSApp.runModal(for: panel); panel.orderOut(nil)
         guard accepted(), view.reachable() else { return }
         for (fp, cell) in view.placement { options.layout[fp] = [cell.x, cell.y] }
+        options.edgeRange = ranges.ranges.filter { $0.value != "all" }
         do { try ShareSettings.save(options); if core != nil { stopBackend() }; status.stringValue = "已儲存螢幕排列。"; peersChanged() } catch { showError(error) }
     }
     func startBackend() {
@@ -1370,12 +1446,28 @@ func selfTest(_ directory: URL) throws {
     app.linkLine("SAVED\t\(peer)\t\(name)"); app.connections = 1; app.updateControls()
     guard app.peerLabel.stringValue == "滑鼠往右移到 另一台電腦", app.badge.text == "已連線" else { throw ShareError.message("Connection card summary wrong: \(app.peerLabel.stringValue) / \(app.badge.text)") }
     try snapshot(app.window.contentView, "gui-mac-paired.png")
-    let (layoutPanel, layoutView, _) = app.buildLayout()
+    let (layoutPanel, layoutView, _, _) = app.buildLayout()
     guard layoutView.reachable(), !layoutView.place(peer, .init(x: 2, y: 2)) || !layoutView.reachable() else { throw ShareError.message("Arrange editor rules failed") }
     layoutView.restoreDefaults(); try snapshot(layoutPanel.contentView, "gui-arrange.png")
     let (advancedPanel, readAdvanced, _) = app.buildAdvanced(ShareAdvanced())
     guard readAdvanced() == ShareAdvanced() else { throw ShareError.message("Advanced settings did not round-trip the defaults") }
     try snapshot(advancedPanel.contentView, "gui-advanced.png")
+    try snapshot((advancedPanel.contentView?.subviews.first as? NSScrollView)?.documentView, "gui-advanced-all.png")
+    // Original Barrier features: each setting writes its line into the host's screen config.
+    var features = ShareAdvanced(); features.directKeys = true; features.broadcastKey = true; features.capsLockFix = true; features.preserveFocus = true
+    features.clipboard = false; features.switchNeeds = "control"
+    let fx = "v2:sha256:" + String(repeating: "e", count: 64), nx = ShareSettings.screenName(fx)
+    let featureConfig = try ShareSettings.config("right", features, receivers: [fx], edgeRange: [fx: "first"])
+    for expected in [" clipboardSharing = false\n", " switchNeedsControl = true\n", " keystroke(Control+Alt+B) = keyboardBroadcast(toggle)\n",
+                     " keystroke(Control+Alt+1) = switchToScreen(windows-host)\n", " keystroke(Control+Alt+2) = switchToScreen(\(nx))\n",
+                     " \(nx):\n  ctrl = super\n  super = ctrl\n  halfDuplexCapsLock = true\n", " windows-host:\n  preserveFocus = true\n",
+                     "  right(0,50) = \(nx)\n", "  left = windows-host(0,50)\n"] where !featureConfig.contains(expected) {
+        throw ShareError.message("Feature config missing: \(expected)")
+    }
+    guard try ShareSettings.config("right").contains(" clipboardSharing = true\n"), !(try ShareSettings.config("right")).contains("switchNeeds") else { throw ShareError.message("Feature defaults changed the config") }
+    var receiverOptions = ShareOptions(); receiverOptions.host = false; receiverOptions.address = "192.168.1.5"; receiverOptions.advanced.wheelScale = 150; receiverOptions.advanced.wheelInvert = true
+    guard let wheelArgs = try ShareSettings.command(receiverOptions).arguments, wheelArgs.contains("--wheel-invert"), let at = wheelArgs.firstIndex(of: "--wheel-scale"), wheelArgs[at + 1] == "150" else { throw ShareError.message("Receiver wheel arguments missing") }
+    guard try ShareSettings.run("barrierc", ["--help"], allowFailure: true).contains("--wheel-scale") else { throw ShareError.message("Core lacks --wheel-scale") }
     app.window.orderOut(nil); NSStatusBar.system.removeStatusItem(app.tray)
     try "PASS: both pairing roles, saved IP/position, four screen directions, bundled backends, native GUI render, update notice selection, switch hotkeys and transfer progress".write(to: directory.appendingPathComponent("PASS.txt"), atomically: true, encoding: .utf8)
 }
