@@ -379,7 +379,7 @@ final class ShareActionButton: NSButton {
 }
 struct NearbyComputer { var fingerprint: String; var name: String; var address: String }
 final class FlippedView: NSView { override var isFlipped: Bool { true } }
-final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
+final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDelegate {
     // "0.3.9" for releases; "0.3.9.N 測試版" for test builds, whose Info.plist carries "N commit".
     static let testBuild = (Bundle.main.object(forInfoDictionaryKey: "BarrierShareTestBuild") as? String ?? "").split(separator: " ").map(String.init)
     static let testCommit = testBuild.count == 2 ? testBuild[1] : ""
@@ -467,7 +467,7 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         details.isEditable=false; details.font = .monospacedSystemFont(ofSize:12,weight:.regular); details.isVerticallyResizable=true; details.autoresizingMask = [.width]
         role.target = self; role.action = #selector(roleChanged); position.target = self; position.action = #selector(positionChanged); nearby.target = self; nearby.action = #selector(selectionChanged)
         tray = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength); tray.button?.title = "⇄"; let trayMenu = NSMenu()
-        trayMenu.addItem(withTitle: "開啟 Barrier Share", action: #selector(showWindow), keyEquivalent: "").target = self; trayMenu.addItem(withTitle: "結束", action: #selector(NSApplication.terminate(_:)), keyEquivalent: ""); tray.menu = trayMenu
+        trayMenu.delegate = self; trayMenu.autoenablesItems = false; tray.menu = trayMenu
         do {
             if !test { let old = Bundle.main.bundleURL.deletingLastPathComponent(); try ShareSettings.importPairing(old, true, replace: false); try ShareSettings.importPairing(old, false, replace: false) }
             options = try ShareSettings.load(); role.selectItem(at: options.host ? 0 : 1); position.selectItem(at: ShareSettings.directions.firstIndex(of: options.position) ?? 0)
@@ -500,6 +500,45 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
             DispatchQueue.main.async {
                 guard let self = self else { return }
                 if let data = data { self.showUpdate(ShareUpdate.newer(data, current: ShareUpdate.current)) } else if let error = error { self.log("檢查更新失敗：" + error.localizedDescription) }
+            }
+        }.resume()
+    }
+    // Menu-bar menu, rebuilt each time it opens so the status and toggles are current (same items as the Windows tray).
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        menu.removeAllItems()
+        let state = menu.addItem(withTitle: status.stringValue.components(separatedBy: "\n").first ?? "", action: nil, keyEquivalent: ""); state.isEnabled = false
+        menu.addItem(.separator())
+        func item(_ title: String, _ action: Selector, enabled: Bool = true, on: Bool = false) { let i = menu.addItem(withTitle: title, action: action, keyEquivalent: ""); i.target = self; i.isEnabled = enabled; i.state = on ? .on : .off }
+        item("開啟視窗", #selector(showWindow))
+        item(enabled ? "暫停共用" : "繼續共用", enabled ? #selector(pause) : #selector(resume))
+        if options.host { item("排列螢幕…", #selector(showLayoutFromMenu), enabled: !peers.isEmpty) }
+        item("進階設定…", #selector(showAdvancedFromMenu))
+        item("登入時自動啟動", #selector(toggleLoginFromMenu), on: ShareLogin.enabled)
+        item("診斷紀錄", #selector(showDiagnostics))
+        item("檢查更新", #selector(checkUpdateFromMenu))
+        menu.addItem(.separator())
+        menu.addItem(withTitle: "結束", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "")
+    }
+    @objc func showLayoutFromMenu() { showWindow(); showLayout() }
+    @objc func showAdvancedFromMenu() { showWindow(); showAdvanced() }
+    @objc func toggleLoginFromMenu() { autostart.state = ShareLogin.enabled ? .off : .on; toggleLogin() }
+    // A manual check always answers, also when this is the newest version or the check failed.
+    @objc func checkUpdateFromMenu() {
+        var request = URLRequest(url: ShareUpdate.releases, timeoutInterval: 15)
+        request.setValue("BarrierShare-UpdateCheck", forHTTPHeaderField: "User-Agent"); request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+        URLSession.shared.dataTask(with: request) { [weak self] data, _, error in
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                let alert = NSAlert(); alert.messageText = "檢查更新"
+                if let data = data, let found = ShareUpdate.newer(data, current: ShareUpdate.current) {
+                    self.showUpdate(found)
+                    alert.informativeText = "有新版 \(found.version)。"; alert.addButton(withTitle: "前往下載"); alert.addButton(withTitle: "稍後")
+                    NSApp.activate(ignoringOtherApps: true)
+                    if alert.runModal() == .alertFirstButtonReturn { NSWorkspace.shared.open(found.url) }
+                    return
+                }
+                alert.informativeText = data != nil ? "目前已是最新版（\(ShareApp.versionLabel)）。" : "無法檢查更新：" + (error?.localizedDescription ?? "沒有回應")
+                NSApp.activate(ignoringOtherApps: true); alert.runModal()
             }
         }.resume()
     }
@@ -851,6 +890,9 @@ func selfTest(_ directory: URL) throws {
     guard ShareUpdate.newer(releases, current: [0, 3, 11]) == nil, ShareUpdate.newer(Data("{\"message\":\"rate limited\"}".utf8), current: [0, 0, 0]) == nil else { throw ShareError.message("Update reported without a newer release") }
     NSApp.finishLaunching()
     let app = ShareApp(test: true); app.buildWindow(); app.options.host = true; app.role.selectItem(at: 0); try app.refreshRole()
+    let trayTest = NSMenu(); app.menuNeedsUpdate(trayTest)
+    let trayTitles = trayTest.items.map { $0.title }
+    for expected in ["開啟視窗", "排列螢幕…", "進階設定…", "登入時自動啟動", "診斷紀錄", "檢查更新", "結束"] where !trayTitles.contains(expected) { throw ShareError.message("Menu bar item missing: \(expected)") }
     let peer = "v2:sha256:" + String(repeating: "a", count: 64), name = Data("另一台電腦".utf8).base64EncodedString()
     app.linkLine("DEVICE\t\(peer)\t\(name)\t192.168.1.2\t24801\tR")
     app.linkLine("DEVICE\t\(peer)\t\(name)\t192.168.1.3\t24801\tR")
