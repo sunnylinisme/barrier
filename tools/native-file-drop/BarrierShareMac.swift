@@ -380,6 +380,13 @@ final class ShareActionButton: NSButton {
 struct NearbyComputer { var fingerprint: String; var name: String; var address: String }
 final class FlippedView: NSView { override var isFlipped: Bool { true } }
 final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
+    // "0.3.9" for releases; "0.3.9.N 測試版" for test builds, whose Info.plist carries "N commit".
+    static let testBuild = (Bundle.main.object(forInfoDictionaryKey: "BarrierShareTestBuild") as? String ?? "").split(separator: " ").map(String.init)
+    static let testCommit = testBuild.count == 2 ? testBuild[1] : ""
+    static var versionLabel: String {
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? ""
+        return testBuild.count == 2 ? "\(version).\(testBuild[0]) 測試版" : version
+    }
     var options = ShareOptions()
     var window: NSWindow!
     var diagnostics: NSWindow?
@@ -424,7 +431,7 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let menu = NSMenu(), appMenu = NSMenu(), appItem = NSMenuItem()
         appMenu.addItem(withTitle: "關於 Barrier Share", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: ""); appMenu.addItem(.separator()); appMenu.addItem(withTitle: "結束 Barrier Share", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"); appItem.submenu = appMenu; menu.addItem(appItem); NSApp.mainMenu = menu
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 840, height: 710), styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
-        window.title = "Barrier Share \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "")".trimmingCharacters(in: .whitespaces); window.delegate = self; window.isReleasedWhenClosed = false
+        window.title = "Barrier Share " + ShareApp.versionLabel; window.delegate = self; window.isReleasedWhenClosed = false
         window.contentView = FlippedView(frame: NSRect(x: 0, y: 0, width: 840, height: 710)); window.contentView!.wantsLayer = true
         window.contentView!.layer?.backgroundColor = NSColor(srgbRed: 244/255, green: 246/255, blue: 250/255, alpha: 1).cgColor
         func at(_ view: NSView, _ x: CGFloat, _ y: CGFloat, _ width: CGFloat, _ height: CGFloat) { view.frame = NSRect(x: x, y: y, width: width, height: height); window.contentView!.addSubview(view) }
@@ -729,6 +736,7 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
             let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "未知"
             let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "未知"
             log("權限診斷 · 輔助使用：\(accessibility ? "已授權" : "未授權")；輸入監控：\(inputMonitoring ? "已授權" : "未授權")")
+            log("版本 \(ShareApp.versionLabel)\(ShareApp.testCommit.isEmpty ? "" : "，commit " + ShareApp.testCommit)")
             log("執行版本：\(version)；組建：\(build)；PID：\(ProcessInfo.processInfo.processIdentifier)")
             log("App 路徑：\(Bundle.main.bundleURL.path)")
         }

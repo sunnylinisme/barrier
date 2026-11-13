@@ -16,12 +16,17 @@ cp tools/native-file-drop/GUI-README.txt LICENSE "$APP/Contents/Resources/"
 cp tools/native-file-drop/icons/BarrierShare.icns "$APP/Contents/Resources/"
 cp tools/native-file-drop/licenses/* "$APP/Contents/Resources/licenses/"
 git rev-parse HEAD > "$APP/Contents/Resources/COMMIT.txt"
-python3 - "$APP" <<'PY'
+# Test builds carry a build number (commits on this branch) and the commit, shown in the
+# title and diagnostics; release-macos.sh sets BARRIER_RELEASE=1 to keep the plain version.
+TEST_BUILD=""
+[ "${BARRIER_RELEASE:-}" = 1 ] || TEST_BUILD="$(git rev-list --count HEAD) $(git rev-parse --short=8 HEAD)"
+python3 - "$APP" "$TEST_BUILD" <<'PY'
 import os, pathlib, plistlib, shutil, subprocess, sys
 app = pathlib.Path(sys.argv[1]).resolve()
 contents = app / 'Contents'
+extra = dict(BarrierShareTestBuild=sys.argv[2]) if sys.argv[2] else {}
 with (contents / 'Info.plist').open('wb') as out:
-    plistlib.dump(dict(CFBundleIdentifier='org.barriershare.desktop', CFBundleName='Barrier Share',
+    plistlib.dump(dict(**extra, CFBundleIdentifier='org.barriershare.desktop', CFBundleName='Barrier Share',
         CFBundleDisplayName='Barrier Share', CFBundleExecutable='BarrierShare', CFBundlePackageType='APPL',
         CFBundleVersion='10', CFBundleShortVersionString='0.3.9', CFBundleIconFile='BarrierShare.icns', LSMinimumSystemVersion='15.0',
         NSHighResolutionCapable=True, NSPrincipalClass='NSApplication',

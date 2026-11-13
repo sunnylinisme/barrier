@@ -46,7 +46,7 @@ cmake -S . -B "$BUILD" -DCMAKE_BUILD_TYPE=Release -DCMAKE_POLICY_VERSION_MINIMUM
     -DCMAKE_OSX_DEPLOYMENT_TARGET=15.0 -DOPENSSL_ROOT_DIR="$(brew --prefix openssl@3)" -DCMAKE_OSX_SYSROOT="$(xcrun --show-sdk-path)"
 cmake --build "$BUILD" --parallel
 ctest --test-dir "$BUILD" --output-on-failure
-sh tools/native-file-drop/package-macos.sh "$BUILD"
+BARRIER_RELEASE=1 sh tools/native-file-drop/package-macos.sh "$BUILD"
 
 echo "== Checking the update keeps the signing identity of $OLD_APP"
 if [ -d "$OLD_APP" ]; then
