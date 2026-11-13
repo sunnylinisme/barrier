@@ -394,6 +394,8 @@ static class ShareStyle
 {
     public static readonly Color Background = Color.FromArgb(244, 246, 250), Ink = Color.FromArgb(24, 37, 57), Muted = Color.FromArgb(88, 105, 129), Blue = Color.FromArgb(47, 101, 235);
     public static readonly Color Field = Color.FromArgb(247, 249, 253), Border = Color.FromArgb(219, 226, 237);
+    public static readonly Color Tint = Color.FromArgb(232, 240, 253), BlueInk = Color.FromArgb(20, 70, 160), Green = Color.FromArgb(28, 128, 80), GreenTint = Color.FromArgb(226, 244, 233);
+    public static readonly Color Faint = Color.FromArgb(128, 140, 158), Danger = Color.FromArgb(190, 55, 45);
     public static GraphicsPath Rounded(RectangleF r, float radius) {
         var path = new GraphicsPath(); float d = radius * 2;
         path.AddArc(r.X, r.Y, d, d, 180, 90); path.AddArc(r.Right-d, r.Y, d, d, 270, 90); path.AddArc(r.Right-d, r.Bottom-d, d, d, 0, 90); path.AddArc(r.X, r.Bottom-d, d, d, 90, 90); path.CloseFigure(); return path;
@@ -409,7 +411,7 @@ sealed class ShareCard : Panel
 }
 sealed class ShareButton : Button
 {
-    public bool Primary;
+    public bool Primary, Quiet;
     bool hover, pressed;
     public ShareButton() { FlatStyle = FlatStyle.Flat; FlatAppearance.BorderSize = 0; Cursor = Cursors.Hand; SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer,true); }
     protected override void OnMouseEnter(EventArgs e) { hover=true; Invalidate(); base.OnMouseEnter(e); }
@@ -423,6 +425,13 @@ sealed class ShareButton : Button
     protected override void OnPaint(PaintEventArgs e) {
         e.Graphics.Clear(BackColor); e.Graphics.SmoothingMode=SmoothingMode.AntiAlias;
         float scale=e.Graphics.DpiX/96F;
+        if (Quiet) {
+            // Toolbar style: no frame until the pointer is over it.
+            if (Enabled && (hover || pressed)) using (var path = ShareStyle.Rounded(new RectangleF(0.5F,0.5F,Width-1,Height-1),8*scale)) using (var brush = new SolidBrush(pressed ? Color.FromArgb(218,227,243) : Color.FromArgb(232,238,249))) e.Graphics.FillPath(brush,path);
+            if (Focused && ShowFocusCues) using (var path=ShareStyle.Rounded(new RectangleF(2*scale,2*scale,Width-4*scale,Height-4*scale),6*scale)) using (var pen=new Pen(ShareStyle.Blue,scale)) e.Graphics.DrawPath(pen,path);
+            TextRenderer.DrawText(e.Graphics,Text,Font,ClientRectangle,!Enabled ? Color.FromArgb(160,170,185) : hover ? ShareStyle.Ink : ShareStyle.Muted,TextFormatFlags.HorizontalCenter|TextFormatFlags.VerticalCenter|TextFormatFlags.EndEllipsis|TextFormatFlags.NoPrefix);
+            return;
+        }
         var fill = !Enabled ? Color.FromArgb(239,242,247) : Primary ? (pressed ? Color.FromArgb(28,69,181) : hover ? Color.FromArgb(36,84,206) : ShareStyle.Blue) : (pressed ? Color.FromArgb(218,227,243) : hover ? Color.FromArgb(232,238,249) : Color.FromArgb(246,248,252));
         using (var path = ShareStyle.Rounded(new RectangleF(0.5F,0.5F,Width-1,Height-1),9*scale)) using (var brush = new SolidBrush(fill)) {
             e.Graphics.FillPath(brush,path);
@@ -465,13 +474,186 @@ sealed class ComputerMark : Control
 sealed class NearbyDevice
 {
     public string Fingerprint, Name, Address;
+    public bool Offline; // a paired computer that discovery does not currently see
     public override string ToString() { return Name + "  ·  " + Address; }
+}
+// Two-choice switch (主控端／接收端) drawn as one segmented control; arrow keys move between choices.
+sealed class ShareSegment : Control
+{
+    readonly string[] options; int selected;
+    public event EventHandler Changed;
+    public ShareSegment(params string[] choices) { options = choices; SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.Selectable, true); TabStop = true; Cursor = Cursors.Hand; }
+    public int Selected { get { return selected; } set { if (value < 0 || value >= options.Length || value == selected) return; selected = value; Invalidate(); var h = Changed; if (h != null) h(this, EventArgs.Empty); } }
+    Rectangle Part(int i) { int w = (Width - 6) / options.Length; return new Rectangle(3 + i * w, 3, w, Height - 6); }
+    protected override void OnMouseDown(MouseEventArgs e) { Focus(); for (int i = 0; i < options.Length; ++i) if (Part(i).Contains(e.Location)) Selected = i; base.OnMouseDown(e); }
+    protected override bool IsInputKey(Keys key) { return key == Keys.Left || key == Keys.Right || base.IsInputKey(key); }
+    protected override void OnKeyDown(KeyEventArgs e) { if (e.KeyCode == Keys.Left) Selected = selected - 1; if (e.KeyCode == Keys.Right) Selected = selected + 1; base.OnKeyDown(e); }
+    protected override void OnGotFocus(EventArgs e) { Invalidate(); base.OnGotFocus(e); }
+    protected override void OnLostFocus(EventArgs e) { Invalidate(); base.OnLostFocus(e); }
+    protected override AccessibleObject CreateAccessibilityInstance() { return new SegmentAccessible(this); }
+    sealed class SegmentAccessible : ControlAccessibleObject
+    {
+        readonly ShareSegment owner;
+        public SegmentAccessible(ShareSegment segment) : base(segment) { owner = segment; }
+        public override AccessibleRole Role { get { return AccessibleRole.ComboBox; } }
+        public override string Value { get { return owner.options[owner.selected]; } set { } }
+    }
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        var g = e.Graphics; g.Clear(BackColor); g.SmoothingMode = SmoothingMode.AntiAlias; float s = g.DpiX / 96F;
+        using (var path = ShareStyle.Rounded(new RectangleF(0.5F, 0.5F, Width - 1, Height - 1), 8 * s)) using (var fill = new SolidBrush(Color.FromArgb(232, 236, 243))) g.FillPath(fill, path);
+        for (int i = 0; i < options.Length; ++i) {
+            var r = Part(i);
+            if (i == selected) using (var path = ShareStyle.Rounded(new RectangleF(r.X, r.Y, r.Width, r.Height), 6 * s)) using (var fill = new SolidBrush(Color.White)) using (var edge = new Pen(ShareStyle.Border)) { g.FillPath(fill, path); g.DrawPath(edge, path); }
+            TextRenderer.DrawText(g, options[i], Font, r, i == selected ? ShareStyle.Ink : ShareStyle.Muted, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
+        }
+        if (Focused && ShowFocusCues) using (var path = ShareStyle.Rounded(new RectangleF(1, 1, Width - 3, Height - 3), 8 * s)) using (var pen = new Pen(ShareStyle.Blue, s)) g.DrawPath(pen, path);
+    }
+}
+// Small pill with a coloured dot: 已連線, 連線中, 已暫停 …
+sealed class ShareBadge : Control
+{
+    Color ink = ShareStyle.Muted, fill = ShareStyle.Field;
+    public ShareBadge() { SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer, true); }
+    public void Set(string text, Color foreground, Color background) { if (Text == text && ink == foreground) return; Text = text; ink = foreground; fill = background; Invalidate(); }
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        var g = e.Graphics; g.Clear(BackColor); g.SmoothingMode = SmoothingMode.AntiAlias; float s = g.DpiX / 96F;
+        var size = TextRenderer.MeasureText(g, Text, Font, Size.Empty, TextFormatFlags.NoPadding);
+        float w = Math.Min(Width - 1, size.Width + 30 * s);
+        using (var path = ShareStyle.Rounded(new RectangleF(0.5F, 0.5F, w, Height - 1), (Height - 1) / 2F)) using (var b = new SolidBrush(fill)) g.FillPath(b, path);
+        using (var b = new SolidBrush(ink)) g.FillEllipse(b, 10 * s, Height / 2F - 3 * s, 6 * s, 6 * s);
+        TextRenderer.DrawText(g, Text, Font, new Rectangle((int)(20 * s), 0, (int)(w - 20 * s), Height), ink, TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | TextFormatFlags.EndEllipsis);
+    }
+}
+// Miniature of the screen arrangement on the connection card.
+sealed class ShareScreenMap : Control
+{
+    public sealed class Tile { public Point Cell; public string Name; public bool Self, Placeholder; }
+    public List<Tile> Tiles = new List<Tile>();
+    public ShareScreenMap() { SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true); }
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        var g = e.Graphics; g.Clear(BackColor); g.SmoothingMode = SmoothingMode.AntiAlias; float s = g.DpiX / 96F;
+        using (var path = ShareStyle.Rounded(new RectangleF(0.5F, 0.5F, Width - 1, Height - 1), 10 * s)) using (var b = new SolidBrush(ShareStyle.Background)) g.FillPath(b, path);
+        if (Tiles.Count == 0) return;
+        int minX = Tiles.Min(t => t.Cell.X), maxX = Tiles.Max(t => t.Cell.X), minY = Tiles.Min(t => t.Cell.Y), maxY = Tiles.Max(t => t.Cell.Y);
+        int cols = maxX - minX + 1, rows = maxY - minY + 1; float gap = 8 * s, label = 16 * s;
+        float cw = Math.Min(76 * s, (Width - 16 * s - gap * (cols - 1)) / cols), ch = Math.Min(48 * s, (Height - 12 * s - (gap + label) * rows) / rows);
+        cw = Math.Min(cw, ch * 1.6F); ch = Math.Min(ch, cw / 1.6F);
+        float totalW = cols * cw + (cols - 1) * gap, totalH = rows * (ch + label) + (rows - 1) * gap;
+        float x0 = (Width - totalW) / 2, y0 = (Height - totalH) / 2;
+        foreach (var t in Tiles) {
+            var r = new RectangleF(x0 + (t.Cell.X - minX) * (cw + gap), y0 + (t.Cell.Y - minY) * (ch + label + gap), cw, ch);
+            using (var path = ShareStyle.Rounded(r, 5 * s))
+            using (var fill = new SolidBrush(t.Self ? ShareStyle.Tint : Color.White))
+            using (var edge = new Pen(t.Self ? ShareStyle.Blue : ShareStyle.Border, (t.Self ? 1.5F : 1F) * s) { DashStyle = t.Placeholder ? DashStyle.Dash : DashStyle.Solid }) {
+                if (!t.Placeholder) g.FillPath(fill, path); g.DrawPath(edge, path);
+            }
+            if (t.Self) using (var pen = new Pen(ShareStyle.Blue, 1.5F * s)) {
+                // A mouse outline marks the computer whose keyboard and mouse are used.
+                float mx = r.X + r.Width / 2, my = r.Y + r.Height / 2;
+                g.DrawEllipse(pen, mx - 5 * s, my - 8 * s, 10 * s, 16 * s); g.DrawLine(pen, mx, my - 8 * s, mx, my - 3 * s);
+            }
+            TextRenderer.DrawText(g, t.Name, Font, Rectangle.Round(new RectangleF(r.X - gap / 2, r.Bottom + 1, r.Width + gap, label)), t.Placeholder ? ShareStyle.Faint : ShareStyle.Muted, TextFormatFlags.HorizontalCenter | TextFormatFlags.Top | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
+        }
+    }
+}
+sealed class ListHeader { public readonly string Text; public ListHeader(string text) { Text = text; } public override string ToString() { return Text; } }
+// Nearby computers as rows: icon, name, system and address, and the pairing state or an invite button.
+sealed class ShareDeviceList : ListBox
+{
+    public Func<NearbyDevice, int> State = d => 0;          // 0 available, 1 paired, 2 paired but offline
+    public Func<NearbyDevice, string> System = d => "電腦";
+    public Func<bool> CanInvite = () => false;
+    public event Action<NearbyDevice> InviteRequested;
+    float scale = 1;
+    public ShareDeviceList() { DrawMode = DrawMode.OwnerDrawVariable; BorderStyle = BorderStyle.FixedSingle; IntegralHeight = false; BackColor = Color.White; }
+    protected override void OnHandleCreated(EventArgs e) { using (var g = CreateGraphics()) scale = g.DpiX / 96F; base.OnHandleCreated(e); }
+    protected override void OnMeasureItem(MeasureItemEventArgs e) { using (var g = CreateGraphics()) scale = g.DpiX / 96F; e.ItemHeight = (int)((e.Index >= 0 && Items[e.Index] is ListHeader ? 26 : 52) * scale); base.OnMeasureItem(e); }
+    Rectangle InviteBounds(Rectangle row) { int w = (int)(92 * scale), h = (int)(28 * scale); return new Rectangle(row.Right - w - (int)(12 * scale), row.Y + (row.Height - h) / 2, w, h); }
+    protected override void OnSelectedIndexChanged(EventArgs e)
+    {
+        // Headers are not selectable; move to the next computer.
+        if (SelectedIndex >= 0 && Items[SelectedIndex] is ListHeader) { SelectedIndex = SelectedIndex + 1 < Items.Count ? SelectedIndex + 1 : -1; return; }
+        Invalidate(); base.OnSelectedIndexChanged(e);
+    }
+    protected override void OnMouseClick(MouseEventArgs e)
+    {
+        base.OnMouseClick(e);
+        int index = IndexFromPoint(e.Location); if (index < 0) return;
+        var device = Items[index] as NearbyDevice;
+        if (device != null && State(device) == 0 && CanInvite() && InviteBounds(GetItemRectangle(index)).Contains(e.Location)) { var h = InviteRequested; if (h != null) h(device); }
+    }
+    protected override void OnDoubleClick(EventArgs e) { base.OnDoubleClick(e); var device = SelectedItem as NearbyDevice; if (device != null && State(device) == 0 && CanInvite()) { var h = InviteRequested; if (h != null) h(device); } }
+    protected override void OnDrawItem(DrawItemEventArgs e)
+    {
+        if (e.Index < 0) return;
+        var g = e.Graphics; var row = e.Bounds; g.SmoothingMode = SmoothingMode.AntiAlias; float s = scale;
+        var header = Items[e.Index] as ListHeader;
+        if (header != null) {
+            using (var b = new SolidBrush(ShareStyle.Background)) g.FillRectangle(b, row);
+            TextRenderer.DrawText(g, header.Text, new Font(Font.FontFamily, 8.5F), new Rectangle(row.X + (int)(14 * s), row.Y, row.Width, row.Height), ShareStyle.Muted, TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
+            return;
+        }
+        var device = (NearbyDevice)Items[e.Index]; int state = State(device);
+        bool selected = (e.State & DrawItemState.Selected) != 0;
+        using (var b = new SolidBrush(selected ? Color.FromArgb(243, 247, 255) : Color.White)) g.FillRectangle(b, row);
+        if (e.Index + 1 < Items.Count && !(Items[e.Index + 1] is ListHeader)) using (var pen = new Pen(Color.FromArgb(236, 240, 246))) g.DrawLine(pen, row.X + 14 * s, row.Bottom - 1, row.Right - 14 * s, row.Bottom - 1);
+        Color ink = state == 2 ? ShareStyle.Faint : ShareStyle.Ink;
+        // Screen icon: a Mac gets a thinner bezel and a stand, a Windows PC a laptop base.
+        float ix = row.X + 16 * s, iy = row.Y + row.Height / 2F - 9 * s;
+        using (var pen = new Pen(state == 2 ? ShareStyle.Faint : ShareStyle.Muted, 1.4F * s)) {
+            g.DrawRectangle(pen, ix, iy, 22 * s, 14 * s);
+            if (System(device) == "Mac") { g.DrawLine(pen, ix + 11 * s, iy + 14 * s, ix + 11 * s, iy + 18 * s); g.DrawLine(pen, ix + 6 * s, iy + 18 * s, ix + 16 * s, iy + 18 * s); }
+            else g.DrawLine(pen, ix - 3 * s, iy + 17 * s, ix + 25 * s, iy + 17 * s);
+        }
+        int textX = row.X + (int)(52 * s), right = row.Right - (int)(120 * s);
+        TextRenderer.DrawText(g, device.Name, Font, new Rectangle(textX, row.Y + (int)(8 * s), right - textX, (int)(20 * s)), ink, TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
+        string detail = System(device) + (device.Address.Length > 0 ? " · " + device.Address : "");
+        TextRenderer.DrawText(g, detail, new Font(Font.FontFamily, 8.5F), new Rectangle(textX, row.Y + (int)(28 * s), right - textX, (int)(18 * s)), ShareStyle.Faint, TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
+        var action = InviteBounds(row);
+        if (state == 1) TextRenderer.DrawText(g, "✓ 已配對", Font, action, ShareStyle.Green, TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
+        else if (state == 2) TextRenderer.DrawText(g, "已配對 · 離線", new Font(Font.FontFamily, 8.5F), action, ShareStyle.Faint, TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
+        else if (CanInvite()) {
+            using (var path = ShareStyle.Rounded(action, 7 * s)) using (var b = new SolidBrush(ShareStyle.Blue)) g.FillPath(b, path);
+            TextRenderer.DrawText(g, "邀請配對", new Font(Font.FontFamily, 9F), action, Color.White, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
+        }
+    }
+}
+// Six-digit pairing code in two groups of three.
+sealed class ShareCode : Control
+{
+    public ShareCode() { SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer, true); }
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        var g = e.Graphics; g.Clear(BackColor); g.SmoothingMode = SmoothingMode.AntiAlias; float s = g.DpiX / 96F;
+        string code = Text ?? ""; if (code.Length == 0) return;
+        float gap = 6 * s, group = 14 * s, w = Math.Min(44 * s, (Width - gap * (code.Length - 1) - group) / code.Length), h = Height - 2;
+        float total = code.Length * w + (code.Length - 1) * gap + (code.Length > 3 ? group : 0), x = (Width - total) / 2;
+        using (var font = new Font("Consolas", 22F, FontStyle.Bold))
+            for (int i = 0; i < code.Length; ++i) {
+                if (i == 3) x += group;
+                var r = new RectangleF(x, 1, w, h);
+                using (var path = ShareStyle.Rounded(r, 8 * s)) using (var b = new SolidBrush(ShareStyle.Field)) using (var edge = new Pen(ShareStyle.Border)) { g.FillPath(b, path); g.DrawPath(edge, path); }
+                TextRenderer.DrawText(g, code[i].ToString(), font, Rectangle.Round(r), ShareStyle.Blue, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
+                x += w + gap;
+            }
+    }
 }
 sealed class ShareWindow : Form
 {
-    readonly ShareComboBox role = new ShareComboBox(), position = new ShareComboBox(), nearby = new ShareComboBox();
-    readonly Label positionHint = new Label(), status = new Label(), peerLabel = new Label(), emptyNearby = new Label(), network = new Label();
-    readonly LinkLabel update = new LinkLabel();
+    readonly ShareComboBox role = new ShareComboBox(), position = new ShareComboBox();
+    readonly ShareDeviceList nearby = new ShareDeviceList();
+    readonly Label positionHint = new Label(), status = new Label(), peerLabel = new Label(), emptyNearby = new Label(), roleLabel = new Label(), nearbyCount = new Label(), bannerText = new Label();
+    readonly Panel body = new Panel(), banner = new Panel();
+    readonly ShareSegment segment = new ShareSegment("主控端", "接收端");
+    readonly ShareBadge badge = new ShareBadge();
+    readonly ShareScreenMap map = new ShareScreenMap();
+    readonly TextBox filter = new TextBox();
+    readonly ShareButton cancelSend = new ShareButton(), bannerDownload = new ShareButton { Primary = true }, bannerClose = new ShareButton { Quiet = true };
+    // dismissedUpdate: the version whose banner was closed; connections: core sessions currently up.
+    string dismissedUpdate; int connections;
     readonly System.Windows.Forms.Timer updateTimer = new System.Windows.Forms.Timer { Interval = 6 * 60 * 60 * 1000 };
     string updateUrl, announcedUpdate;
     readonly TextBox address = new TextBox(), details = new TextBox();
@@ -493,7 +675,7 @@ sealed class ShareWindow : Form
     // Paired computers: every receiver for a host, the one host for a receiver (fingerprint -> name).
     readonly Dictionary<string, string> peers = new Dictionary<string, string>();
     readonly ShareButton arrange = new ShareButton();
-    bool manualUpdateCheck, closing, loading = true, enabled = true, discoveryReady, started, transferring, keepServiceCore;
+    bool balloonOpensUpdate, manualUpdateCheck, closing, loading = true, enabled = true, discoveryReady, started, transferring, keepServiceCore;
     readonly CheckBox autostart = new CheckBox();
     readonly ShareProgress progress = new ShareProgress();
     ShareTransferPopup popup;
@@ -514,7 +696,7 @@ sealed class ShareWindow : Form
         if (!(c is ShareCard)) foreach (var card in cards) if (card.Bounds.Contains(bounds)) {
             c.SetBounds(x-card.Left,y-card.Top,width,height); card.Controls.Add(c); c.BringToFront(); return;
         }
-        c.Bounds=bounds; Controls.Add(c); c.BringToFront();
+        c.Bounds=bounds; body.Controls.Add(c); c.BringToFront();
         if (c is ShareCard) { c.TabIndex=cards.Count; cards.Add((ShareCard)c); }
     }
     void LabelAt(string text, int x, int y, int width) { At(new Label { Text = text }, x, y, width, 26); }
@@ -523,43 +705,61 @@ sealed class ShareWindow : Form
         SuspendLayout();
         testing = selfTest; Text = "Barrier Share " + ShareUpdate.Label;
         Font = new Font("Microsoft JhengHei UI", 11F); AutoScaleDimensions=new SizeF(96F,96F); AutoScaleMode=AutoScaleMode.Dpi;
-        ClientSize = new Size(800, 654); BackColor = ShareStyle.Background; ForeColor = ShareStyle.Ink;
-        AutoScroll=true; AutoScrollMinSize=ClientSize;
+        ClientSize = new Size(720, 608); BackColor = ShareStyle.Background; ForeColor = ShareStyle.Ink;
         FormBorderStyle = FormBorderStyle.FixedSingle; MaximizeBox = false; StartPosition = FormStartPosition.CenterScreen; Icon = System.Drawing.Icon.ExtractAssociatedIcon(Application.ExecutablePath);
-        At(new Label { Text = "Barrier Share", Font = new Font("Segoe UI", 24F, FontStyle.Bold), ForeColor = ShareStyle.Ink }, 24, 20, 520, 44);
-        At(new Label { Text = "同一張桌面，連上兩台電腦。", ForeColor = ShareStyle.Muted }, 26, 68, 600, 26);
-        network.Text = "●  區域網路"; network.ForeColor = ShareStyle.Blue; network.Font = new Font(Font.FontFamily,10F); network.TextAlign = ContentAlignment.MiddleRight; At(network, 620, 34, 156, 30);
-        update.Font = new Font(Font.FontFamily,10F,FontStyle.Bold); update.TextAlign = ContentAlignment.MiddleRight; update.LinkColor = update.ActiveLinkColor = ShareStyle.Blue; update.Visible = false; update.TabIndex = 7; At(update, 552, 34, 224, 30);
-        update.LinkClicked += delegate { if (updateUrl != null) try { Process.Start(new ProcessStartInfo(updateUrl) { UseShellExecute = true }); } catch (Exception e) { Error(e); } };
-        foreach (var bounds in new[] { new Rectangle(24,108,752,108), new Rectangle(24,232,444,244), new Rectangle(484,232,292,244), new Rectangle(24,492,752,92) }) At(new ShareCard(),bounds.X,bounds.Y,bounds.Width,bounds.Height);
-        At(new ComputerMark { BackColor = Color.White },44,138,48,48);
-        At(new Label { Text = "這台電腦", BackColor = Color.White, ForeColor = ShareStyle.Muted, Font = new Font(Font.FontFamily,10F) },108,125,280,24);
-        At(new Label { Text = Environment.MachineName, BackColor = Color.White, Font = new Font(Font.FontFamily,16F,FontStyle.Bold), AutoEllipsis = true },108,153,288,36);
-        At(new Label { Text = "角色", BackColor = Color.White, ForeColor = ShareStyle.Muted, Font=new Font(Font.FontFamily,10F) },432,125,320,24);
-        At(role,432,151,320,42); role.AccessibleName="這台電腦的角色"; role.TabIndex=0;
+        // An update banner sits above everything; the window grows by its height while it shows.
+        banner.Dock = DockStyle.Top; banner.Height = 44; banner.BackColor = ShareStyle.Tint; banner.Visible = false;
+        bannerText.ForeColor = ShareStyle.BlueInk; bannerText.TextAlign = ContentAlignment.MiddleLeft; bannerText.Font = new Font(Font.FontFamily,10F); bannerText.AutoEllipsis = true; bannerText.Bounds = new Rectangle(24,0,500,44);
+        bannerDownload.Text = "下載更新"; bannerDownload.BackColor = ShareStyle.Tint; bannerDownload.Font = new Font(Font.FontFamily,10F); bannerDownload.Bounds = new Rectangle(560,7,104,30);
+        bannerClose.Text = "✕"; bannerClose.BackColor = ShareStyle.Tint; bannerClose.Bounds = new Rectangle(668,7,30,30); bannerClose.AccessibleName = "稍後再說";
+        banner.Controls.AddRange(new Control[] { bannerText, bannerDownload, bannerClose });
+        bannerDownload.Click += delegate { OpenUpdate(); };
+        bannerClose.Click += delegate { dismissedUpdate = announcedUpdate; SetBanner(false); };
+        body.Dock = DockStyle.Fill; body.BackColor = ShareStyle.Background; body.AutoScroll = true; body.AutoScrollMinSize = new Size(720, 608);
+        Controls.Add(body); Controls.Add(banner);
+        // Header: this computer and its role.
+        At(new ComputerMark { BackColor = ShareStyle.Background },24,20,44,44);
+        At(new Label { Text = Environment.MachineName, Font = new Font(Font.FontFamily,15F,FontStyle.Bold), AutoEllipsis = true },80,16,420,30);
+        roleLabel.ForeColor = ShareStyle.Muted; roleLabel.Font = new Font(Font.FontFamily,10F); At(roleLabel,80,46,420,22);
+        segment.AccessibleName = "這台電腦的角色"; segment.Font = new Font(Font.FontFamily,10F); segment.TabIndex = 0; At(segment,520,26,176,34);
+        role.Visible = false; role.AccessibleName = "這台電腦的角色"; At(role,0,0,10,10);
         role.Items.AddRange(new object[] { "主控端 · 使用這台的鍵盤滑鼠", "接收端 · 等待主控端邀請" });
-        At(new Label { Text = "附近電腦", BackColor = Color.White, Font = new Font(Font.FontFamily,13F,FontStyle.Bold) },44,252,260,30);
-        search.Text = "重新搜尋"; search.BackColor = Color.White; search.Font=new Font(Font.FontFamily,10F); At(search,336,248,108,36); search.TabIndex=0;
-        At(nearby,44,305,400,42); nearby.AccessibleName="附近的電腦"; nearby.TabIndex=1; nearby.DropDownWidth=500;
-        emptyNearby.Text = "正在尋找附近的電腦…\r\n請在另一台開啟程式，並選擇另一個角色。"; emptyNearby.BackColor=Color.White; emptyNearby.ForeColor=ShareStyle.Muted; At(emptyNearby,44,303,400,64);
-        At(new Label { Text = "首次連線需核對短碼，並由雙方同意。", BackColor = Color.White, ForeColor = ShareStyle.Muted, Font=new Font(Font.FontFamily,10F) },44,375,400,26);
-        pair.Text = "邀請配對  →"; pair.BackColor=Color.White; pair.Font = new Font(Font.FontFamily,11F,FontStyle.Bold); At(pair,44,416,400,40); pair.TabIndex=2;
-        At(new Label { Text = "連線狀態", BackColor = Color.White, Font = new Font(Font.FontFamily,13F,FontStyle.Bold) },504,252,252,30);
-        status.BackColor = Color.White; status.ForeColor = ShareStyle.Blue; status.Font = new Font(Font.FontFamily,12F,FontStyle.Bold); At(status,504,305,252,76);
-        peerLabel.BackColor=Color.White; peerLabel.ForeColor=ShareStyle.Muted; peerLabel.AutoEllipsis=true; peerLabel.Font=new Font(Font.FontFamily,10F); At(peerLabel,504,382,252,38);
-        start.Text = "恢復連線"; stop.Text = "暫停"; start.BackColor=stop.BackColor=Color.White; At(start,504,422,148,34); At(stop,664,422,92,34); start.TabIndex=0; stop.TabIndex=1;
-        At(new Label { Text="螢幕位置", BackColor=Color.White, Font=new Font(Font.FontFamily,13F,FontStyle.Bold) },44,511,184,30);
-        At(new Label { Text="游標從哪一側移過去", BackColor=Color.White, ForeColor=ShareStyle.Muted, Font=new Font(Font.FontFamily,10F) },44,544,200,24);
-        At(position,260,516,340,42); position.AccessibleName="接收端的螢幕位置"; position.TabIndex=0;
-        arrange.Text="排列螢幕…"; arrange.BackColor=Color.White; arrange.Font=new Font(Font.FontFamily,10F); arrange.TabIndex=1; At(arrange,612,516,140,42); arrange.Click += delegate { ShowLayout(); };
-        position.Items.AddRange(new object[] { "接收端在右邊  →", "接收端在左邊  ←", "接收端在上方  ↑", "接收端在下方  ↓" }); position.SelectedIndex=0;
-        positionHint.Text="由主控端設定兩台螢幕的相對位置"; positionHint.BackColor=Color.White; positionHint.ForeColor=ShareStyle.Muted; At(positionHint,260,522,340,42);
-        forget.Text="解除配對"; clear.Text="清除暫存"; forget.BackColor=clear.BackColor=ShareStyle.Background; forget.Font=clear.Font=new Font(Font.FontFamily,10F); At(forget,24,602,108,36); At(clear,144,602,108,36); forget.TabIndex=4; clear.TabIndex=5;
-        var diagnosticButton = new ShareButton { Text="診斷紀錄", BackColor=ShareStyle.Background, Font=new Font(Font.FontFamily,10F), TabIndex=6 }; At(diagnosticButton,656,602,120,36); diagnosticButton.Click += delegate { ShowDiagnostics(); };
-        autostart.Text="登入時自動啟動"; autostart.BackColor=ShareStyle.Background; autostart.Font=new Font(Font.FontFamily,10F); autostart.TabIndex=5; At(autostart,272,602,170,36);
+        segment.Changed += delegate { if (role.SelectedIndex != segment.Selected) role.SelectedIndex = segment.Selected; };
+        role.SelectedIndexChanged += delegate { segment.Selected = role.SelectedIndex; roleLabel.Text = role.SelectedIndex == 0 ? "主控端 · 使用這台的鍵盤滑鼠" : "接收端 · 由主控端操作"; };
+        // Connection card: state, what to do next, and a small map of the screens.
+        At(new ShareCard(),24,84,672,168);
+        badge.BackColor = Color.White; At(badge,44,102,120,24);
+        status.BackColor = Color.White; status.ForeColor = ShareStyle.Ink; status.Font = new Font(Font.FontFamily,13F,FontStyle.Bold); status.AutoEllipsis = true; At(status,44,130,412,50);
+        peerLabel.BackColor = Color.White; peerLabel.ForeColor = ShareStyle.Muted; peerLabel.AutoEllipsis = true; peerLabel.Font = new Font(Font.FontFamily,10F); At(peerLabel,44,180,412,24);
+        foreach (var b in new[] { stop, start, arrange, cancelSend }) { b.BackColor = Color.White; b.Font = new Font(Font.FontFamily,10F); }
+        stop.Text = "暫停共用"; start.Text = "繼續共用"; arrange.Text = "排列螢幕"; cancelSend.Text = "取消傳送";
+        At(stop,44,208,112,32); At(start,44,208,112,32); At(arrange,166,208,112,32); At(cancelSend,288,208,112,32);
+        stop.TabIndex = 0; start.TabIndex = 1; arrange.TabIndex = 2; cancelSend.TabIndex = 3; cancelSend.Visible = false;
+        arrange.Click += delegate { ShowLayout(); }; cancelSend.Click += delegate { if (transferring) CancelTransfer(); };
+        map.BackColor = Color.White; map.Font = new Font(Font.FontFamily,8.5F); At(map,472,100,204,132);
+        // Nearby computers: paired ones first, a search box once the list gets long.
+        At(new Label { Text = "附近電腦", Font = new Font(Font.FontFamily,11F,FontStyle.Bold) },24,270,100,28);
+        nearbyCount.ForeColor = ShareStyle.Muted; nearbyCount.Font = new Font(Font.FontFamily,10F); At(nearbyCount,124,272,120,24);
+        filter.AccessibleName = "搜尋名稱或 IP"; filter.Font = new Font(Font.FontFamily,10F); filter.Visible = false; At(filter,352,270,234,28);
+        filter.HandleCreated += delegate { SendMessage(filter.Handle, 0x1501 /* EM_SETCUEBANNER */, new IntPtr(1), "搜尋名稱或 IP"); };
+        filter.TextChanged += delegate { RebuildNearby(); };
+        search.Text = "重新搜尋"; search.Quiet = true; search.BackColor = ShareStyle.Background; search.Font = new Font(Font.FontFamily,10F); At(search,596,268,100,32); search.TabIndex = 1;
+        nearby.AccessibleName = "附近的電腦"; nearby.Font = new Font(Font.FontFamily,10F); nearby.TabIndex = 2; At(nearby,24,306,672,236);
+        nearby.State = d => d.Offline ? 2 : peers.ContainsKey(d.Fingerprint) ? 1 : 0;
+        nearby.System = d => { string system; return ShareSettings.Platforms.TryGetValue(d.Fingerprint, out system) ? (system == "mac" ? "Mac" : "Windows") : "電腦"; };
+        nearby.CanInvite = () => Host && link != null && consent == null;
+        nearby.InviteRequested += device => { nearby.SelectedItem = device; DoPair(); };
+        emptyNearby.BackColor = Color.White; emptyNearby.ForeColor = ShareStyle.Muted; emptyNearby.TextAlign = ContentAlignment.MiddleCenter; emptyNearby.BorderStyle = BorderStyle.FixedSingle; At(emptyNearby,24,306,672,236);
+        // Footer: everyday switches; the rarely used actions sit under 更多.
+        At(new Panel { BackColor = ShareStyle.Border },0,556,720,1);
+        autostart.Text = "登入時自動啟動"; autostart.BackColor = ShareStyle.Background; autostart.Font = new Font(Font.FontFamily,10F); autostart.TabIndex = 5; At(autostart,24,568,200,28);
         try { autostart.Checked = !selfTest && ShareLogin.Enabled; } catch (Exception) { }
         autostart.CheckedChanged += delegate { if (!testing) try { ShareLogin.Enabled = autostart.Checked; } catch (Exception e) { Error(e); } };
-        var advancedButton = new ShareButton { Text="進階設定", BackColor=ShareStyle.Background, Font=new Font(Font.FontFamily,10F), TabIndex=6 }; At(advancedButton,524,602,120,36); advancedButton.Click += delegate { ShowAdvanced(); };
+        var advancedButton = new ShareButton { Text = "進階設定", Quiet = true, BackColor = ShareStyle.Background, Font = new Font(Font.FontFamily,10F), TabIndex = 6 }; At(advancedButton,412,566,96,32); advancedButton.Click += delegate { ShowAdvanced(); };
+        var diagnosticButton = new ShareButton { Text = "診斷紀錄", Quiet = true, BackColor = ShareStyle.Background, Font = new Font(Font.FontFamily,10F), TabIndex = 7 }; At(diagnosticButton,512,566,96,32); diagnosticButton.Click += delegate { ShowDiagnostics(); };
+        var more = new ShareButton { Text = "更多  ▾", Quiet = true, BackColor = ShareStyle.Background, Font = new Font(Font.FontFamily,10F), TabIndex = 8 }; At(more,612,566,84,32);
+        more.Click += delegate { BuildMoreMenu().Show(more, new Point(more.Width - 1, more.Height), ToolStripDropDownDirection.BelowLeft); };
+        forget.Text = "解除配對"; clear.Text = "清除暫存"; pair.Text = "邀請配對";
         details.Multiline=true; details.ReadOnly=true; details.ScrollBars=ScrollBars.Vertical; details.Font=new Font("Consolas",9F); details.BackColor=Color.FromArgb(249,251,255); details.BorderStyle=BorderStyle.None;
         // A multiline TextBox has no Ctrl+A of its own.
         details.KeyDown += delegate(object sender, KeyEventArgs e) { if (e.Control && e.KeyCode == Keys.A) { details.SelectAll(); e.SuppressKeyPress = true; } };
@@ -587,6 +787,7 @@ sealed class ShareWindow : Form
         };
         menu.Items.Add("結束", null, delegate { closing = true; Close(); }); tray.Icon = Icon; tray.Text = "Barrier Share " + ShareUpdate.Label; tray.ContextMenuStrip = menu; tray.Visible = !testing;
         tray.DoubleClick += delegate { ShowWindow(); };
+        tray.BalloonTipClicked += delegate { if (balloonOpensUpdate) OpenUpdate(); };
         start.Click += delegate {
             // While a file is moving the same button cancels it: restarting the connection drops the partial copy on both sides.
             if (transferring) { CancelTransfer(); return; }
@@ -598,17 +799,7 @@ sealed class ShareWindow : Form
         autoPaste.Note += Diagnose;
         stop.Click += delegate { enabled = false; StopLink(); StopBackend(); status.Text = "已暫停；不接受邀請，也不會自動重連。"; UpdateControls(); };
         search.Click += delegate { Send("SEARCH"); status.Text = "正在搜尋同一區網的電腦…"; };
-        pair.Click += delegate { var peer = nearby.SelectedItem as NearbyDevice; if (peer != null) { StopBackend(); Send("PAIR\t" + peer.Fingerprint); status.Text = "正在發出邀請…"; } };
-        forget.Click += delegate {
-            if (peers.Count > 1) {
-                // Several receivers: choose one, or all of them.
-                var choices = new ContextMenuStrip();
-                foreach (var peer in peers.ToList()) { string fp = peer.Key; choices.Items.Add("解除「" + peer.Value + "」", null, delegate { Forget("FORGET\t" + fp, "解除與「" + peers[fp] + "」的配對？"); }); }
-                choices.Items.Add(new ToolStripSeparator()); choices.Items.Add("全部解除", null, delegate { Forget("FORGET", "解除所有配對？"); });
-                choices.Show(forget, new Point(0, forget.Height)); return;
-            }
-            Forget("FORGET", "解除後不會自動連線，需要重新邀請並經對方同意。");
-        };
+        pair.Click += delegate { DoPair(); };
         clear.Click += delegate { ClearCache(); };
         role.SelectedIndexChanged += delegate { if (!loading) { try { StopLink(); StopBackend(); RefreshRole(); if (enabled) StartLink(); } catch (Exception e) { Error(e); } } };
         position.SelectedIndexChanged += delegate {
@@ -630,7 +821,7 @@ sealed class ShareWindow : Form
         FormClosing += delegate(object sender, FormClosingEventArgs e) {
             // On sign-out or shutdown the service keeps the core running for the sign-in screen.
             if (e.CloseReason == CloseReason.WindowsShutDown) { closing = true; keepServiceCore = true; }
-            if (!closing && !testing) { e.Cancel = true; Hide(); tray.ShowBalloonTip(1500, "Barrier Share", "程式已收至系統匣；可從圖示開啟或結束。", ToolTipIcon.Info); return; }
+            if (!closing && !testing) { e.Cancel = true; Hide(); Balloon(1500, "Barrier Share", "程式已收至系統匣；可從圖示開啟或結束。", ToolTipIcon.Info); return; }
             closing = true; retry.Stop(); updateTimer.Stop(); StopLink(); StopBackend(); autoPaste.Dispose(); popup.Dismiss(); popup.Dispose(); tray.Dispose();
         };
     }
@@ -685,6 +876,72 @@ sealed class ShareWindow : Form
         FormClosed += delegate { timer.Dispose(); };
         Shown += delegate { timer.Start(); };
     }
+    [System.Runtime.InteropServices.DllImport("user32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)] static extern IntPtr SendMessage(IntPtr window, int message, IntPtr wParam, string lParam);
+    NearbyDevice SelectedDevice { get { return nearby.SelectedItem as NearbyDevice; } }
+    void DoPair()
+    {
+        var peer = SelectedDevice;
+        if (peer == null || peer.Offline || peers.ContainsKey(peer.Fingerprint) || !Host || link == null || consent != null) return;
+        StopBackend(); Send("PAIR\t" + peer.Fingerprint); status.Text = "正在發出邀請…";
+    }
+    // Paired computers first (offline ones greyed), then the others by name, filtered by the search box.
+    void RebuildNearby()
+    {
+        string keep = SelectedDevice != null ? SelectedDevice.Fingerprint : null, query = filter.Text.Trim().ToLowerInvariant();
+        Func<NearbyDevice, bool> match = d => query.Length == 0 || d.Name.ToLowerInvariant().Contains(query) || d.Address.Contains(query);
+        var paired = peers.Select(p => { NearbyDevice d; return devices.TryGetValue(p.Key, out d) ? d : new NearbyDevice { Fingerprint = p.Key, Name = p.Value, Address = "", Offline = true }; }).Where(match).ToList();
+        var others = devices.Values.Where(d => !peers.ContainsKey(d.Fingerprint)).Where(match).OrderBy(d => d.Name, StringComparer.CurrentCultureIgnoreCase).ToList();
+        int top = nearby.TopIndex; nearby.BeginUpdate(); nearby.Items.Clear();
+        if (paired.Count > 0) { nearby.Items.Add(new ListHeader("已配對")); foreach (var d in paired) nearby.Items.Add(d); }
+        if (others.Count > 0) { if (paired.Count > 0) nearby.Items.Add(new ListHeader("其他電腦")); foreach (var d in others) nearby.Items.Add(d); }
+        var all = nearby.Items.OfType<NearbyDevice>().ToList();
+        var chosen = all.FirstOrDefault(d => d.Fingerprint == keep) ?? all.FirstOrDefault(d => !d.Offline && !peers.ContainsKey(d.Fingerprint)) ?? all.FirstOrDefault();
+        if (chosen != null) nearby.SelectedItem = chosen;
+        if (nearby.Items.Count > 0) nearby.TopIndex = Math.Min(top, nearby.Items.Count - 1);
+        nearby.EndUpdate(); UpdateControls();
+    }
+    internal int DeviceCount { get { return nearby.Items.OfType<NearbyDevice>().Count(d => !d.Offline); } }
+    ContextMenuStrip BuildMoreMenu()
+    {
+        var menu = new ContextMenuStrip { Font = new Font(Font.FontFamily, 10F) };
+        menu.Items.Add("清除暫存檔案", null, delegate { ClearCache(); }).Enabled = clear.Enabled;
+        menu.Items.Add("關於 Barrier Share", null, delegate { MessageBox.Show(this, "Barrier Share\r\n" + ShareUpdate.Details + "\r\n\r\n以 Barrier 為基礎，在區域網路共用鍵盤、滑鼠與剪貼簿。", "關於 Barrier Share"); });
+        menu.Items.Add(new ToolStripSeparator());
+        var unpair = new ToolStripMenuItem("解除配對…") { ForeColor = ShareStyle.Danger, Enabled = forget.Enabled };
+        if (peers.Count > 1) {
+            foreach (var peer in peers.ToList()) { string fp = peer.Key; unpair.DropDownItems.Add("解除「" + peer.Value + "」", null, delegate { Forget("FORGET\t" + fp, "解除與「" + peers[fp] + "」的配對？"); }); }
+            unpair.DropDownItems.Add(new ToolStripSeparator());
+            unpair.DropDownItems.Add(new ToolStripMenuItem("全部解除", null, delegate { Forget("FORGET", "解除所有配對？"); }) { ForeColor = ShareStyle.Danger });
+        } else unpair.Click += delegate { Forget("FORGET", "解除後不會自動連線，需要重新邀請並經對方同意。"); };
+        menu.Items.Add(unpair);
+        menu.Closed += delegate { BeginInvoke((Action)menu.Dispose); };
+        return menu;
+    }
+    void OpenUpdate() { if (updateUrl != null) try { Process.Start(new ProcessStartInfo(updateUrl) { UseShellExecute = true }); } catch (Exception e) { Error(e); } }
+    void SetBanner(bool show)
+    {
+        if (banner.Visible == show) return;
+        int height = banner.Height; banner.Visible = show;
+        ClientSize = new Size(ClientSize.Width, ClientSize.Height + (show ? height : -height));
+    }
+    // The connection card's badge and screen map follow the role, pairing and connection.
+    void UpdateCard()
+    {
+        if (!enabled) badge.Set("已暫停", ShareStyle.Muted, ShareStyle.Field);
+        else if (connections > 0) badge.Set("已連線", ShareStyle.Green, ShareStyle.GreenTint);
+        else if (peers.Count > 0) badge.Set("連線中", ShareStyle.Blue, ShareStyle.Tint);
+        else badge.Set(Host ? "尚未配對" : "等待邀請", ShareStyle.Muted, ShareStyle.Field);
+        var tiles = new List<ShareScreenMap.Tile> { new ShareScreenMap.Tile { Cell = Point.Empty, Name = "這台", Self = true } };
+        if (Host) {
+            foreach (var cell in ShareSettings.Cells()) {
+                string fp = peers.Keys.FirstOrDefault(k => ShareSettings.ScreenName(k) == cell.Key);
+                if (fp != null) tiles.Add(new ShareScreenMap.Tile { Cell = cell.Value, Name = peers[fp] });
+            }
+            if (peers.Count == 0) tiles.Add(new ShareScreenMap.Tile { Cell = ShareSettings.Step(ShareSettings.Position), Name = "接收端", Placeholder = true });
+        } else tiles.Add(new ShareScreenMap.Tile { Cell = new Point(-1, 0), Name = peers.Count > 0 ? peers.Values.First() : "主控端", Placeholder = peers.Count == 0 });
+        map.Tiles = tiles; map.Invalidate();
+    }
+    void Balloon(int timeout, string title, string text, ToolTipIcon icon) { balloonOpensUpdate = false; tray.ShowBalloonTip(timeout, title, text, icon); }
     void ShowWindow() { Show(); WindowState = FormWindowState.Normal; Activate(); }
     void Error(Exception e) { status.Text = "操作未完成：" + e.Message; }
     // Offline or rate-limited checks stay silent; the local network connection never depends on them.
@@ -693,33 +950,43 @@ sealed class ShareWindow : Form
         Task.Factory.StartNew(() => ShareUpdate.Check()).ContinueWith(task => {
             if (closing || !IsHandleCreated) return;
             try { BeginInvoke((Action)delegate { bool manual = manualUpdateCheck; manualUpdateCheck = false;
-                if (task.Status == TaskStatus.RanToCompletion) { if (manual) announcedUpdate = null; ShowUpdate(task.Result); if (manual && task.Result == null) tray.ShowBalloonTip(3000, "Barrier Share", "已是最新版本（" + ShareUpdate.Label + "）。", ToolTipIcon.Info); }
-                else { LogLine("檢查更新失敗：" + task.Exception.GetBaseException().Message); if (manual) tray.ShowBalloonTip(3000, "Barrier Share", "無法檢查更新，請確認網路連線。", ToolTipIcon.Warning); } }); }
+                if (task.Status == TaskStatus.RanToCompletion) { if (manual) announcedUpdate = null; ShowUpdate(task.Result); if (manual && task.Result == null) Balloon(3000, "Barrier Share", "已是最新版本（" + ShareUpdate.Label + "）。", ToolTipIcon.Info); }
+                else { LogLine("檢查更新失敗：" + task.Exception.GetBaseException().Message); if (manual) Balloon(3000, "Barrier Share", "無法檢查更新，請確認網路連線。", ToolTipIcon.Warning); } }); }
             catch (InvalidOperationException) { }
         });
     }
     internal void ShowUpdate(ShareUpdate.Found found)
     {
-        update.Visible = found != null; network.Visible = found == null;
-        if (found == null) return;
-        updateUrl = found.Url; update.Text = "有新版 " + found.Version + "，前往下載 ↗";
-        string version = found.Version.ToString();
-        if (announcedUpdate != version && !testing) { announcedUpdate = version; tray.ShowBalloonTip(5000, "Barrier Share 有新版", "版本 " + version + " 已發布。從視窗右上角前往下載；安裝程式會自動關閉並重新開啟 Barrier Share。", ToolTipIcon.Info); }
+        if (found == null) { SetBanner(false); return; }
+        updateUrl = found.Url; string version = found.Version.ToString();
+        bannerText.Text = "有新版 " + version + " · 安裝時會自動關閉並重新開啟 Barrier Share";
+        SetBanner(dismissedUpdate != version);
+        if (announcedUpdate != version && !testing) {
+            announcedUpdate = version;
+            tray.ShowBalloonTip(5000, "Barrier Share 有新版 " + version, "點這裡下載更新，安裝時會自動重新開啟。", ToolTipIcon.Info); balloonOpensUpdate = true;
+        }
     }
     void Save() { try { ShareSettings.Save(Host, address.Text.Trim()); } catch (Exception e) { Error(e); } }
     void UpdateControls()
     {
-        transferring &= backend != null; start.Text = transferring ? "取消傳送" : "恢復連線";
-        start.Enabled = transferring || !enabled || link == null; stop.Enabled = enabled;
-        status.ForeColor = enabled ? ShareStyle.Blue : ShareStyle.Muted;
-        emptyNearby.Text = !enabled ? "搜尋已暫停\r\n恢復連線後，會重新尋找附近電腦。" : Host ? "正在尋找接收端…\r\n請在另一台選擇「接收端」，保持程式開啟。" : "尚未找到主控端。\r\n請在另一台選擇「主控端」，發出配對邀請。";
-        nearby.Visible = nearby.Items.Count > 0; emptyNearby.Visible = !nearby.Visible; pair.Text = Host ? "邀請配對  →" : "等待主控端邀請";
-        search.Enabled = link != null; pair.Enabled = Host && link != null && nearby.SelectedItem != null && consent == null;
+        transferring &= backend != null;
+        bool linkDown = enabled && link == null;
+        stop.Visible = enabled && !linkDown; start.Visible = !stop.Visible; start.Text = enabled ? "恢復連線" : "繼續共用";
+        start.Enabled = !enabled || link == null; stop.Enabled = enabled; cancelSend.Visible = transferring;
+        arrange.Visible = Host; arrange.Enabled = peers.Count > 0;
+        status.ForeColor = enabled ? ShareStyle.Ink : ShareStyle.Muted;
+        emptyNearby.Text = filter.TextLength > 0 && devices.Count > 0 ? "找不到符合的電腦" : !enabled ? "搜尋已暫停\r\n繼續共用後，會重新尋找附近電腦。" : Host ? "正在尋找接收端…\r\n請在另一台選擇「接收端」，保持程式開啟。" : "尚未找到主控端。\r\n請在另一台選擇「主控端」，發出配對邀請。";
+        nearby.Visible = nearby.Items.Count > 0; emptyNearby.Visible = !nearby.Visible;
+        nearbyCount.Text = devices.Count > 0 ? devices.Count + " 台" : "";
+        filter.Visible = devices.Count > 6 || filter.TextLength > 0;
+        var selected = SelectedDevice;
+        search.Enabled = link != null; pair.Enabled = Host && link != null && selected != null && !selected.Offline && !peers.ContainsKey(selected.Fingerprint) && consent == null;
         forget.Enabled = link != null && peers.Count != 0; clear.Enabled = !enabled && backend == null;
+        nearby.Invalidate(); UpdateCard();
     }
     void RefreshRole()
     {
-        peers.Clear(); PeersChanged(); devices.Clear(); nearby.Items.Clear(); Save();
+        peers.Clear(); devices.Clear(); PeersChanged(); Save();
         ShareSettings.Init(Host);
         status.Text = enabled ? "正在啟用區網搜尋…" : "已暫停"; UpdateControls();
     }
@@ -745,7 +1012,7 @@ sealed class ShareWindow : Form
             try { if (!process.HasExited) { process.StandardInput.WriteLine("QUIT"); process.StandardInput.Flush(); if (!process.WaitForExit(2000)) process.Kill(); } } catch (InvalidOperationException) { } catch (IOException) { }
             process.Dispose();
         }
-        devices.Clear(); nearby.Items.Clear(); UpdateControls();
+        devices.Clear(); RebuildNearby();
     }
     static string Decode(string value) { return Encoding.UTF8.GetString(Convert.FromBase64String(value)); }
     void Post(Process process, string line, bool protocol)
@@ -761,11 +1028,9 @@ sealed class ShareWindow : Form
         string[] f = line.Split('\t');
         if (f[0] == "READY") { LogLine("區網搜尋已啟動 · UDP/TCP 24801"); discoveryReady = true; if (f.Length == 2) ShareSettings.OwnFingerprint = f[1]; SendTargets(); status.Text = Host ? "正在搜尋接收端…" : "可被搜尋，等待主控端邀請…"; }
         else if (f[0] == "DEVICE" && f.Length == 6) {
-            NearbyDevice device; string selected = nearby.SelectedItem is NearbyDevice ? ((NearbyDevice)nearby.SelectedItem).Fingerprint : "";
+            NearbyDevice device;
             if (!devices.TryGetValue(f[1], out device)) { device = new NearbyDevice { Fingerprint = f[1] }; devices[f[1]] = device; }
-            device.Name = Decode(f[2]); device.Address = f[3]; nearby.Items.Clear();
-            foreach (var value in devices.Values) nearby.Items.Add(value);
-            if (devices.ContainsKey(selected)) nearby.SelectedItem = devices[selected]; else if (nearby.Items.Count > 0) nearby.SelectedIndex = 0;
+            device.Name = Decode(f[2]); device.Address = f[3]; RebuildNearby();
         } else if (f[0] == "PLATFORM" && f.Length == 3) {
             // A receiver's system decides the key mapping; restart the host core when it changes.
             string known;
@@ -773,7 +1038,7 @@ sealed class ShareWindow : Form
                 ShareSettings.Platforms[f[1]] = f[2]; Save(); LogLine("對方系統：" + f[2] + " · " + f[1].Substring(10, 16));
                 if (Host && peers.ContainsKey(f[1]) && backend != null) StopBackend();
             }
-        } else if (f[0] == "GONE" && f.Length == 2) { NearbyDevice device; if (devices.TryGetValue(f[1], out device)) { nearby.Items.Remove(device); devices.Remove(f[1]); } }
+        } else if (f[0] == "GONE" && f.Length == 2) { if (devices.Remove(f[1])) RebuildNearby(); }
         else if ((f[0] == "SAVED" || f[0] == "PAIRED") && f.Length == 3) {
             // A receiver has one host; a host's new receiver needs the core restarted with the new screen list.
             if (f[0] == "PAIRED") { StopBackend(); if (!Host) peers.Clear(); }
@@ -795,14 +1060,20 @@ sealed class ShareWindow : Form
     void ShowConsent(string[] message)
     {
         CloseConsent(); Show(); Activate(); consentId = message[1]; string id = consentId;
-        var dialog = new Form { Text = message[0] == "REQUEST" ? "收到配對邀請" : "核對配對碼", ClientSize = new Size(500, 310), BackColor = Color.White, ForeColor = ShareStyle.Ink, Font = Font, FormBorderStyle = FormBorderStyle.FixedDialog, StartPosition = FormStartPosition.CenterParent, MaximizeBox = false, MinimizeBox = false, AutoScaleDimensions=new SizeF(96F,96F), AutoScaleMode=AutoScaleMode.Dpi };
+        bool request = message[0] == "REQUEST";
+        var dialog = new Form { Text = request ? "收到配對邀請" : "核對配對碼", ClientSize = new Size(440, 372), BackColor = Color.White, ForeColor = ShareStyle.Ink, Font = new Font(Font.FontFamily, 10F), FormBorderStyle = FormBorderStyle.FixedDialog, StartPosition = FormStartPosition.CenterParent, MaximizeBox = false, MinimizeBox = false, AutoScaleDimensions=new SizeF(96F,96F), AutoScaleMode=AutoScaleMode.Dpi };
         consent = dialog;
-        var explanation = new Label { Text = Decode(message[2]) + "\r\n請確認另一台顯示相同的 6 位數配對碼。", Bounds = new Rectangle(24, 18, 452, 58) };
-        var code = new Label { Text = message[4], ForeColor = ShareStyle.Blue, Font = new Font("Consolas", 34F, FontStyle.Bold), Bounds = new Rectangle(24, 82, 452, 60), TextAlign = ContentAlignment.MiddleCenter };
-        var permission = new Label { Text = "同意後允許共用鍵盤滑鼠及雙向同步剪貼簿。\r\n配對會被記住，之後自動連線。", Bounds = new Rectangle(24, 150, 452, 55) };
-        var reject = new ShareButton { Text = "拒絕", BackColor=Color.White, Bounds = new Rectangle(24, 248, 140, 40), DialogResult = DialogResult.Cancel };
-        var accept = new ShareButton { Text = "相同，同意", Primary=true, BackColor=Color.White, Bounds = new Rectangle(176, 248, 300, 40), DialogResult = DialogResult.OK };
-        dialog.Controls.AddRange(new Control[] { explanation, code, permission, reject, accept }); dialog.CancelButton = reject; dialog.AcceptButton = reject;
+        var left = new ComputerMark { BackColor = Color.White, Bounds = new Rectangle(150, 22, 44, 44) };
+        var joint = new Label { Text = "⟷", ForeColor = ShareStyle.Faint, Font = new Font(Font.FontFamily, 14F), TextAlign = ContentAlignment.MiddleCenter, Bounds = new Rectangle(198, 28, 44, 32) };
+        var right = new ComputerMark { BackColor = Color.White, Bounds = new Rectangle(246, 22, 44, 44) };
+        var title = new Label { Text = request ? "收到配對邀請" : "核對配對碼", Font = new Font(Font.FontFamily, 14F, FontStyle.Bold), TextAlign = ContentAlignment.MiddleCenter, Bounds = new Rectangle(24, 78, 392, 32) };
+        var explanation = new Label { Text = Decode(message[2]) + "\r\n請確認另一台顯示相同的 6 位數配對碼。", ForeColor = ShareStyle.Muted, TextAlign = ContentAlignment.TopCenter, Bounds = new Rectangle(24, 112, 392, 48) };
+        var code = new ShareCode { Text = message[4], BackColor = Color.White, Bounds = new Rectangle(40, 168, 360, 60) };
+        var permission = new Label { Text = "同意後允許共用鍵盤滑鼠及雙向同步剪貼簿。\r\n配對會被記住，之後自動連線。", ForeColor = ShareStyle.Faint, Font = new Font(Font.FontFamily, 9F), TextAlign = ContentAlignment.TopCenter, Bounds = new Rectangle(24, 240, 392, 44) };
+        var reject = new ShareButton { Text = "拒絕", BackColor=Color.White, Bounds = new Rectangle(24, 304, 128, 42), DialogResult = DialogResult.Cancel };
+        var accept = new ShareButton { Text = "相同，同意配對", Primary=true, BackColor=Color.White, Bounds = new Rectangle(164, 304, 252, 42), DialogResult = DialogResult.OK };
+        // Enter rejects: agreeing always takes a deliberate click.
+        dialog.Controls.AddRange(new Control[] { left, joint, right, title, explanation, code, permission, reject, accept }); dialog.CancelButton = reject; dialog.AcceptButton = reject;
         UpdateControls(); var result = dialog.ShowDialog(this);
         if (consentId == id) { Send((result == DialogResult.OK ? "ACCEPT\t" : "REJECT\t") + id); consent = null; consentId = null; status.Text = result == DialogResult.OK ? "已同意，等待對方確認…" : "已拒絕配對。"; }
         dialog.Dispose(); UpdateControls();
@@ -837,7 +1108,7 @@ sealed class ShareWindow : Form
     }
     void StopBackend()
     {
-        var process = backend; backend = null;
+        var process = backend; backend = null; connections = 0;
         if (serviceLog != null) {
             serviceTail.Stop(); serviceLog = null;
             if (!keepServiceCore) try { ShareService.Request("STOP", 5000); } catch (Exception e) { LogLine("停止背景服務核心失敗：" + e.Message); }
@@ -848,7 +1119,8 @@ sealed class ShareWindow : Form
     void LogLine(string line)
     {
         if (details.TextLength > 24000) details.Text = details.Text.Substring(details.TextLength - 12000); details.AppendText(line + Environment.NewLine);
-        if (line.Contains("connected to server") || line.Contains("has connected")) status.Text = "已連線 · 雙向複製貼上已啟用";
+        if (line.Contains("connected to server") || line.Contains("has connected")) { status.Text = "已連線 · 雙向複製貼上已啟用"; ++connections; UpdateControls(); }
+        if (line.Contains("disconnected from server") || line.Contains("has disconnected")) { connections = Math.Max(0, connections - 1); UpdateControls(); }
         bool wasTransferring = transferring;
         if (line.Contains("file clipboard: sending")) { status.Text = "正在傳送檔案… 可繼續操作滑鼠與鍵盤"; transferring = true; progress.Reset(); }
         if (line.Contains("file clipboard: receiving")) { status.Text = "正在接收檔案… 完成後即可貼上"; transferring = true; progress.Reset(); popup.Prepare(); if (!testing) autoPaste.Start(); }
@@ -900,15 +1172,8 @@ sealed class ShareWindow : Form
     {
         Action<string> capture = delegate(string filename) {
             Application.DoEvents(); Refresh();
-            foreach (var selector in new ComboBox[] { role, position, nearby }) {
-                if (String.IsNullOrWhiteSpace(selector.AccessibilityObject.Name) || selector.DropDownStyle != ComboBoxStyle.DropDownList)
-                    throw new Exception("Native selector is missing its accessible name or list behavior");
-                if (selector.Height < selector.Font.Height + selector.Font.Height / 2 || selector.ItemHeight < selector.Font.Height)
-                    throw new Exception("Selector clips its text or has insufficient vertical spacing: " + selector.AccessibleName);
-                if (!(selector.Parent is ShareCard) || !selector.Parent.ClientRectangle.Contains(selector.Bounds))
-                    throw new Exception("Selector extends beyond its visible card: " + selector.AccessibleName);
-            }
-            foreach (var container in new Control[] { this }.Concat(cards.Cast<Control>())) {
+            if (String.IsNullOrWhiteSpace(segment.AccessibilityObject.Name) || segment.AccessibilityObject.Value != (Host ? "主控端" : "接收端")) throw new Exception("Role switch is missing its accessible name or value");
+            foreach (var container in new Control[] { body }.Concat(cards.Cast<Control>())) {
                 var visible = container.Controls.Cast<Control>().Where(control => control.Visible).ToArray();
                 for (int i = 0; i < visible.Length; ++i) {
                     if (!container.DisplayRectangle.Contains(visible[i].Bounds)) throw new Exception("Container clips control: " + visible[i].Text);
@@ -921,7 +1186,7 @@ sealed class ShareWindow : Form
             }
         };
         role.SelectedIndex = 0;
-        if (role.Items.Count != 2 || position.Items.Count != ShareSettings.Directions.Length) throw new Exception("Role or position choices are incomplete");
+        if (role.Items.Count != 2 || segment.Selected != 0) throw new Exception("Role choices are incomplete or out of step with the switch");
         // UI-only discovery fixture: no input capture or network service starts here.
         link = new Process(); LinkLine("READY");
         if (nearby.Visible || !emptyNearby.Visible || pair.Enabled) throw new Exception("Empty discovery state offers an unavailable peer");
@@ -929,8 +1194,9 @@ sealed class ShareWindow : Form
         string fp = "v2:sha256:" + new string('a', 64), name = Convert.ToBase64String(Encoding.UTF8.GetBytes("另一台電腦"));
         LinkLine("DEVICE\t" + fp + "\t" + name + "\t192.168.1.2\t24801\tR");
         LinkLine("DEVICE\t" + fp + "\t" + name + "\t192.168.1.3\t24801\tR");
-        if (nearby.Items.Count != 1 || ((NearbyDevice)nearby.Items[0]).Address != "192.168.1.3") throw new Exception("Discovery list update failed");
+        if (DeviceCount != 1 || SelectedDevice == null || SelectedDevice.Address != "192.168.1.3") throw new Exception("Discovery list update failed");
         LinkLine("SAVED\t" + fp + "\t" + name);
+        if (!(nearby.Items[0] is ListHeader) || SelectedDevice == null || pair.Enabled) throw new Exception("Paired computer is not listed under 已配對 or can be invited again");
         using (var timer = new System.Windows.Forms.Timer { Interval = 250 }) {
             timer.Tick += delegate {
                 timer.Stop();
@@ -940,25 +1206,36 @@ sealed class ShareWindow : Form
             timer.Start(); LinkLine("VERIFY\ttest-request\t" + name + "\t" + fp + "\t123456");
         }
         if (consent != null || consentId != null) throw new Exception("Expired pairing dialog remained open");
-        LinkLine("GONE\t" + fp); if (nearby.Items.Count != 0) throw new Exception("Offline peer remained listed");
+        LinkLine("GONE\t" + fp);
+        if (DeviceCount != 0 || !nearby.Items.OfType<NearbyDevice>().Any(d => d.Offline)) throw new Exception("Offline paired computer is not shown as offline");
+        capture("gui-paired-offline.png");
         peers.Clear(); PeersChanged(); LinkLine("DEVICE\t" + fp + "\t" + name + "\t192.168.1.3\t24801\tR");
-        peerLabel.Text="對方同意後，會記住這台電腦。"; status.Text="找到附近電腦\r\n可以發出配對邀請";
+        status.Text="找到附近電腦，可以發出配對邀請";
         if (!nearby.Visible || emptyNearby.Visible || !pair.Enabled) throw new Exception("Available peer cannot be invited");
         capture("gui-available.png");
+        // A long list: the search box appears and filters by name or address.
+        for (int i = 0; i < 9; ++i) LinkLine("DEVICE\tv2:sha256:" + new string((char)('0' + i), 64) + "\t" + Convert.ToBase64String(Encoding.UTF8.GetBytes("PC-" + i)) + "\t10.0.0." + (10 + i) + "\t24801\tR");
+        if (!filter.Visible || DeviceCount != 10) throw new Exception("Long list did not offer a search box");
+        capture("gui-many.png");
+        filter.Text = "10.0.0.13"; if (DeviceCount != 1 || ((NearbyDevice)nearby.Items[0]).Name != "PC-3") throw new Exception("Search did not filter by address");
+        filter.Text = "zzz"; if (nearby.Visible || emptyNearby.Text != "找不到符合的電腦") throw new Exception("Empty search result not explained");
+        filter.Text = "";
+        for (int i = 0; i < 9; ++i) LinkLine("GONE\tv2:sha256:" + new string((char)('0' + i), 64));
+        if (filter.Visible || DeviceCount != 1) throw new Exception("Search box stayed for a short list");
         string longName = Convert.ToBase64String(Encoding.UTF8.GetBytes("工作室的 Windows 11 筆記型電腦 — Design review and shared files workstation"));
         LinkLine("DEVICE\t" + fp + "\t" + longName + "\t192.168.1.3\t24801\tR");
         capture("gui-long-name.png");
         role.SelectedIndex = 1; link = new Process(); LinkLine("READY");
-        if (position.Visible || !positionHint.Visible || pair.Enabled) throw new Exception("Receiver offers host-only actions");
+        if (segment.Selected != 1 || arrange.Visible || pair.Enabled) throw new Exception("Receiver offers host-only actions");
         capture("gui-receiver.png");
         stop.PerformClick();
-        if (!start.Enabled || stop.Enabled || pair.Enabled || !clear.Enabled) throw new Exception("Paused state exposes active connection controls");
+        if (!start.Enabled || !start.Visible || stop.Visible || pair.Enabled || !clear.Enabled) throw new Exception("Paused state exposes active connection controls");
         capture("gui-paused.png");
         role.SelectedIndex = 0; enabled = true; link = new Process(); LinkLine("READY");
         LinkLine("DEVICE\t" + fp + "\t" + name + "\t192.168.1.3\t24801\tR");
-        peerLabel.Text="對方同意後，會記住這台電腦。"; status.Text="找到附近電腦\r\n可以發出配對邀請";
+        status.Text="找到附近電腦，可以發出配對邀請";
         using (var graphics = CreateGraphics()) File.WriteAllText(Path.Combine(directory, "LAYOUT-PASS.txt"),
-            "Empty, available, long-name, receiver and paused states rendered; accessible native selectors fit their cards with no visible sibling overlap. Actual render DPI: " + graphics.DpiX + " x " + graphics.DpiY + ". No simulated or physical multi-DPI claim.");
+            "Empty, paired-offline, available, long list with search, long-name, receiver and paused states rendered with no clipped or overlapping visible controls. Actual render DPI: " + graphics.DpiX + " x " + graphics.DpiY + ". No simulated or physical multi-DPI claim.");
     }
     void FollowServiceLog()
     {
@@ -995,13 +1272,15 @@ sealed class ShareWindow : Form
     {
         ShareSettings.Receivers = Host ? peers.Keys.ToList() : new List<string>();
         var names = peers.Values.ToList();
-        if (names.Count == 1) peerLabel.Text = "已配對 · " + names[0] + "\r\n重新開啟後會自動連線";
+        if (names.Count == 1 && Host) {
+            Point cell; string where = ShareSettings.Cells().TryGetValue(ShareSettings.ScreenName(peers.Keys.First()), out cell) ? new Dictionary<Point, string> { { new Point(1, 0), "右" }, { new Point(-1, 0), "左" }, { new Point(0, -1), "上" }, { new Point(0, 1), "下" } }.FirstOrDefault(d => d.Key == cell).Value : null;
+            peerLabel.Text = where != null ? "滑鼠往" + where + "移到 " + names[0] : "已配對 · " + names[0];
+        }
+        else if (names.Count == 1) peerLabel.Text = "已配對主控端 · " + names[0];
         else if (names.Count > 1) peerLabel.Text = "已配對 " + names.Count + " 台 · " + String.Join("、", names);
-        else peerLabel.Text = Host ? "選擇接收端，按「邀請配對」。" : "等待主控端邀請；首次需要你同意。";
-        // Receivers are placed only through 排列螢幕, also when there is just one, so no second control can disagree with it.
-        position.Visible = false; arrange.Visible = Host; arrange.Enabled = peers.Count > 0; positionHint.Visible = true;
-        positionHint.Text = !Host ? "由主控端設定螢幕的相對位置" : peers.Count == 0 ? "配對接收端後，按「排列螢幕」設定位置" : "已配對 " + peers.Count + " 台；按「排列螢幕」調整位置";
-        UpdateControls();
+        else peerLabel.Text = Host ? "在下方選擇接收端，按「邀請配對」。" : "等待主控端邀請；首次需要你同意。";
+        position.Visible = false; positionHint.Visible = false;
+        RebuildNearby();
     }
     internal ShareLayoutEditor BuildLayout() { return new ShareLayoutEditor(peers, Font); }
     void ShowLayout()
@@ -1009,45 +1288,84 @@ sealed class ShareWindow : Form
         using (var editor = BuildLayout()) {
             if (editor.ShowDialog(this) != DialogResult.OK) return;
             foreach (var item in editor.Placement) ShareSettings.Layout[item.Key] = item.Value;
-            Save(); if (backend != null) StopBackend(); status.Text = "已儲存螢幕排列。";
+            Save(); PeersChanged(); if (backend != null) StopBackend(); status.Text = "已儲存螢幕排列。";
         }
     }
     void SendTargets() { try { string list = ShareSettings.Advanced.TargetList(); if (list.Length > 0 || link != null) Send("TARGETS\t" + list); } catch (Exception e) { Error(e); } }
     // Host-side Barrier options plus direct addresses for computers on another subnet or VPN.
+    // Grouped rows: a name and a short explanation on the left, the control on the right.
     internal Form BuildAdvanced(ShareAdvanced a, out Func<ShareAdvanced> read)
     {
-        var dialog = new Form { Text = "進階設定", ClientSize = new Size(560, 600), BackColor = Color.White, ForeColor = ShareStyle.Ink, Font = new Font(Font.FontFamily, 10F), FormBorderStyle = FormBorderStyle.FixedDialog, StartPosition = FormStartPosition.CenterParent, MaximizeBox = false, MinimizeBox = false, AutoScaleDimensions = new SizeF(96F, 96F), AutoScaleMode = AutoScaleMode.Dpi };
-        int y = 18;
-        Func<string, Label> note = text => { var l = new Label { Text = text, ForeColor = ShareStyle.Muted, Bounds = new Rectangle(24, y, 512, 24) }; dialog.Controls.Add(l); y += 28; return l; };
-        Func<string, bool, CheckBox> check = (text, value) => { var c = new CheckBox { Text = text, Checked = value, Bounds = new Rectangle(24, y, 512, 28) }; dialog.Controls.Add(c); y += 32; return c; };
-        Func<string, int, int, NumericUpDown> number = (text, value, max) => {
-            dialog.Controls.Add(new Label { Text = text, Bounds = new Rectangle(24, y + 3, 380, 26) });
-            var n = new NumericUpDown { Minimum = 0, Maximum = max, Value = Math.Min(max, Math.Max(0, value)), Increment = 50, Bounds = new Rectangle(416, y, 120, 28) }; dialog.Controls.Add(n); y += 36; return n;
+        var dialog = new Form { Text = "進階設定", ClientSize = new Size(568, 600), BackColor = Color.White, ForeColor = ShareStyle.Ink, Font = new Font(Font.FontFamily, 10F), FormBorderStyle = FormBorderStyle.FixedDialog, StartPosition = FormStartPosition.CenterParent, MaximizeBox = false, MinimizeBox = false, AutoScaleDimensions = new SizeF(96F, 96F), AutoScaleMode = AutoScaleMode.Dpi };
+        const int W = 520; int y = 16;
+        dialog.Controls.Add(new Label { Text = "進階設定", Font = new Font(Font.FontFamily, 13F, FontStyle.Bold), Bounds = new Rectangle(24, y, W, 28) }); y += 30;
+        dialog.Controls.Add(new Label { Text = Host ? "由這台（主控端）套用到所有螢幕；儲存後自動重新連線。" : "切換設定只在主控端生效；這台目前是接收端。", ForeColor = ShareStyle.Muted, Bounds = new Rectangle(24, y, W, 22) }); y += 32;
+        ShareCard group = null; int rowY = 0;
+        Action<string> section = text => {
+            dialog.Controls.Add(new Label { Text = text, ForeColor = ShareStyle.Muted, Font = new Font(Font.FontFamily, 9F, FontStyle.Bold), Bounds = new Rectangle(24, y, W, 20) }); y += 22;
+            group = new ShareCard { BackColor = Color.White, Bounds = new Rectangle(24, y, W, 10) }; dialog.Controls.Add(group); rowY = 0;
         };
-        note(Host ? "以下切換設定由這台（主控端）套用到兩台。" : "切換設定只在主控端生效；這台目前是接收端。");
-        var delay = number("游標停在邊緣多久才切換（毫秒，0 = 立即）", a.SwitchDelay, 5000);
-        var tap = number("輕敲兩下邊緣才切換（兩次間隔毫秒，0 = 關閉）", a.DoubleTap, 2000);
-        var corners = check("螢幕四個角落不切換", a.Corners);
-        var cornerSize = number("　角落範圍（像素）", a.CornerSize, 500); cornerSize.Increment = 4;
-        var swap = check("Mac 接收端的 Ctrl 與 Command 鍵對調（兩台都是 Windows 時不會對調）", a.SwapModifiers);
-        var relative = check("相對滑鼠移動（全螢幕遊戲用）", a.RelativeMouse);
-        var saver = check("螢幕保護程式同步", a.ScreenSaver);
-        var keys = check("Ctrl+Alt+方向鍵切換到另一台", a.SwitchKeys);
-        var lockKey = check("Ctrl+Alt+L 把游標鎖在目前這台（再按一次解除）", a.LockKey);
-        dialog.Controls.Add(new Label { Text = "其他網段或 VPN 的電腦（IP 或名稱，以逗號分隔）", Bounds = new Rectangle(24, y, 512, 24) }); y += 26;
-        var targets = new TextBox { Text = a.Targets, Bounds = new Rectangle(24, y, 512, 28), AccessibleName = "其他網段的電腦" }; dialog.Controls.Add(targets); y += 38;
-        dialog.Controls.Add(new Label { Text = "額外設定（Barrier 設定檔 options 語法，例如自訂快捷鍵）", Bounds = new Rectangle(24, y, 512, 24) }); y += 26;
-        var extra = new TextBox { Text = a.Extra, Multiline = true, ScrollBars = ScrollBars.Vertical, Font = new Font("Consolas", 9.5F), Bounds = new Rectangle(24, y, 512, 70), AccessibleName = "額外設定" }; dialog.Controls.Add(extra); y += 80;
-        var cancel = new ShareButton { Text = "取消", BackColor = Color.White, Bounds = new Rectangle(24, y, 140, 38), DialogResult = DialogResult.Cancel };
-        var ok = new ShareButton { Text = "儲存並套用", Primary = true, BackColor = Color.White, Bounds = new Rectangle(176, y, 360, 38) };
-        dialog.Controls.AddRange(new Control[] { cancel, ok }); dialog.CancelButton = cancel; dialog.ClientSize = new Size(560, y + 56);
-        read = () => new ShareAdvanced { SwitchDelay = (int)delay.Value, DoubleTap = (int)tap.Value, Corners = corners.Checked, CornerSize = (int)cornerSize.Value, SwapModifiers = swap.Checked,
-            RelativeMouse = relative.Checked, ScreenSaver = saver.Checked, SwitchKeys = keys.Checked, LockKey = lockKey.Checked, Targets = targets.Text.Trim(), Extra = extra.Text };
+        Action<string, string, Control> row = (title, detail, control) => {
+            int h = detail == null ? 44 : 56;
+            if (rowY > 0) group.Controls.Add(new Panel { BackColor = Color.FromArgb(236, 240, 246), Bounds = new Rectangle(14, rowY, W - 28, 1) });
+            group.Controls.Add(new Label { Text = title, BackColor = Color.White, Bounds = new Rectangle(14, rowY + (detail == null ? 11 : 8), W - 180, 22) });
+            if (detail != null) group.Controls.Add(new Label { Text = detail, BackColor = Color.White, ForeColor = ShareStyle.Faint, Font = new Font(Font.FontFamily, 8.5F), Bounds = new Rectangle(14, rowY + 30, W - 180, 18) });
+            control.Location = new Point(W - 14 - control.Width, rowY + (h - control.Height) / 2); control.AccessibleName = title; group.Controls.Add(control);
+            rowY += h; group.Height = rowY + 1; y = group.Bottom;
+        };
+        Func<bool, CheckBox> check = value => new CheckBox { Checked = value, BackColor = Color.White, Size = new Size(20, 20) };
+        Func<int[], Func<int, string>, int, ShareComboBox> choice = (values, label, current) => {
+            var list = values.ToList(); if (!list.Contains(current)) { list.Add(current); list.Sort(); }
+            var box = new ShareComboBox { Font = new Font(Font.FontFamily, 9.5F), Size = new Size(132, 30), Tag = list };
+            foreach (int v in list) box.Items.Add(label(v)); box.SelectedIndex = list.IndexOf(current); return box;
+        };
+        Func<ShareComboBox, int> picked = box => ((List<int>)box.Tag)[Math.Max(0, box.SelectedIndex)];
+        section("切換螢幕");
+        var delay = choice(new[] { 0, 250, 500, 1000 }, v => v == 0 ? "立即" : v % 1000 == 0 ? v / 1000 + " 秒" : (v / 1000.0).ToString("0.##") + " 秒", a.SwitchDelay);
+        row("停留多久才切換", "避免滑鼠擦過邊緣就跑到另一台", delay);
+        var tap = choice(new[] { 0, 250, 400 }, v => v == 0 ? "關閉" : (v / 1000.0).ToString("0.##") + " 秒內", a.DoubleTap);
+        row("連碰兩下邊緣才切換", null, tap);
+        var corners = check(a.Corners); row("螢幕角落不切換", "方便點角落的開始按鈕或關閉鈕", corners);
+        var keys = check(a.SwitchKeys); row("快速鍵切換", "Ctrl+Alt+方向鍵", keys);
+        y += 16; section("鍵盤與滑鼠");
+        var swap = check(a.SwapModifiers); row("Mac 上對調 Ctrl 與 Command", "Windows 鍵盤在 Mac 上可按 Ctrl+C／V", swap);
+        var lockKey = check(a.LockKey); row("鎖定游標在目前螢幕", "Ctrl+Alt+L 切換", lockKey);
+        var relative = check(a.RelativeMouse); row("相對滑鼠移動", "全螢幕遊戲用", relative);
+        var saver = check(a.ScreenSaver); row("同步螢幕保護程式", null, saver);
+        y += 16; section("連線");
+        var targets = new TextBox { Text = String.Join(Environment.NewLine, (a.Targets ?? "").Split(new[] { ',', ' ', ';', '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)), Multiline = true, ScrollBars = ScrollBars.Vertical, Font = new Font("Consolas", 9.5F), Size = new Size(200, 44) };
+        row("手動位址", "跨網段或 VPN 時填入對方 IP，一行一個", targets);
+        y += 12;
+        var expertToggle = new LinkLabel { Text = "▸ 自訂 Barrier 選項（專家）", LinkColor = ShareStyle.Muted, ActiveLinkColor = ShareStyle.Blue, LinkBehavior = LinkBehavior.HoverUnderline, Bounds = new Rectangle(24, y, W, 24) };
+        dialog.Controls.Add(expertToggle); y += 28;
+        var extra = new TextBox { Text = (a.Extra ?? "").Replace("\r\n", "\n").Replace("\n", "\r\n"), Multiline = true, ScrollBars = ScrollBars.Vertical, Font = new Font("Consolas", 9.5F), Bounds = new Rectangle(24, y, W, 70), AccessibleName = "自訂 Barrier 選項" };
+        dialog.Controls.Add(extra); int expertHeight = 80;
+        int buttonsY = y + 8;
+        var reset = new ShareButton { Text = "恢復預設", Quiet = true, BackColor = Color.White, Bounds = new Rectangle(24, buttonsY, 100, 38) };
+        var cancel = new ShareButton { Text = "取消", BackColor = Color.White, Bounds = new Rectangle(W + 24 - 232, buttonsY, 108, 38), DialogResult = DialogResult.Cancel };
+        var ok = new ShareButton { Text = "儲存", Primary = true, BackColor = Color.White, Bounds = new Rectangle(W + 24 - 112, buttonsY, 112, 38) };
+        dialog.Controls.AddRange(new Control[] { reset, cancel, ok }); dialog.CancelButton = cancel;
+        // The expert box opens on demand (or when it already holds something) and moves the buttons below it.
+        Action<bool> expert = open => {
+            extra.Visible = open; expertToggle.Text = (open ? "▾" : "▸") + " 自訂 Barrier 選項（專家）";
+            float k = dialog.IsHandleCreated ? dialog.CurrentAutoScaleDimensions.Height / 96F : 1F; int top = buttonsY + (open ? expertHeight : 0);
+            foreach (var b in new Control[] { reset, cancel, ok }) b.Top = (int)(top * k);
+            dialog.ClientSize = new Size(dialog.ClientSize.Width, (int)((top + 56) * k));
+        };
+        expertToggle.LinkClicked += delegate { expert(!extra.Visible); };
+        reset.Click += delegate {
+            var d = new ShareAdvanced();
+            delay.SelectedIndex = ((List<int>)delay.Tag).IndexOf(d.SwitchDelay); tap.SelectedIndex = ((List<int>)tap.Tag).IndexOf(d.DoubleTap);
+            corners.Checked = d.Corners; keys.Checked = d.SwitchKeys; swap.Checked = d.SwapModifiers; lockKey.Checked = d.LockKey; relative.Checked = d.RelativeMouse; saver.Checked = d.ScreenSaver;
+        };
+        read = () => new ShareAdvanced { SwitchDelay = picked(delay), DoubleTap = picked(tap), Corners = corners.Checked, CornerSize = a.CornerSize, SwapModifiers = swap.Checked,
+            RelativeMouse = relative.Checked, ScreenSaver = saver.Checked, SwitchKeys = keys.Checked, LockKey = lockKey.Checked, Targets = String.Join(", ", targets.Lines.Select(l => l.Trim()).Where(l => l.Length > 0)), Extra = extra.Text };
         var reader = read;
         ok.Click += delegate {
             try { var value = reader(); value.TargetList(); value.ExtraLines().ToList(); dialog.DialogResult = DialogResult.OK; }
             catch (IOException e) { MessageBox.Show(dialog, e.Message, "進階設定"); }
         };
+        expert(a.Extra.Trim().Length > 0);
         return dialog;
     }
     void ShowAdvanced()
@@ -1225,12 +1543,14 @@ sealed class ShareTransferPopup : Form
 // every screen must touch the group, or the cursor could never reach it.
 sealed class ShareLayoutEditor : Form
 {
-    const int Cell = 112, Tall = 68, Span = 2;
+    const int Cell = 96, Tall = 60, Span = 2;
+    static readonly Color[] Palette = { Color.FromArgb(29, 158, 117), Color.FromArgb(127, 119, 221), Color.FromArgb(216, 90, 48), Color.FromArgb(212, 83, 126), Color.FromArgb(186, 117, 23) };
     public readonly Dictionary<string, Point> Placement = new Dictionary<string, Point>();
     readonly Dictionary<string, string> names = new Dictionary<string, string>();
-    readonly Panel canvas = new Panel();
+    readonly List<string> order = new List<string>();
+    readonly Panel canvas = new Panel(), legend = new Panel();
     readonly Label warning = new Label();
-    readonly ShareButton save = new ShareButton { Text = "儲存排列", Primary = true };
+    readonly ShareButton save = new ShareButton { Text = "儲存", Primary = true };
     string dragging; Point pointer;
     public ShareLayoutEditor(Dictionary<string, string> peers, Font font)
     {
@@ -1238,32 +1558,59 @@ sealed class ShareLayoutEditor : Form
         FormBorderStyle = FormBorderStyle.FixedDialog; StartPosition = FormStartPosition.CenterParent; MaximizeBox = MinimizeBox = false;
         AutoScaleDimensions = new SizeF(96F, 96F); AutoScaleMode = AutoScaleMode.Dpi;
         int width = Cell * (Span * 2 + 1), height = Tall * (Span * 2 + 1);
-        ClientSize = new Size(width + 48, height + 168);
-        Controls.Add(new Label { Text = "拖曳電腦到這台的上下左右；相鄰的邊就是游標可以移過去的地方。", Bounds = new Rectangle(24, 16, width, 40), ForeColor = ShareStyle.Muted });
-        canvas.Bounds = new Rectangle(24, 60, width, height); canvas.BackColor = ShareStyle.Background;
+        ClientSize = new Size(width + 248, height + 160);
+        Controls.Add(new Label { Text = "排列螢幕", Font = new Font(Font.FontFamily, 13F, FontStyle.Bold), Bounds = new Rectangle(24, 14, width, 28) });
+        Controls.Add(new Label { Text = "拖曳接收端到這台的上下左右；滑鼠從相鄰的邊移過去。", Bounds = new Rectangle(24, 42, width + 200, 22), ForeColor = ShareStyle.Muted });
+        canvas.Bounds = new Rectangle(24, 74, width, height); canvas.BackColor = ShareStyle.Background;
         typeof(Panel).GetProperty("DoubleBuffered", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic).SetValue(canvas, true, null);
         Controls.Add(canvas);
-        warning.Bounds = new Rectangle(24, 64 + height, width, 40); warning.ForeColor = Color.FromArgb(180, 60, 40); Controls.Add(warning);
-        var cancel = new ShareButton { Text = "取消", BackColor = Color.White, Bounds = new Rectangle(24, 110 + height, 140, 38), DialogResult = DialogResult.Cancel };
-        save.BackColor = Color.White; save.Bounds = new Rectangle(176, 110 + height, width - 152, 38); save.DialogResult = DialogResult.OK;
-        Controls.Add(cancel); Controls.Add(save); CancelButton = cancel;
+        legend.Bounds = new Rectangle(width + 40, 74, 184, height); legend.BackColor = Color.White;
+        typeof(Panel).GetProperty("DoubleBuffered", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic).SetValue(legend, true, null);
+        Controls.Add(legend);
+        warning.Bounds = new Rectangle(24, 80 + height, width + 200, 24); warning.ForeColor = ShareStyle.Danger; Controls.Add(warning);
+        var reset = new ShareButton { Text = "恢復預設", Quiet = true, BackColor = Color.White, Bounds = new Rectangle(24, 110 + height, 100, 36) };
+        var cancel = new ShareButton { Text = "取消", BackColor = Color.White, Bounds = new Rectangle(width + 224 - 224, 110 + height, 108, 36), DialogResult = DialogResult.Cancel };
+        save.BackColor = Color.White; save.Bounds = new Rectangle(width + 224 - 104, 110 + height, 128, 36); save.DialogResult = DialogResult.OK;
+        Controls.Add(reset); Controls.Add(cancel); Controls.Add(save); CancelButton = cancel;
         var cells = ShareSettings.Cells();
         foreach (var peer in peers) {
-            names[peer.Key] = peer.Value;
+            names[peer.Key] = peer.Value; order.Add(peer.Key);
             Point cell; if (cells.TryGetValue(ShareSettings.ScreenName(peer.Key), out cell)) Placement[peer.Key] = cell;
         }
+        reset.Click += delegate {
+            // The automatic placement: the saved arrangement set aside for a moment.
+            var saved = ShareSettings.Layout; ShareSettings.Layout = new Dictionary<string, Point>();
+            try { var auto = ShareSettings.Cells(); foreach (var fp in order) { Point c; if (auto.TryGetValue(ShareSettings.ScreenName(fp), out c)) Placement[fp] = c; } }
+            finally { ShareSettings.Layout = saved; }
+            Check(); canvas.Invalidate();
+        };
         canvas.Paint += (sender, e) => Draw(e.Graphics);
-        canvas.MouseDown += (sender, e) => { dragging = Placement.Where(p => CellBounds(p.Value).Contains(e.Location)).Select(p => p.Key).FirstOrDefault(); pointer = e.Location; };
-        canvas.MouseMove += (sender, e) => { if (dragging != null) { pointer = e.Location; canvas.Invalidate(); } };
+        legend.Paint += (sender, e) => DrawLegend(e.Graphics);
+        canvas.MouseDown += (sender, e) => { dragging = Placement.Where(p => CellBounds(p.Value).Contains(Unscale(e.Location))).Select(p => p.Key).FirstOrDefault(); pointer = Unscale(e.Location); canvas.Cursor = dragging != null ? Cursors.SizeAll : Cursors.Default; };
+        canvas.MouseMove += (sender, e) => {
+            var at = Unscale(e.Location);
+            if (dragging != null) { pointer = at; canvas.Invalidate(); }
+            else canvas.Cursor = Placement.Any(p => CellBounds(p.Value).Contains(at)) ? Cursors.Hand : Cursors.Default;
+        };
         canvas.MouseUp += (sender, e) => {
             if (dragging == null) return;
-            var target = new Point(e.X / Cell - Span, e.Y / Tall - Span);
+            var at = Unscale(e.Location); var target = new Point(at.X / Cell - Span, at.Y / Tall - Span);
             if (Math.Abs(target.X) <= Span && Math.Abs(target.Y) <= Span && target != Point.Empty && !Placement.Any(p => p.Key != dragging && p.Value == target)) Placement[dragging] = target;
-            dragging = null; Check(); canvas.Invalidate();
+            dragging = null; canvas.Cursor = Cursors.Default; Check(); canvas.Invalidate();
         };
         Check();
     }
-    Rectangle CellBounds(Point cell) { return new Rectangle((cell.X + Span) * Cell + 6, (cell.Y + Span) * Tall + 6, Cell - 12, Tall - 12); }
+    // Drawing works in 96-dpi units; the canvas itself is scaled with the dialog.
+    float Zoom { get { return canvas.Width / (float)(Cell * (Span * 2 + 1)); } }
+    Point Unscale(Point p) { float k = Zoom; return new Point((int)(p.X / k), (int)(p.Y / k)); }
+    Rectangle CellBounds(Point cell) { return new Rectangle((cell.X + Span) * Cell + 5, (cell.Y + Span) * Tall + 5, Cell - 10, Tall - 10); }
+    Color ColorOf(string fp) { return Palette[Math.Max(0, order.IndexOf(fp)) % Palette.Length]; }
+    static Color Light(Color c) { return Color.FromArgb(232 + (c.R * 23 / 255), 232 + (c.G * 23 / 255), 232 + (c.B * 23 / 255)); }
+    static string Direction(Point c)
+    {
+        if (c == new Point(1, 0)) return "右"; if (c == new Point(-1, 0)) return "左"; if (c == new Point(0, -1)) return "上"; if (c == new Point(0, 1)) return "下";
+        return "經由其他螢幕";
+    }
     // Every receiver must be connected to the host through neighbouring cells.
     public bool Reachable()
     {
@@ -1278,23 +1625,44 @@ sealed class ShareLayoutEditor : Form
     void Check()
     {
         bool ok = Reachable(); save.Enabled = ok;
-        warning.Text = ok ? "" : "有電腦沒有和其他螢幕相鄰，游標到不了；請把它移到相鄰的位置。";
+        warning.Text = ok ? "" : "有電腦沒有和其他螢幕相鄰，滑鼠到不了；請把它移到相鄰的位置。";
+        legend.Invalidate();
     }
     void Draw(Graphics g)
     {
-        g.SmoothingMode = SmoothingMode.AntiAlias;
+        g.SmoothingMode = SmoothingMode.AntiAlias; float k = Zoom; g.ScaleTransform(k, k);
         using (var grid = new Pen(ShareStyle.Border) { DashStyle = DashStyle.Dash })
-            for (int y = -Span; y <= Span; ++y) for (int x = -Span; x <= Span; ++x) g.DrawRectangle(grid, CellBounds(new Point(x, y)));
-        Action<Rectangle, string, bool> tile = (r, text, host) => {
-            using (var path = ShareStyle.Rounded(r, 10)) using (var fill = new SolidBrush(host ? ShareStyle.Blue : Color.White)) using (var edge = new Pen(ShareStyle.Blue, 1.5F)) { g.FillPath(fill, path); g.DrawPath(edge, path); }
-            TextRenderer.DrawText(g, text, Font, r, host ? Color.White : ShareStyle.Ink, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.WordBreak | TextFormatFlags.EndEllipsis);
+            for (int y = -Span; y <= Span; ++y) for (int x = -Span; x <= Span; ++x) using (var path = ShareStyle.Rounded(CellBounds(new Point(x, y)), 6)) g.DrawPath(grid, path);
+        Action<Rectangle, string, Color, Color, bool> tile = (r, text, fill, edge, host) => {
+            using (var path = ShareStyle.Rounded(r, 7)) using (var b = new SolidBrush(fill)) using (var pen = new Pen(edge, 1.5F)) { g.FillPath(b, path); g.DrawPath(pen, path); }
+            var label = new Rectangle(r.X + 4, r.Y + (host ? 22 : 4), r.Width - 8, r.Height - (host ? 24 : 8));
+            if (host) using (var pen = new Pen(edge, 1.5F)) { float mx = r.X + r.Width / 2F, my = r.Y + 14; g.DrawEllipse(pen, mx - 4, my - 7, 8, 13); g.DrawLine(pen, mx, my - 7, mx, my - 3); }
+            using (var f = new Font(Font.FontFamily, 9F)) TextRenderer.DrawText(g, text, f, label, edge, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.WordBreak | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
         };
-        tile(CellBounds(Point.Empty), "這台（主控端）", true);
-        foreach (var p in Placement) {
+        tile(CellBounds(Point.Empty), "這台", ShareStyle.Tint, ShareStyle.Blue, true);
+        foreach (var p in Placement.OrderBy(p => p.Key == dragging)) {
             var r = CellBounds(p.Value);
             if (p.Key == dragging) r.Offset(pointer.X - r.X - r.Width / 2, pointer.Y - r.Y - r.Height / 2);
-            tile(r, names[p.Key], false);
+            var c = ColorOf(p.Key); tile(r, names[p.Key], Light(c), Color.FromArgb(c.R * 7 / 10, c.G * 7 / 10, c.B * 7 / 10), false);
         }
+    }
+    void DrawLegend(Graphics g)
+    {
+        g.SmoothingMode = SmoothingMode.AntiAlias; float k = Zoom; g.ScaleTransform(k, k);
+        using (var f = new Font(Font.FontFamily, 8.5F)) TextRenderer.DrawText(g, "已配對", f, new Point(0, 0), ShareStyle.Faint);
+        int y = 24;
+        foreach (var fp in order) {
+            var r = new Rectangle(0, y, 180, 34);
+            using (var path = ShareStyle.Rounded(r, 7)) using (var pen = new Pen(ShareStyle.Border)) g.DrawPath(pen, path);
+            using (var b = new SolidBrush(ColorOf(fp))) g.FillRectangle(b, 10, y + 13, 8, 8);
+            using (var f = new Font(Font.FontFamily, 9F)) {
+                TextRenderer.DrawText(g, names[fp], f, new Rectangle(26, y, 100, 34), ShareStyle.Ink, TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
+                Point c; string where = Placement.TryGetValue(fp, out c) ? Direction(c) : "";
+                TextRenderer.DrawText(g, where, f, new Rectangle(110, y, 62, 34), ShareStyle.Faint, TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
+            }
+            y += 40;
+        }
+        using (var f = new Font(Font.FontFamily, 8.5F)) TextRenderer.DrawText(g, "每台都要能從這台一路走到；斜角不相連。", f, new Rectangle(0, y + 6, 180, 48), ShareStyle.Faint, TextFormatFlags.WordBreak | TextFormatFlags.NoPrefix);
     }
     // Test hook: place a receiver as a drag would.
     internal bool Place(string fingerprint, Point cell)
@@ -1430,7 +1798,7 @@ static class ShareProgram
                 Func<ShareAdvanced> readAdvanced;
                 using (var advanced = window.BuildAdvanced(ShareSettings.Advanced, out readAdvanced)) {
                     advanced.Show(); Application.DoEvents();
-                    var shown = advanced.Controls.Cast<Control>().ToArray();
+                    var shown = advanced.Controls.Cast<Control>().Where(c => c.Visible).ToArray();
                     for (int i = 0; i < shown.Length; ++i) {
                         if (!advanced.ClientRectangle.Contains(shown[i].Bounds)) throw new Exception("Advanced dialog clips: " + shown[i].Text);
                         for (int j = i + 1; j < shown.Length; ++j) if (shown[i].Bounds.IntersectsWith(shown[j].Bounds)) throw new Exception("Advanced dialog overlaps: " + shown[i].Text + " / " + shown[j].Text);
