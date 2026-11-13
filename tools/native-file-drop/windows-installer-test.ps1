@@ -136,6 +136,10 @@ function Invoke-Service([string]$Line) {
 }
 function Get-FirewallPrograms { @(Get-NetFirewallRule -DisplayName 'Barrier Share' -ErrorAction SilentlyContinue | Get-NetFirewallApplicationFilter | ForEach-Object { [IO.Path]::GetFileName($_.Program) } | Sort-Object) }
 if ((Get-FirewallPrograms) -join ',' -ne 'barrier-link.exe,barrierc.exe,barriers.exe') { throw "Installer did not allow the programs through the firewall: $((Get-FirewallPrograms) -join ',')" }
+foreach ($rule in Get-NetFirewallRule -DisplayName 'Barrier Share') {
+    if ([string]$rule.Profile -ne 'Domain, Private') { throw "Firewall rule profile is $($rule.Profile), expected Domain, Private." }
+    if (@(($rule | Get-NetFirewallAddressFilter).RemoteAddress) -join ',' -ne 'Any') { throw 'Firewall rule limits remote addresses; manual addresses across subnets would be blocked.' }
+}
 function Get-ServiceCore { @(Get-CimInstance Win32_Process -Filter "Name='barriers.exe'" | Where-Object { $_.ExecutablePath -ieq (Join-Path $installDir 'barriers.exe') }) }
 $serviceProfile = Join-Path $TestRoot 'service-identity'
 & (Join-Path $installDir 'barrier-pair.exe') init $serviceProfile | Out-Null

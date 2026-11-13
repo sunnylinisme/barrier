@@ -192,7 +192,7 @@ begin
 end;
 
 { Without rules Windows asks on first use, and a core the service starts gets no prompt at all,
-  so a fresh install stayed blocked until the app was restarted. Allow the programs on the LAN only. }
+  so a fresh install stayed blocked until the app was restarted. Private and domain networks only, any address there, so manual addresses across subnets or a VPN work too. }
 procedure AddFirewallRules();
 var
   Names: TArrayOfString;
@@ -202,7 +202,7 @@ begin
   SetArrayLength(Names, 3);
   Names[0] := 'barriers.exe'; Names[1] := 'barrierc.exe'; Names[2] := 'barrier-link.exe';
   for I := 0 to 2 do
-    Netsh('advfirewall firewall add rule name="Barrier Share" dir=in action=allow profile=any remoteip=localsubnet program="' + ExpandConstant('{app}\') + Names[I] + '"');
+    Netsh('advfirewall firewall add rule name="Barrier Share" dir=in action=allow profile=private,domain program="' + ExpandConstant('{app}\') + Names[I] + '"');
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
