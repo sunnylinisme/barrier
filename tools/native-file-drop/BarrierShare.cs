@@ -561,6 +561,8 @@ sealed class ShareWindow : Form
         autostart.CheckedChanged += delegate { if (!testing) try { ShareLogin.Enabled = autostart.Checked; } catch (Exception e) { Error(e); } };
         var advancedButton = new ShareButton { Text="進階設定", BackColor=ShareStyle.Background, Font=new Font(Font.FontFamily,10F), TabIndex=6 }; At(advancedButton,524,602,120,36); advancedButton.Click += delegate { ShowAdvanced(); };
         details.Multiline=true; details.ReadOnly=true; details.ScrollBars=ScrollBars.Vertical; details.Font=new Font("Consolas",9F); details.BackColor=Color.FromArgb(249,251,255); details.BorderStyle=BorderStyle.None;
+        // A multiline TextBox has no Ctrl+A of its own.
+        details.KeyDown += delegate(object sender, KeyEventArgs e) { if (e.Control && e.KeyCode == Keys.A) { details.SelectAll(); e.SuppressKeyPress = true; } };
         // Tray menu: status and the everyday actions without opening the window.
         var menu = new ContextMenuStrip();
         var trayStatus = new ToolStripMenuItem { Enabled = false };
@@ -886,6 +888,10 @@ sealed class ShareWindow : Form
         if (diagnostics == null) {
             diagnostics = new Form { Text="Barrier Share · 診斷紀錄", ClientSize=new Size(760,400), Font=Font, StartPosition=FormStartPosition.CenterParent, Padding=new Padding(18), BackColor=Color.White, AutoScaleDimensions=new SizeF(96F,96F), AutoScaleMode=AutoScaleMode.Dpi };
             details.Dock=DockStyle.Fill; diagnostics.Controls.Add(details);
+            var copyAll = new ShareButton { Text="全部複製", BackColor=Color.White, Font=new Font(Font.FontFamily,10F), Dock=DockStyle.Bottom, Height=36 };
+            copyAll.Click += delegate { if (details.TextLength > 0) { Clipboard.SetText(details.Text); copyAll.Text = "已複製"; } };
+            details.TextChanged += delegate { copyAll.Text = "全部複製"; };
+            diagnostics.Controls.Add(copyAll);
             diagnostics.FormClosing += delegate(object sender, FormClosingEventArgs e) { if (!closing) { e.Cancel=true; diagnostics.Hide(); } };
         }
         diagnostics.Show(this); diagnostics.Activate();
