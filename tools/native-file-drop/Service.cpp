@@ -19,7 +19,7 @@
 //   console session and the sign-in screen can be controlled from the other computer.
 //
 // Pipe protocol (\\.\pipe\BarrierShare.Service, one request per connection, UTF-8):
-//   START \t host|receiver \t address \t base64(Barrier.pem) \t base64(trusted) \t base64(config) \t screen name \t user profile folder
+//   START \t host|receiver \t address \t base64(Barrier.pem) \t base64(trusted) \t base64(config) \t screen name \t user profile folder [\t wheel "percent,0|1", receiver only]
 //   STOP
 //   STATUS
 //   DESKTOP \t <name>|auto   (tests: act as if the input desktop were <name>)
@@ -52,7 +52,7 @@ HANDLE stopEvent = nullptr;
 std::atomic<bool> stopping{false};
 
 struct Command {
-    bool host = true; std::wstring sid, address, directory, log, name, userProfile, userLog;
+    bool host = true; std::wstring sid, address, directory, log, name, userProfile, userLog, wheel;
 };
 std::mutex mutex;
 bool wanted = false; Command command;
@@ -224,7 +224,7 @@ void startCore(DWORD session, bool asSystem, const std::string& why) {
     std::wstring bin = moduleDirectory(), profile = asSystem ? command.directory : command.userProfile, log = asSystem ? command.log : command.userLog;
     std::wstring line = quote(bin + (command.host ? L"\\barriers.exe" : L"\\barrierc.exe")) + L" -f --no-tray --file-clipboard --profile-dir " + quote(profile) +
         L" --log " + quote(log) + L" --name " + command.name;
-    line += command.host ? L" -c " + quote(profile + L"\\windows-windows.conf") : L" " + command.address;
+    line += command.host ? L" -c " + quote(profile + L"\\windows-windows.conf") : command.wheel + L" " + command.address;
     STARTUPINFOW startup{sizeof(startup)}; startup.lpDesktop = const_cast<wchar_t*>(L"winsta0\\default");
     std::vector<wchar_t> buffer(line.begin(), line.end()); buffer.push_back(0);
     void* environment = nullptr; if (!asSystem) CreateEnvironmentBlock(&environment, token, FALSE);
@@ -285,7 +285,7 @@ std::string handle(HANDLE pipe, const std::string& request) {
     if (f[0] == "DESKTOP" && f.size() == 2 && !f[1].empty() && f[1].size() < 32 && f[1].find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ") == std::string::npos) {
         forcedDesktop = f[1] == "auto" ? "" : f[1]; apply(); return reply();
     }
-    if (f[0] != "START" || f.size() != 8 || (f[1] != "host" && f[1] != "receiver")) throw std::runtime_error("Invalid request");
+    if (f[0] != "START" || (f.size() != 8 && f.size() != 9) || (f[1] != "host" && f[1] != "receiver")) throw std::runtime_error("Invalid request");
     // The user profile folder is only handed to the core that runs as that same user.
     if (f[7].size() < 4 || f[7].size() > 1024 || f[7].find('"') != std::string::npos || !(f[7][1] == ':' || f[7].compare(0, 2, "\\\\") == 0)) throw std::runtime_error("Invalid profile folder");
     if (f[6].empty() || f[6].size() > 32 || f[6].find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-") != std::string::npos) throw std::runtime_error("Invalid screen name");
@@ -299,6 +299,14 @@ std::string handle(HANDLE pipe, const std::string& request) {
     auto pem = base64Decode(f[3]), trusted = base64Decode(f[4]), config = base64Decode(f[5]);
     if (pem.find("PRIVATE KEY") == std::string::npos || (host && config.find("section: screens") == std::string::npos)) throw std::runtime_error("Incomplete pairing data");
     Command next; next.host = host; next.address = widen(f[2]); next.name = widen(f[6]); next.sid = clientSid(pipe);
+    // Optional receiver wheel settings: "<percent>,<0|1>".
+    if (f.size() == 9 && !host) {
+        auto comma = f[8].find(',');
+        std::string scale = f[8].substr(0, comma), invert = comma == std::string::npos ? "0" : f[8].substr(comma + 1);
+        if (scale.empty() || scale.size() > 3 || scale.find_first_not_of("0123456789") != std::string::npos || std::stoi(scale) < 10 || std::stoi(scale) > 500 || (invert != "0" && invert != "1")) throw std::runtime_error("Invalid wheel settings");
+        if (scale != "100") next.wheel += L" --wheel-scale " + widen(scale);
+        if (invert == "1") next.wheel += L" --wheel-invert";
+    }
     next.userProfile = widen(f[7]); while (!next.userProfile.empty() && next.userProfile.back() == L'\\') next.userProfile.pop_back();
     next.userLog = next.userProfile + (host ? L"\\server.log" : L"\\windows.log");
     std::wstring state = moduleDirectory() + L"\\state";

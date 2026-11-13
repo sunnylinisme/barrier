@@ -63,6 +63,7 @@ static class ShareSettings
         Directory.CreateDirectory(Root);
         var document = new XDocument(new XElement("settings", new XAttribute("host", host), new XAttribute("address", address), new XAttribute("position", Position), Advanced.ToXml(),
             new XElement("layout", Layout.Select(item => new XElement("screen", new XAttribute("fingerprint", item.Key), new XAttribute("x", item.Value.X), new XAttribute("y", item.Value.Y)))),
+            new XElement("edges", EdgeRange.Where(item => item.Value != "all").Select(item => new XElement("screen", new XAttribute("fingerprint", item.Key), new XAttribute("range", item.Value)))),
             new XElement("platforms", Platforms.Select(item => new XElement("peer", new XAttribute("fingerprint", item.Key), new XAttribute("system", item.Value))))));
         string path = Path.Combine(Root, "settings.xml"), temporary = path + ".new";
         document.Save(temporary);
@@ -70,7 +71,7 @@ static class ShareSettings
     }
     public static void Load(out bool host, out string address)
     {
-        host = true; address = ""; Position = "right"; Advanced = new ShareAdvanced(); Layout = new Dictionary<string, Point>(); Platforms = new Dictionary<string, string>();
+        host = true; address = ""; Position = "right"; Advanced = new ShareAdvanced(); Layout = new Dictionary<string, Point>(); EdgeRange = new Dictionary<string, string>(); Platforms = new Dictionary<string, string>();
         string path = Path.Combine(Root, "settings.xml");
         if (!File.Exists(path)) return;
         var root = XDocument.Load(path).Root;
@@ -83,10 +84,17 @@ static class ShareSettings
             string fp = (string)peer.Attribute("fingerprint"), system = (string)peer.Attribute("system");
             if (fp != null && (system == "mac" || system == "windows" || system == "linux")) Platforms[fp] = system;
         }
+        var edges = root.Element("edges");
+        if (edges != null) foreach (var screen in edges.Elements("screen")) {
+            string fp = (string)screen.Attribute("fingerprint"), range = (string)screen.Attribute("range");
+            if (fp != null && EdgeRanges.Contains(range)) EdgeRange[fp] = range;
+        }
         var layout = root.Element("layout");
         if (layout != null) foreach (var screen in layout.Elements("screen")) {
             int x, y; string fp = (string)screen.Attribute("fingerprint");
-            if (fp != null && Int32.TryParse((string)screen.Attribute("x"), out x) && Int32.TryParse((string)screen.Attribute("y"), out y) && Math.Abs(x) <= 2 && Math.Abs(y) <= 2) Layout[fp] = new Point(x, y);
+            if (fp != null && Int32.TryParse((string)screen.Attribute("x"), out x) && Int32.TryParse((string)screen.Attribute("y"), out y) && Math.Abs(x) <= 2 && Math.Abs(y) <= 2) {
+                Layout[fp] = new Point(x, y);
+            }
         }
     }
     public static ShareAdvanced Advanced = new ShareAdvanced();
@@ -94,6 +102,12 @@ static class ShareSettings
     // on a 5x5 grid; x grows to the right and y downwards.
     public static List<string> Receivers = new List<string>();
     public static Dictionary<string, Point> Layout = new Dictionary<string, Point>();
+    // Part of the shared edge a receiver next to the host uses: "all", "first" (top/left half) or "second".
+    public static Dictionary<string, string> EdgeRange = new Dictionary<string, string>();
+    public static readonly string[] EdgeRanges = { "all", "first", "second" };
+    public static string RangeOf(string fingerprint) { string r; return EdgeRange.TryGetValue(fingerprint, out r) && EdgeRanges.Contains(r) ? r : "all"; }
+    // Receivers that share an edge with the host (only these can use part of an edge).
+    public static bool Beside(Point cell) { return Math.Abs(cell.X) + Math.Abs(cell.Y) == 1; }
     // System of each paired computer as reported by its discovery reply (0.3.9+); unknown means Windows.
     public static Dictionary<string, string> Platforms = new Dictionary<string, string>();
     // Ctrl and Command/Windows are swapped only between a Windows host and a Mac receiver.
@@ -180,6 +194,7 @@ static class ShareSettings
             b.Append(" " + screen + ":\n");
             // Swap on the receiving screens: Ctrl acts as Command/Windows there and the other way round.
             if (a.SwapModifiers && SwapFor(screen)) b.Append("  ctrl = super\n  super = ctrl\n");
+            if (screen == HostName ? a.PreserveFocus : a.CapsLockFix) b.Append(screen == HostName ? "  preserveFocus = true\n" : "  halfDuplexCapsLock = true\n");
         }
         // The first receiver also answers to "windows", the name receivers used before 0.3.9.
         if (Receivers.Count > 0) b.Append("end\nsection: aliases\n " + ScreenName(Receivers[0]) + ":\n  windows\n");
@@ -188,10 +203,17 @@ static class ShareSettings
             b.Append(" " + screen.Key + ":\n");
             foreach (string d in new[] { Position, Opposite(Position) }.Concat(Directions).Distinct()) {
                 var next = new Point(screen.Value.X + Step(d).X, screen.Value.Y + Step(d).Y);
-                foreach (var other in cells) if (other.Value == next) b.Append("  " + d + " = " + other.Key + "\n");
+                foreach (var other in cells) if (other.Value == next) {
+                    // A receiver beside the host may use only half of the host's edge (and returns to that half).
+                    string receiver = screen.Key == HostName ? other.Key : other.Key == HostName ? screen.Key : null;
+                    string fp = receiver == null ? null : Receivers.FirstOrDefault(r => ScreenName(r) == receiver);
+                    string range = fp == null ? "" : RangeOf(fp) == "first" ? "(0,50)" : RangeOf(fp) == "second" ? "(50,100)" : "";
+                    b.Append("  " + d + (screen.Key == HostName ? range : "") + " = " + other.Key + (screen.Key == HostName ? "" : range) + "\n");
+                }
             }
         }
-        b.Append("end\nsection: options\n clipboardSharing = " + (clipboard ? "true" : "false") + "\n");
+        b.Append("end\nsection: options\n clipboardSharing = " + (clipboard && a.Clipboard ? "true" : "false") + "\n");
+        if (a.SwitchNeeds != "") b.Append(" switchNeeds" + Char.ToUpperInvariant(a.SwitchNeeds[0]) + a.SwitchNeeds.Substring(1) + " = true\n");
         if (a.SwitchDelay > 0) b.Append(" switchDelay = " + a.SwitchDelay + "\n");
         if (a.DoubleTap > 0) b.Append(" switchDoubleTap = " + a.DoubleTap + "\n");
         if (a.Corners) b.Append(" switchCorners = all\n switchCornerSize = " + a.CornerSize + "\n");
@@ -199,6 +221,8 @@ static class ShareSettings
         b.Append(" screenSaverSync = " + (a.ScreenSaver ? "true" : "false") + "\n");
         if (a.SwitchKeys) foreach (string d in UsedDirections(cells)) b.Append(" keystroke(Control+Alt+" + Char.ToUpperInvariant(d[0]) + d.Substring(1) + ") = switchInDirection(" + d + ")\n");
         if (a.LockKey) b.Append(" keystroke(Control+Alt+L) = lockCursorToScreen(toggle)\n");
+        if (a.DirectKeys) { var order = DirectOrder(); for (int i = 0; i < order.Count; ++i) b.Append(" keystroke(Control+Alt+" + (i + 1) + ") = switchToScreen(" + order[i] + ")\n"); }
+        if (a.BroadcastKey) b.Append(" keystroke(Control+Alt+B) = keyboardBroadcast(toggle)\n");
         // Old saved extra options can no longer be seen or fixed, so a bad one is skipped rather than stopping the core.
         List<string> extra;
         try { extra = a.ExtraLines().ToList(); }
@@ -206,7 +230,19 @@ static class ShareSettings
         foreach (string line in extra) b.Append(" " + line + "\n");
         return b.Append("end\n").ToString();
     }
+    // Ctrl+Alt+1 is the host, 2 and up follow the receivers in the arrange list, up to 9.
+    public static List<string> DirectOrder()
+    {
+        var order = new List<string> { HostName };
+        order.AddRange(Receivers.Count == 0 ? new[] { "windows" } : Receivers.Select(ScreenName));
+        return order.Take(9).ToList();
+    }
     public static string ReceiverName { get { return OwnFingerprint != null ? ScreenName(OwnFingerprint) : "windows"; } }
+    public static IEnumerable<string> WheelArgs(ShareAdvanced a)
+    {
+        if (a.WheelScale != 100) { yield return "--wheel-scale"; yield return a.WheelScale.ToString(); }
+        if (a.WheelInvert) yield return "--wheel-invert";
+    }
     public static ProcessStartInfo Backend(bool host, string address)
     {
         string profile = Profile(host);
@@ -219,7 +255,7 @@ static class ShareSettings
             IPAddress parsed;
             if (!IPAddress.TryParse(address, out parsed) || parsed.AddressFamily != AddressFamily.InterNetwork)
                 throw new IOException("請輸入主控端的區域網路 IPv4 位址，例如 192.168.1.20。");
-            args.Add(address);
+            args.AddRange(WheelArgs(Advanced)); args.Add(address);
         }
         return Command(host ? "barriers.exe" : "barrierc.exe", args.ToArray());
     }
@@ -274,13 +310,23 @@ sealed class ShareAdvanced
     public int SwitchDelay, DoubleTap, CornerSize = 16;
     // SwapModifiers defaults on: a Mac keyboard on Windows (and the reverse) then copies with ⌘C / Ctrl+C.
     public bool Corners, SwapModifiers = true, RelativeMouse, ScreenSaver = true, SwitchKeys = true, LockKey;
+    // Ctrl+Alt+1..9 jump to a screen; Ctrl+Alt+B broadcasts typing; receivers' Caps Lock fix; the host keeps window focus.
+    public bool DirectKeys, BroadcastKey, CapsLockFix, PreserveFocus, Clipboard = true;
+    // "" (no key needed), "shift", "control" or "alt" held down to cross an edge.
+    public string SwitchNeeds = "";
+    // This computer as a receiver: wheel speed in percent and reversed direction (passed to barrierc).
+    public int WheelScale = 100; public bool WheelInvert;
+    public static readonly string[] NeedKeys = { "", "shift", "control", "alt" };
+    public static readonly int[] WheelScales = { 50, 75, 100, 150, 200 };
     public string Extra = "", Targets = "";
     static int Clamp(int value, int max) { return Math.Max(0, Math.Min(max, value)); }
     public XElement ToXml()
     {
         return new XElement("advanced", new XAttribute("switchDelay", SwitchDelay), new XAttribute("doubleTap", DoubleTap), new XAttribute("corners", Corners), new XAttribute("cornerSize", CornerSize),
             new XAttribute("swapModifiers", SwapModifiers), new XAttribute("relativeMouse", RelativeMouse), new XAttribute("screenSaver", ScreenSaver), new XAttribute("switchKeys", SwitchKeys),
-            new XAttribute("lockKey", LockKey), new XAttribute("targets", Targets), new XElement("extra", Extra));
+            new XAttribute("lockKey", LockKey), new XAttribute("targets", Targets), new XAttribute("directKeys", DirectKeys), new XAttribute("switchNeeds", SwitchNeeds),
+            new XAttribute("broadcastKey", BroadcastKey), new XAttribute("capsLockFix", CapsLockFix), new XAttribute("preserveFocus", PreserveFocus), new XAttribute("clipboard", Clipboard),
+            new XAttribute("wheelScale", WheelScale), new XAttribute("wheelInvert", WheelInvert), new XElement("extra", Extra));
     }
     public static ShareAdvanced FromXml(XElement e)
     {
@@ -291,6 +337,10 @@ sealed class ShareAdvanced
         a.Corners = flag("corners", false); a.SwapModifiers = flag("swapModifiers", true); a.RelativeMouse = flag("relativeMouse", false);
         a.ScreenSaver = flag("screenSaver", true); a.SwitchKeys = flag("switchKeys", true); a.LockKey = flag("lockKey", false);
         a.Targets = (string)e.Attribute("targets") ?? ""; a.Extra = (string)e.Element("extra") ?? "";
+        a.DirectKeys = flag("directKeys", false); a.BroadcastKey = flag("broadcastKey", false); a.CapsLockFix = flag("capsLockFix", false);
+        a.PreserveFocus = flag("preserveFocus", false); a.Clipboard = flag("clipboard", true); a.WheelInvert = flag("wheelInvert", false);
+        string needs = (string)e.Attribute("switchNeeds"); a.SwitchNeeds = NeedKeys.Contains(needs) ? needs : "";
+        int scale = number("wheelScale", 100); a.WheelScale = WheelScales.Contains(scale) ? scale : 100;
         return a;
     }
     // Extra lines go into the options section; section boundaries would break the generated file.
@@ -339,7 +389,8 @@ static class ShareService
             File64(ShareSettings.TrustedPath(host)), host ? Convert.ToBase64String(new UTF8Encoding(false).GetBytes(ShareSettings.Config(true))) : "",
             host ? ShareSettings.HostName : ShareSettings.ReceiverName,
             // Used only by the core that runs as this user on the normal desktop.
-            Path.GetFullPath(ShareSettings.Profile(host)) });
+            Path.GetFullPath(ShareSettings.Profile(host)) }.Concat(host || ShareSettings.WheelArgs(ShareSettings.Advanced).Count() == 0 ? new string[0]
+            : new[] { ShareSettings.Advanced.WheelScale + "," + (ShareSettings.Advanced.WheelInvert ? "1" : "0") }).ToArray());
     }
 }
 
@@ -1131,7 +1182,7 @@ sealed class ShareWindow : Form
     void LogLine(string line)
     {
         if (details.TextLength > 24000) details.Text = details.Text.Substring(details.TextLength - 12000); details.AppendText(line + Environment.NewLine);
-        if (line.Contains("connected to server") || line.Contains("has connected")) { status.Text = "已連線 · 雙向複製貼上已啟用"; ++connections; UpdateControls(); }
+        if (line.Contains("connected to server") || line.Contains("has connected")) { status.Text = Host && !ShareSettings.Advanced.Clipboard ? "已連線 · 剪貼簿未共用" : "已連線 · 雙向複製貼上已啟用"; ++connections; UpdateControls(); }
         if (line.Contains("disconnected from server") || line.Contains("has disconnected")) { connections = Math.Max(0, connections - 1); UpdateControls(); }
         bool wasTransferring = transferring;
         if (line.Contains("file clipboard: sending")) { status.Text = "正在傳送檔案… 可繼續操作滑鼠與鍵盤"; transferring = true; progress.Reset(); }
@@ -1300,6 +1351,7 @@ sealed class ShareWindow : Form
         using (var editor = BuildLayout()) {
             if (editor.ShowDialog(this) != DialogResult.OK) return;
             foreach (var item in editor.Placement) ShareSettings.Layout[item.Key] = item.Value;
+            foreach (var item in editor.Ranges) ShareSettings.EdgeRange[item.Key] = item.Value;
             Save(); PeersChanged(); if (backend != null) StopBackend(); status.Text = "已儲存螢幕排列。";
         }
     }
@@ -1318,10 +1370,11 @@ sealed class ShareWindow : Form
             group = new ShareCard { BackColor = Color.White, Bounds = new Rectangle(24, y, W, 10) }; dialog.Controls.Add(group); rowY = 0;
         };
         Action<string, string, Control> row = (title, detail, control) => {
-            int h = detail == null ? 44 : 56;
+            int lines = detail == null ? 0 : TextRenderer.MeasureText(detail, new Font(Font.FontFamily, 8.5F)).Width > W - 184 ? 2 : 1;
+            int h = lines == 0 ? 44 : lines == 1 ? 56 : 74;
             if (rowY > 0) group.Controls.Add(new Panel { BackColor = Color.FromArgb(236, 240, 246), Bounds = new Rectangle(14, rowY, W - 28, 1) });
             group.Controls.Add(new Label { Text = title, BackColor = Color.White, Bounds = new Rectangle(14, rowY + (detail == null ? 11 : 8), W - 180, 22) });
-            if (detail != null) group.Controls.Add(new Label { Text = detail, BackColor = Color.White, ForeColor = ShareStyle.Faint, Font = new Font(Font.FontFamily, 8.5F), Bounds = new Rectangle(14, rowY + 30, W - 180, 18) });
+            if (detail != null) group.Controls.Add(new Label { Text = detail, BackColor = Color.White, ForeColor = ShareStyle.Faint, Font = new Font(Font.FontFamily, 8.5F), Bounds = new Rectangle(14, rowY + 30, W - 180, lines * 18) });
             control.Location = new Point(W - 14 - control.Width, rowY + (h - control.Height) / 2); control.AccessibleName = title; group.Controls.Add(control);
             rowY += h; group.Height = rowY + 1; y = group.Bottom;
         };
@@ -1339,11 +1392,23 @@ sealed class ShareWindow : Form
         row("連碰兩下邊緣才切換", null, tap);
         var corners = check(a.Corners); row("螢幕角落不切換", "方便點角落的開始按鈕或關閉鈕", corners);
         var keys = check(a.SwitchKeys); row("啟用切換快捷鍵", "開啟後，按 Ctrl+Alt+方向鍵切到另一台", keys);
+        var direct = check(a.DirectKeys); row("啟用跳到指定電腦快捷鍵", "按 Ctrl+Alt+1 回到這台，2 以後依排列螢幕的順序", direct);
+        var needs = choice(new[] { 0, 1, 2, 3 }, v => new[] { "不需要", "Shift", "Ctrl", "Alt" }[v], Math.Max(0, Array.IndexOf(ShareAdvanced.NeedKeys, a.SwitchNeeds)));
+        row("按住按鍵才切換", "要按住這個鍵，滑鼠碰到邊緣才會切換", needs);
         y += 16; section("鍵盤與滑鼠");
         var swap = check(a.SwapModifiers); row("Mac 上對調 Ctrl 與 Command", "Windows 鍵盤在 Mac 上可按 Ctrl+C／V", swap);
         var lockKey = check(a.LockKey); row("啟用鎖定游標快捷鍵", "開啟後按 Ctrl+Alt+L 鎖定或解除，游標不會跑到另一台", lockKey);
         var relative = check(a.RelativeMouse); row("相對滑鼠移動", "全螢幕遊戲用", relative);
         var saver = check(a.ScreenSaver); row("同步螢幕保護程式", null, saver);
+        var broadcast = check(a.BroadcastKey); row("啟用鍵盤廣播快捷鍵", "開啟後，按 Ctrl+Alt+B 開始或停止：打的字會同時送到所有電腦", broadcast);
+        var caps = check(a.CapsLockFix); row("接收端的 Caps Lock 修正", "接收端的大小寫或 Caps Lock 燈號跟按鍵對不上時再開啟", caps);
+        var focus = check(a.PreserveFocus); row("切走時保留這台的視窗焦點", "游標移到另一台時，這台目前使用中的視窗不會失去焦點", focus);
+        y += 16; section("剪貼簿");
+        var clipboard = check(a.Clipboard); row("共用剪貼簿", "關閉後，兩台不再同步複製的文字和檔案", clipboard);
+        y += 16; section("這台當接收端時（只影響這台）");
+        var wheel = choice(ShareAdvanced.WheelScales, v => v + "%", a.WheelScale);
+        row("滾輪速度", "另一台的滑鼠在這台捲動時的速度", wheel);
+        var invert = check(a.WheelInvert); row("反轉滾輪方向", "Mac 自然捲動和 Windows 方向相反時開啟", invert);
         y += 16; section("連線");
         var targets = new TextBox { Text = String.Join(Environment.NewLine, (a.Targets ?? "").Split(new[] { ',', ' ', ';', '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)), Multiline = true, ScrollBars = ScrollBars.Vertical, Font = new Font("Consolas", 9.5F), Size = new Size(200, 44) };
         row("手動位址", "跨網段或 VPN 時填入對方 IP，一行一個", targets);
@@ -1365,9 +1430,13 @@ sealed class ShareWindow : Form
             var d = new ShareAdvanced();
             delay.SelectedIndex = ((List<int>)delay.Tag).IndexOf(d.SwitchDelay); tap.SelectedIndex = ((List<int>)tap.Tag).IndexOf(d.DoubleTap);
             corners.Checked = d.Corners; keys.Checked = d.SwitchKeys; swap.Checked = d.SwapModifiers; lockKey.Checked = d.LockKey; relative.Checked = d.RelativeMouse; saver.Checked = d.ScreenSaver;
+            direct.Checked = d.DirectKeys; needs.SelectedIndex = 0; broadcast.Checked = d.BroadcastKey; caps.Checked = d.CapsLockFix; focus.Checked = d.PreserveFocus;
+            clipboard.Checked = d.Clipboard; wheel.SelectedIndex = ((List<int>)wheel.Tag).IndexOf(d.WheelScale); invert.Checked = d.WheelInvert;
         };
         read = () => new ShareAdvanced { SwitchDelay = picked(delay), DoubleTap = picked(tap), Corners = corners.Checked, CornerSize = a.CornerSize, SwapModifiers = swap.Checked,
-            RelativeMouse = relative.Checked, ScreenSaver = saver.Checked, SwitchKeys = keys.Checked, LockKey = lockKey.Checked, Targets = String.Join(", ", targets.Lines.Select(l => l.Trim()).Where(l => l.Length > 0)), Extra = a.Extra };
+            RelativeMouse = relative.Checked, ScreenSaver = saver.Checked, SwitchKeys = keys.Checked, LockKey = lockKey.Checked, Targets = String.Join(", ", targets.Lines.Select(l => l.Trim()).Where(l => l.Length > 0)), Extra = a.Extra,
+            DirectKeys = direct.Checked, SwitchNeeds = ShareAdvanced.NeedKeys[picked(needs)], BroadcastKey = broadcast.Checked, CapsLockFix = caps.Checked, PreserveFocus = focus.Checked,
+            Clipboard = clipboard.Checked, WheelScale = picked(wheel), WheelInvert = invert.Checked };
         var reader = read;
         ok.Click += delegate {
             try { var value = reader(); value.TargetList(); dialog.DialogResult = DialogResult.OK; }
@@ -1381,9 +1450,11 @@ sealed class ShareWindow : Form
         Func<ShareAdvanced> read;
         using (var dialog = BuildAdvanced(ShareSettings.Advanced, out read)) {
             if (dialog.ShowDialog(this) != DialogResult.OK) return;
-            ShareSettings.Advanced = read(); Save(); SendTargets();
+            var before = ShareSettings.Advanced; ShareSettings.Advanced = read(); Save(); SendTargets();
             // The host core reads options at start; the saved pairing reconnects it right away.
-            if (Host && backend != null) StopBackend();
+            // A receiver restarts only when its own wheel settings changed.
+            bool wheelChanged = before.WheelScale != ShareSettings.Advanced.WheelScale || before.WheelInvert != ShareSettings.Advanced.WheelInvert;
+            if ((Host || wheelChanged) && backend != null) StopBackend();
             status.Text = "已儲存進階設定。";
         }
     }
@@ -1554,6 +1625,9 @@ sealed class ShareLayoutEditor : Form
     const int Cell = 96, Tall = 60, Span = 2;
     static readonly Color[] Palette = { Color.FromArgb(29, 158, 117), Color.FromArgb(127, 119, 221), Color.FromArgb(216, 90, 48), Color.FromArgb(212, 83, 126), Color.FromArgb(186, 117, 23) };
     public readonly Dictionary<string, Point> Placement = new Dictionary<string, Point>();
+    // Part of the host's edge each receiver beside it uses ("all", "first", "second").
+    public readonly Dictionary<string, string> Ranges = new Dictionary<string, string>();
+    readonly Dictionary<string, ComboBox> rangeBoxes = new Dictionary<string, ComboBox>();
     readonly Dictionary<string, string> names = new Dictionary<string, string>();
     readonly List<string> order = new List<string>();
     readonly Panel canvas = new Panel(), legend = new Panel();
@@ -1566,25 +1640,31 @@ sealed class ShareLayoutEditor : Form
         FormBorderStyle = FormBorderStyle.FixedDialog; StartPosition = FormStartPosition.CenterParent; MaximizeBox = MinimizeBox = false;
         AutoScaleDimensions = new SizeF(96F, 96F); AutoScaleMode = AutoScaleMode.Dpi;
         int width = Cell * (Span * 2 + 1), height = Tall * (Span * 2 + 1);
-        ClientSize = new Size(width + 248, height + 160);
+        ClientSize = new Size(width + 248 + SystemInformation.VerticalScrollBarWidth, height + 160);
         Controls.Add(new Label { Text = "排列螢幕", Font = new Font(Font.FontFamily, 13F, FontStyle.Bold), Bounds = new Rectangle(24, 14, width, 28) });
         Controls.Add(new Label { Text = "拖曳接收端到這台的上下左右；滑鼠從相鄰的邊移過去。", Bounds = new Rectangle(24, 42, width + 200, 22), ForeColor = ShareStyle.Muted });
         canvas.Bounds = new Rectangle(24, 74, width, height); canvas.BackColor = ShareStyle.Background;
         typeof(Panel).GetProperty("DoubleBuffered", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic).SetValue(canvas, true, null);
         Controls.Add(canvas);
-        legend.Bounds = new Rectangle(width + 40, 74, 184, height); legend.BackColor = Color.White;
+        legend.Bounds = new Rectangle(width + 40, 74, 184 + SystemInformation.VerticalScrollBarWidth, height); legend.BackColor = Color.White;
         typeof(Panel).GetProperty("DoubleBuffered", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic).SetValue(legend, true, null);
         Controls.Add(legend);
         warning.Bounds = new Rectangle(24, 80 + height, width + 200, 24); warning.ForeColor = ShareStyle.Danger; Controls.Add(warning);
         var reset = new ShareButton { Text = "恢復預設", Quiet = true, BackColor = Color.White, Bounds = new Rectangle(24, 110 + height, 100, 36) };
-        var cancel = new ShareButton { Text = "取消", BackColor = Color.White, Bounds = new Rectangle(width + 224 - 224, 110 + height, 108, 36), DialogResult = DialogResult.Cancel };
-        save.BackColor = Color.White; save.Bounds = new Rectangle(width + 224 - 104, 110 + height, 128, 36); save.DialogResult = DialogResult.OK;
+        var cancel = new ShareButton { Text = "取消", BackColor = Color.White, Bounds = new Rectangle(width + 224 + SystemInformation.VerticalScrollBarWidth - 224, 110 + height, 108, 36), DialogResult = DialogResult.Cancel };
+        save.BackColor = Color.White; save.Bounds = new Rectangle(width + 224 + SystemInformation.VerticalScrollBarWidth - 104, 110 + height, 128, 36); save.DialogResult = DialogResult.OK;
         Controls.Add(reset); Controls.Add(cancel); Controls.Add(save); CancelButton = cancel;
         var cells = ShareSettings.Cells();
         foreach (var peer in peers) {
             names[peer.Key] = peer.Value; order.Add(peer.Key);
             Point cell; if (cells.TryGetValue(ShareSettings.ScreenName(peer.Key), out cell)) Placement[peer.Key] = cell;
+            Ranges[peer.Key] = ShareSettings.RangeOf(peer.Key);
+            string fp = peer.Key;
+            var box = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Visible = false, AccessibleName = "相接的範圍：" + peer.Value };
+            box.SelectedIndexChanged += delegate { if (box.SelectedIndex >= 0 && box.Tag == null) Ranges[fp] = ShareSettings.EdgeRanges[box.SelectedIndex]; };
+            rangeBoxes[fp] = box; legend.Controls.Add(box);
         }
+        legend.AutoScroll = true; legend.Scroll += delegate { legend.Invalidate(); };
         reset.Click += delegate {
             // The automatic placement: the saved arrangement set aside for a moment.
             var saved = ShareSettings.Layout; ShareSettings.Layout = new Dictionary<string, Point>();
@@ -1634,7 +1714,31 @@ sealed class ShareLayoutEditor : Form
     {
         bool ok = Reachable(); save.Enabled = ok;
         warning.Text = ok ? "" : "有電腦沒有和其他螢幕相鄰，滑鼠到不了；請把它移到相鄰的位置。";
-        legend.Invalidate();
+        Arrange(); legend.Invalidate();
+    }
+    // Legend rows: name and side, then the Ctrl+Alt+number shortcut, then the edge range for a receiver beside the host.
+    bool Direct { get { return ShareSettings.Advanced.DirectKeys; } }
+    int RowHeight(string fp) { Point c; return 34 + (Direct ? 16 : 0) + (Placement.TryGetValue(fp, out c) && ShareSettings.Beside(c) ? 52 : 0); }
+    int LegendHeight { get { return 24 + order.Sum(fp => RowHeight(fp) + 6) + 72; } }
+    void Arrange()
+    {
+        float k = Zoom; int y = 24;
+        foreach (var fp in order) {
+            Point c; var box = rangeBoxes[fp];
+            bool beside = Placement.TryGetValue(fp, out c) && ShareSettings.Beside(c);
+            if (beside) {
+                // Left/right neighbours split the edge into top and bottom halves, up/down neighbours into left and right.
+                string[] items = c.X != 0 ? new[] { "整個邊", "上半段", "下半段" } : new[] { "整個邊", "左半段", "右半段" };
+                if (box.Items.Count == 0 || (string)box.Items[1] != items[1]) {
+                    box.Tag = "filling"; box.Items.Clear(); box.Items.AddRange(items); box.Tag = null;
+                }
+                box.Tag = "filling"; box.SelectedIndex = Array.IndexOf(ShareSettings.EdgeRanges, Ranges[fp]); box.Tag = null;
+                box.Bounds = new Rectangle((int)(10 * k), (int)((y + 34 + (Direct ? 16 : 0) + 18) * k) + legend.AutoScrollPosition.Y, (int)(150 * k), box.Height);
+            }
+            box.Visible = beside;
+            y += RowHeight(fp) + 6;
+        }
+        legend.AutoScrollMinSize = new Size(0, (int)(LegendHeight * k));
     }
     void Draw(Graphics g)
     {
@@ -1656,11 +1760,11 @@ sealed class ShareLayoutEditor : Form
     }
     void DrawLegend(Graphics g)
     {
-        g.SmoothingMode = SmoothingMode.AntiAlias; float k = Zoom; g.ScaleTransform(k, k);
+        g.SmoothingMode = SmoothingMode.AntiAlias; float k = Zoom; g.TranslateTransform(0, legend.AutoScrollPosition.Y); g.ScaleTransform(k, k);
         using (var f = new Font(Font.FontFamily, 8.5F)) TextRenderer.DrawText(g, "已配對", f, new Point(0, 0), ShareStyle.Faint);
-        int y = 24;
+        int y = 24; var direct = ShareSettings.DirectOrder();
         foreach (var fp in order) {
-            var r = new Rectangle(0, y, 180, 34);
+            var r = new Rectangle(0, y, 180, RowHeight(fp));
             using (var path = ShareStyle.Rounded(r, 7)) using (var pen = new Pen(ShareStyle.Border)) g.DrawPath(pen, path);
             using (var b = new SolidBrush(ColorOf(fp))) g.FillRectangle(b, 10, y + 13, 8, 8);
             using (var f = new Font(Font.FontFamily, 9F)) {
@@ -1668,9 +1772,15 @@ sealed class ShareLayoutEditor : Form
                 Point c; string where = Placement.TryGetValue(fp, out c) ? Direction(c) : "";
                 TextRenderer.DrawText(g, where, f, new Rectangle(110, y, 62, 34), ShareStyle.Faint, TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
             }
-            y += 40;
+            int below = y + 30;
+            using (var f = new Font(Font.FontFamily, 8.5F)) {
+                int number = direct.IndexOf(ShareSettings.ScreenName(fp)) + 1;
+                if (Direct) { TextRenderer.DrawText(g, number > 0 ? "快捷鍵 Ctrl+Alt+" + number : "超過 9 台，沒有快捷鍵", f, new Point(26, below), ShareStyle.Faint); below += 16; }
+                Point c; if (Placement.TryGetValue(fp, out c) && ShareSettings.Beside(c)) TextRenderer.DrawText(g, "相接：", f, new Point(10, below + 2), ShareStyle.Muted);
+            }
+            y += RowHeight(fp) + 6;
         }
-        using (var f = new Font(Font.FontFamily, 8.5F)) TextRenderer.DrawText(g, "每台都要能從這台一路走到；斜角不相連。", f, new Rectangle(0, y + 6, 180, 48), ShareStyle.Faint, TextFormatFlags.WordBreak | TextFormatFlags.NoPrefix);
+        using (var f = new Font(Font.FontFamily, 8.5F)) TextRenderer.DrawText(g, "每台都要能從這台一路走到；斜角不相連。螢幕大小不同時，可在上方選擇只相接上半段或下半段。", f, new Rectangle(0, y + 6, 180, 66), ShareStyle.Faint, TextFormatFlags.WordBreak | TextFormatFlags.NoPrefix);
     }
     // Test hook: place a receiver as a drag would.
     internal bool Place(string fingerprint, Point cell)
@@ -1821,13 +1931,40 @@ static class ShareProgram
             if (ShareSettings.Layout.Count != 1 || ShareSettings.Layout[fb] != new Point(0, -1)) throw new Exception("Screen layout roundtrip failed");
             ShareSettings.OwnFingerprint = fc;
             if (!String.Join(" ", ShareSettings.Backend(false, "192.168.1.2").Arguments).Contains("\"--name\" \"" + nc + "\"")) throw new Exception("Receiver does not use its own screen name");
+            // Defaults leave the generated file and the receiver command as they were.
+            var allOptions = ShareSettings.Advanced; ShareSettings.Advanced = new ShareAdvanced();
+            string plain = ShareSettings.Config(true), plainReceiver = ShareSettings.Backend(false, "192.168.1.2").Arguments;
+            foreach (string unexpected in new[] { "preserveFocus", "halfDuplexCapsLock", "switchNeeds", "switchToScreen", "keyboardBroadcast", "(0,50)", "(50,100)", "clipboardSharing = false" })
+                if (plain.Contains(unexpected)) throw new Exception("Default settings changed the config: " + unexpected + "\n" + plain);
+            if (plainReceiver.Contains("--wheel") || ShareService.StartCommand(false, "192.168.1.2").Split('\t').Length != 8) throw new Exception("Default wheel settings changed the receiver command");
+            // The eight added options together; fa sits right of the host and uses only the top half of that edge.
+            ShareSettings.Advanced = new ShareAdvanced { DirectKeys = true, SwitchNeeds = "alt", BroadcastKey = true, CapsLockFix = true, PreserveFocus = true, Clipboard = false, WheelScale = 150, WheelInvert = true };
+            ShareSettings.EdgeRange = new Dictionary<string, string> { { fa, "first" }, { fc, "second" } };
+            string added = ShareSettings.Config(true);
+            foreach (string expected in new[] { " windows-host:\n  preserveFocus = true\n", " " + na + ":\n  halfDuplexCapsLock = true\n", "  right(0,50) = " + na + "\n", "  left(50,100) = " + nc + "\n",
+                " " + na + ":\n  left = windows-host(0,50)\n", " " + nc + ":\n  right = windows-host(50,100)\n", " " + nb + ":\n  down = windows-host\n", "  up = " + nb + "\n",
+                " clipboardSharing = false\n", " switchNeedsAlt = true\n", " keystroke(Control+Alt+1) = switchToScreen(windows-host)\n", " keystroke(Control+Alt+2) = switchToScreen(" + na + ")\n",
+                " keystroke(Control+Alt+3) = switchToScreen(" + nb + ")\n", " keystroke(Control+Alt+4) = switchToScreen(" + nc + ")\n", " keystroke(Control+Alt+B) = keyboardBroadcast(toggle)\n" })
+                if (!added.Contains(expected)) throw new Exception("Added option missing from config: " + expected.Trim() + "\n" + added);
+            if (added.Contains("windows-host:\n  halfDuplexCapsLock") || added.Contains("  preserveFocus = true\n  left = ")) throw new Exception("Caps Lock fix or focus option on the wrong screen\n" + added);
+            foreach (string needs in new[] { "shift", "control" }) { ShareSettings.Advanced.SwitchNeeds = needs; if (!ShareSettings.Config(true).Contains(" switchNeeds" + (needs == "shift" ? "Shift" : "Control") + " = true\n")) throw new Exception("switchNeeds " + needs + " missing"); }
+            ShareSettings.Advanced.SwitchNeeds = "alt";
+            string receiverArgs = ShareSettings.Backend(false, "192.168.1.2").Arguments; var startFields = ShareService.StartCommand(false, "192.168.1.2").Split('\t');
+            if (!receiverArgs.Contains("\"--wheel-scale\" \"150\" \"--wheel-invert\" \"192.168.1.2\"") || startFields.Length != 9 || startFields[8] != "150,1") throw new Exception("Wheel settings missing from the receiver command: " + receiverArgs);
+            ShareSettings.Save(true, ""); ShareSettings.Load(out host, out address); var back = ShareSettings.Advanced;
+            if (!back.DirectKeys || back.SwitchNeeds != "alt" || !back.BroadcastKey || !back.CapsLockFix || !back.PreserveFocus || back.Clipboard || back.WheelScale != 150 || !back.WheelInvert
+                || ShareSettings.RangeOf(fa) != "first" || ShareSettings.RangeOf(fc) != "second" || ShareSettings.RangeOf(fb) != "all") throw new Exception("Added options roundtrip failed");
+            var fromOld = ShareAdvanced.FromXml(new XElement("advanced", new XAttribute("switchNeeds", "meta"), new XAttribute("wheelScale", "9999")));
+            if (fromOld.SwitchNeeds != "" || fromOld.WheelScale != 100 || !fromOld.Clipboard) throw new Exception("Invalid saved values were not reset");
             ShareSettings.OwnFingerprint = null;
+            // The core must accept the file with every option, including half edges.
             using (var core = Process.Start(ShareSettings.Backend(true, ""))) {
                 Thread.Sleep(1500);
-                if (core.HasExited) throw new Exception("Hidden backend failed: " + core.StandardError.ReadToEnd());
+                if (core.HasExited) throw new Exception("Hidden backend failed: " + core.StandardError.ReadToEnd() + core.StandardOutput.ReadToEnd());
                 if (core.MainWindowHandle != IntPtr.Zero) throw new Exception("Backend opened a console");
                 core.Kill(); core.WaitForExit(5000);
             }
+            ShareSettings.Advanced = allOptions; ShareSettings.EdgeRange = new Dictionary<string, string>(); ShareSettings.Save(true, "");
             string releases = "[{\"tag_name\":\"mac-v9.0.0\",\"html_url\":\"https://github.com/sunnylinisme/barrier/releases/tag/mac-v9.0.0\",\"draft\":false,\"prerelease\":false}," +
                 "{\"tag_name\":\"windows-v0.4.0\",\"html_url\":\"https://github.com/sunnylinisme/barrier/releases/tag/windows-v0.4.0\",\"draft\":true,\"prerelease\":false}," +
                 "{\"tag_name\":\"windows-v0.3.9\",\"html_url\":\"https://github.com/sunnylinisme/barrier/releases/tag/windows-v0.3.9\",\"draft\":false,\"prerelease\":false}," +
@@ -1852,20 +1989,22 @@ static class ShareProgram
                         if (!advanced.DisplayRectangle.Contains(shown[i].Bounds)) throw new Exception("Advanced dialog clips: " + shown[i].Text);
                         for (int j = i + 1; j < shown.Length; ++j) if (shown[i].Bounds.IntersectsWith(shown[j].Bounds)) throw new Exception("Advanced dialog overlaps: " + shown[i].Text + " / " + shown[j].Text);
                     }
-                    if (readAdvanced().SwitchDelay != 250 || !readAdvanced().SwapModifiers) throw new Exception("Advanced dialog lost values");
+                    if (readAdvanced().SwitchDelay != 250 || !readAdvanced().SwapModifiers) throw new Exception("Advanced dialog lost values: " + readAdvanced().SwitchDelay + " " + readAdvanced().SwapModifiers + " " + ShareSettings.Advanced.SwitchDelay);
                     using (var bitmap = new Bitmap(advanced.Width, advanced.Height)) { advanced.DrawToBitmap(bitmap, new Rectangle(Point.Empty, advanced.Size)); bitmap.Save(Path.Combine(directory, "gui-advanced.png")); }
                     advanced.Close();
                 }
                 ShareSettings.Receivers = new List<string> { fa, fb, fc }; ShareSettings.Layout = new Dictionary<string, Point> { { fb, new Point(0, -1) } };
+                ShareSettings.Advanced.DirectKeys = true; ShareSettings.EdgeRange = new Dictionary<string, string> { { fa, "first" } };
                 using (var layout = new ShareLayoutEditor(new Dictionary<string, string> { { fa, "書房 Windows" }, { fb, "MacBook Air" }, { fc, "客廳電腦" } }, window.Font)) {
                     layout.Show(); Application.DoEvents();
                     if (!layout.Reachable() || layout.Placement[fb] != new Point(0, -1)) throw new Exception("Layout editor did not start from the saved arrangement");
                     if (layout.Place(fc, new Point(1, 0)) || !layout.Place(fc, new Point(2, 2)) || layout.Reachable()) throw new Exception("Layout editor accepted an occupied cell or a detached screen");
                     if (!layout.Place(fc, new Point(-1, 0)) || !layout.Reachable()) throw new Exception("Layout editor rejected a valid arrangement");
+                    if (layout.Ranges[fa] != "first" || layout.Ranges[fb] != "all") throw new Exception("Layout editor lost the edge ranges");
                     using (var bitmap = new Bitmap(layout.Width, layout.Height)) { layout.DrawToBitmap(bitmap, new Rectangle(Point.Empty, layout.Size)); bitmap.Save(Path.Combine(directory, "gui-layout.png")); }
                     layout.Close();
                 }
-                ShareSettings.Receivers = new List<string>(); ShareSettings.Layout = new Dictionary<string, Point>();
+                ShareSettings.Receivers = new List<string>(); ShareSettings.Layout = new Dictionary<string, Point>(); ShareSettings.EdgeRange = new Dictionary<string, string>(); ShareSettings.Advanced.DirectKeys = false;
                 using (var transfer = new ShareTransferPopup(window.Font)) {
                     transfer.Begin(false); Application.DoEvents();
                     if (transfer.Visible) throw new Exception("Transfer window appeared before one second");
