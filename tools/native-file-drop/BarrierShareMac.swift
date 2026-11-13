@@ -921,41 +921,28 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuD
         let targets = NSTextView(frame: targetScroll.bounds); targets.isRichText = false; targets.font = .monospacedSystemFont(ofSize: 12, weight: .regular); targets.autoresizingMask = [.width]
         targets.string = a.targets.components(separatedBy: CharacterSet(charactersIn: ", ;\r\n")).filter { !$0.isEmpty }.joined(separator: "\n"); targetScroll.documentView = targets
         row("手動位址", "跨網段或 VPN 時填入對方 IP，一行一個", targetScroll)
-        y += 12
-        let expertToggle = NSButton(title: "", target: nil, action: nil); expertToggle.isBordered = false; expertToggle.alignment = .left; expertToggle.frame = NSRect(x: 24, y: y, width: W, height: 22); view.addSubview(expertToggle); y += 28
-        let extraScroll = NSScrollView(frame: NSRect(x: 24, y: y, width: W, height: 70)); extraScroll.hasVerticalScroller = true; extraScroll.borderType = .bezelBorder
-        let extra = NSTextView(frame: extraScroll.bounds); extra.isRichText = false; extra.font = .monospacedSystemFont(ofSize: 12, weight: .regular); extra.string = a.extra; extra.autoresizingMask = [.width]
-        extraScroll.documentView = extra; extraScroll.setAccessibilityLabel("自訂 Barrier 選項"); view.addSubview(extraScroll)
+        y += 8
         let buttonsY = y + 8
         let reset = NSButton(title: "恢復預設", target: nil, action: nil); reset.bezelStyle = .rounded; reset.frame = NSRect(x: 24, y: buttonsY, width: 100, height: 32); view.addSubview(reset)
         let cancel = NSButton(title: "取消", target: nil, action: nil); cancel.bezelStyle = .rounded; cancel.keyEquivalent = "\u{1b}"; cancel.frame = NSRect(x: W + 24 - 232, y: buttonsY, width: 108, height: 32); view.addSubview(cancel)
         let save = SharePrimaryButton(title: "儲存", target: nil, action: nil); save.frame = NSRect(x: W + 24 - 112, y: buttonsY, width: 112, height: 32); view.addSubview(save)
         let closer = ShareModalCloser(panel); save.target = closer; save.action = #selector(ShareModalCloser.accept); cancel.target = closer; cancel.action = #selector(ShareModalCloser.cancel)
-        // The expert box opens on demand (or when it already holds something) and moves the buttons below it.
-        let expert = ShareBlockTarget { [weak extraScroll, weak expertToggle, weak panel, weak view] open in
-            guard let extraScroll = extraScroll, let view = view else { return }
-            extraScroll.isHidden = !open
-            expertToggle?.attributedTitle = NSAttributedString(string: (open ? "▾" : "▸") + " 自訂 Barrier 選項（專家）", attributes: [.foregroundColor: ShareStyle.muted, .font: NSFont.systemFont(ofSize: 12)])
-            let top = buttonsY + (open ? 80 : 0)
-            for b in [reset, cancel, save] { b.frame.origin.y = top }
-            let size = NSSize(width: width, height: top + 52); view.frame.size = size; panel?.setContentSize(size)
-        }
-        expertToggle.target = expert; expertToggle.action = #selector(ShareBlockTarget.toggle)
+        let size = NSSize(width: width, height: buttonsY + 52); view.frame.size = size; panel.setContentSize(size)
         let resetter = ShareBlockTarget { _ in
             let d = ShareAdvanced()
             delay.selectItem(withTag: d.switchDelay); tap.selectItem(withTag: d.doubleTap)
             for (box, on) in [(corners, d.corners), (keys, d.switchKeys), (swap, d.swapModifiers), (lock, d.lockKey), (relative, d.relativeMouse), (saver, d.screenSaver)] { box.state = on ? .on : .off }
         }
         reset.target = resetter; reset.action = #selector(ShareBlockTarget.toggle)
-        objc_setAssociatedObject(panel, "targets", [closer, expert, resetter], .OBJC_ASSOCIATION_RETAIN)
-        expert.open = !a.extra.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty; expert.action(expert.open)
+        objc_setAssociatedObject(panel, "targets", [closer, resetter], .OBJC_ASSOCIATION_RETAIN)
         let read = { () -> ShareAdvanced in
             var v = ShareAdvanced(); v.cornerSize = a.cornerSize
             v.switchDelay = delay.selectedTag(); v.doubleTap = tap.selectedTag()
             v.corners = corners.state == .on; v.swapModifiers = swap.state == .on; v.relativeMouse = relative.state == .on; v.screenSaver = saver.state == .on
             v.switchKeys = keys.state == .on; v.lockKey = lock.state == .on
             v.targets = targets.string.components(separatedBy: .newlines).map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }.joined(separator: ", ")
-            v.extra = extra.string
+            // The expert Barrier options box was removed; a value saved by an older version is kept.
+            v.extra = a.extra
             return v
         }
         return (panel, read, closer)
