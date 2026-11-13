@@ -227,6 +227,12 @@ static class ShareUpdate
     // Shared vX.Y.Z releases carry both platforms; windows-vX.Y.Z is the pre-0.3.9 Windows-only form.
     static readonly string[] Prefixes = { "v", "windows-v" };
     public static Version Current { get { var v = typeof(ShareUpdate).Assembly.GetName().Version; return new Version(v.Major, v.Minor, Math.Max(0, v.Build)); } }
+    // CI stamps test builds with the run number as the fourth part and the commit; releases have 0 and "".
+    static readonly string BuildCommit = "";
+    public static int Build { get { return Math.Max(0, typeof(ShareUpdate).Assembly.GetName().Version.Revision); } }
+    // "0.3.9" for a release, "0.3.9.123 測試版" for a test build.
+    public static string Label { get { return Build > 0 ? Current + "." + Build + " 測試版" : Current.ToString(); } }
+    public static string Details { get { return "版本 " + Label + (BuildCommit.Length > 0 ? "，commit " + BuildCommit : ""); } }
     public sealed class Found { public Version Version; public string Url; }
     // Returns the highest non-draft, non-prerelease Windows release newer than current, or null.
     public static Found Newer(string json, Version current)
@@ -514,7 +520,7 @@ sealed class ShareWindow : Form
     public ShareWindow(bool selfTest = false)
     {
         SuspendLayout();
-        testing = selfTest; Text = "Barrier Share " + ShareUpdate.Current;
+        testing = selfTest; Text = "Barrier Share " + ShareUpdate.Label;
         Font = new Font("Microsoft JhengHei UI", 11F); AutoScaleDimensions=new SizeF(96F,96F); AutoScaleMode=AutoScaleMode.Dpi;
         ClientSize = new Size(800, 654); BackColor = ShareStyle.Background; ForeColor = ShareStyle.Ink;
         AutoScroll=true; AutoScrollMinSize=ClientSize;
@@ -555,7 +561,7 @@ sealed class ShareWindow : Form
         var advancedButton = new ShareButton { Text="進階設定", BackColor=ShareStyle.Background, Font=new Font(Font.FontFamily,10F), TabIndex=6 }; At(advancedButton,524,602,120,36); advancedButton.Click += delegate { ShowAdvanced(); };
         details.Multiline=true; details.ReadOnly=true; details.ScrollBars=ScrollBars.Vertical; details.Font=new Font("Consolas",9F); details.BackColor=Color.FromArgb(249,251,255); details.BorderStyle=BorderStyle.None;
         var menu = new ContextMenuStrip(); menu.Items.Add("開啟視窗", null, delegate { Show(); WindowState = FormWindowState.Normal; Activate(); });
-        menu.Items.Add("結束", null, delegate { closing = true; Close(); }); tray.Icon = Icon; tray.Text = "Barrier Share " + ShareUpdate.Current; tray.ContextMenuStrip = menu; tray.Visible = !testing;
+        menu.Items.Add("結束", null, delegate { closing = true; Close(); }); tray.Icon = Icon; tray.Text = "Barrier Share " + ShareUpdate.Label; tray.ContextMenuStrip = menu; tray.Visible = !testing;
         tray.DoubleClick += delegate { Show(); WindowState = FormWindowState.Normal; Activate(); };
         start.Click += delegate {
             // While a file is moving the same button cancels it: restarting the connection drops the partial copy on both sides.
@@ -607,7 +613,7 @@ sealed class ShareWindow : Form
     // Runs once, on first show or right away for a hidden sign-in launch.
     void Startup()
     {
-        if (started) return; started = true;
+        if (started) return; started = true; Diagnose(ShareUpdate.Details);
         if (!testing) { ShareCursor.Restore(); ShareLogin.Refresh(); }
         try {
             ShareSettings.Import(ShareSettings.Bin, true, false); ShareSettings.Import(ShareSettings.Bin, false, false);

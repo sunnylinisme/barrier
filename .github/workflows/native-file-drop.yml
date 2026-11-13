@@ -82,7 +82,17 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force build/bin/Release | Out-Null
-          & "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe" /nologo "/win32icon:$PWD\tools\native-file-drop\icons\BarrierShare.ico" /target:winexe /platform:x64 /codepage:65001 /reference:System.Windows.Forms.dll /reference:System.Drawing.dll /reference:System.Xml.Linq.dll /reference:System.Web.Extensions.dll "/win32manifest:$PWD\tools\native-file-drop\desktop.manifest" "/out:$PWD\build\bin\Release\BarrierShare.exe" "$PWD\tools\native-file-drop\BarrierShare.cs"
+          # Test builds (not vX.Y.Z tags) carry the CI run number as the fourth version part,
+          # e.g. 0.3.9.123, and the commit; releases keep the plain X.Y.Z.0.
+          $source = "$PWD\tools\native-file-drop\BarrierShare.cs"
+          $stamp = "$PWD\build\BarrierShare.stamp.cs"
+          $build = if ($env:GITHUB_REF -like 'refs/tags/*') { '0' } else { $env:GITHUB_RUN_NUMBER }
+          $commit = $env:GITHUB_SHA.Substring(0, 8)
+          $text = [IO.File]::ReadAllText($source, [Text.Encoding]::UTF8)
+          $text = [Text.RegularExpressions.Regex]::Replace($text, '(Assembly(File)?Version\("\d+\.\d+\.\d+)\.0"\)', ('$1.' + $build + '")'))
+          $text = $text.Replace('static readonly string BuildCommit = "";', "static readonly string BuildCommit = `"$commit`";")
+          [IO.File]::WriteAllText($stamp, $text, [Text.UTF8Encoding]::new($false))
+          & "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe" /nologo "/win32icon:$PWD\tools\native-file-drop\icons\BarrierShare.ico" /target:winexe /platform:x64 /codepage:65001 /reference:System.Windows.Forms.dll /reference:System.Drawing.dll /reference:System.Xml.Linq.dll /reference:System.Web.Extensions.dll "/win32manifest:$PWD\tools\native-file-drop\desktop.manifest" "/out:$PWD\build\bin\Release\BarrierShare.exe" $stamp
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Build
         run: cmake --build build --config Release --parallel 3
