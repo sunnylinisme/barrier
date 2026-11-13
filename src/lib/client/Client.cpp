@@ -19,6 +19,8 @@
 #include "client/Client.h"
 
 #include "client/ServerProxy.h"
+#include "barrier/App.h"
+#include "barrier/ClientArgs.h"
 #include "barrier/Screen.h"
 #include "barrier/FileChunk.h"
 #include "barrier/DropHelper.h"
@@ -340,6 +342,14 @@ Client::mouseRelativeMove(SInt32 dx, SInt32 dy)
 void
 Client::mouseWheel(SInt32 xDelta, SInt32 yDelta)
 {
+    // Receiver-side wheel settings (Barrier Share 進階設定 › 這台當接收端時).
+    if (auto args = dynamic_cast<const ClientArgs*>(&App::instance().argsBase())) {
+        if (args->m_wheelScale != 100) {
+            xDelta = static_cast<SInt32>(static_cast<long long>(xDelta) * args->m_wheelScale / 100);
+            yDelta = static_cast<SInt32>(static_cast<long long>(yDelta) * args->m_wheelScale / 100);
+        }
+        if (args->m_wheelInvert) { xDelta = -xDelta; yDelta = -yDelta; }
+    }
     m_screen->mouseWheel(xDelta, yDelta);
 }
 

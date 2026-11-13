@@ -107,6 +107,15 @@ ArgParser::parseClientArgs(ClientArgs& args, int argc, const char* const* argv)
             // define scroll
             args.m_yscroll = atoi(argv[++i]);
         }
+        else if (isArg(i, argc, argv, NULL, "--wheel-scale", 1)) {
+            // percentage applied to scrolling from the other computer (10-500)
+            int scale = atoi(argv[++i]);
+            if (scale < 10 || scale > 500) { LOG((CLOG_CRIT "%s: --wheel-scale must be between 10 and 500", args.m_exename.c_str())); return false; }
+            args.m_wheelScale = scale;
+        }
+        else if (isArg(i, argc, argv, NULL, "--wheel-invert")) {
+            args.m_wheelInvert = true;
+        }
         else {
             if (i + 1 == argc) {
                 args.m_barrierAddress = argv[i];

@@ -129,6 +129,8 @@ ClientApp::help()
            << HELP_COMMON_INFO_1 << WINAPI_INFO << HELP_SYS_INFO
            << "      --yscroll <delta>    defines the vertical scrolling delta, which is\n"
            << "                           120 by default.\n"
+           << "      --wheel-scale <pct>  scale scrolling from the server (10-500, default 100).\n"
+           << "      --wheel-invert       reverse the scrolling direction from the server.\n"
            << HELP_COMMON_INFO_2
            << "\n"
            << "Default options are marked with a *\n"
