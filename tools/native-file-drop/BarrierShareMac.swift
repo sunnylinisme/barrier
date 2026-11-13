@@ -1453,6 +1453,14 @@ func selfTest(_ directory: URL) throws {
     let (advancedPanel, readAdvanced, _) = app.buildAdvanced(ShareAdvanced())
     guard readAdvanced() == ShareAdvanced() else { throw ShareError.message("Advanced settings did not round-trip the defaults") }
     try snapshot(advancedPanel.contentView, "gui-advanced.png")
+    // Buttons keep at least 20 pt from the bottom edge of every window.
+    func bottomMargin(_ root: NSView?, _ file: String) throws {
+        guard let root = root else { throw ShareError.message("No view for \(file)") }
+        let lowest = root.subviews.filter { $0 is NSButton && !$0.isHidden }.map { root.isFlipped ? root.bounds.height - $0.frame.maxY : $0.frame.minY }.min() ?? .infinity
+        if lowest < 20 { throw ShareError.message("\(file): a button is only \(Int(lowest)) pt from the bottom edge") }
+    }
+    try bottomMargin(advancedPanel.contentView, "advanced settings"); try bottomMargin(layoutPanel.contentView, "arrange screens")
+    try bottomMargin(app.body, "main window")
     try snapshot((advancedPanel.contentView?.subviews.first as? NSScrollView)?.documentView, "gui-advanced-all.png")
     // Original Barrier features: each setting writes its line into the host's screen config.
     var features = ShareAdvanced(); features.directKeys = true; features.broadcastKey = true; features.capsLockFix = true; features.preserveFocus = true
