@@ -11,6 +11,8 @@ struct ShareOptions: Codable {
     var advanced = ShareAdvanced()
     // Where each paired receiver sits relative to this host on a 5x5 grid: fingerprint -> [x, y], y grows downwards.
     var layout: [String: [Int]] = [:]
+    // Operating system each paired computer reported over the link: fingerprint -> mac / windows / linux.
+    var platforms: [String: String] = [:]
     init() {}
     // Settings saved by older versions lack newer keys; keep their defaults.
     init(from decoder: Decoder) throws {
@@ -19,6 +21,7 @@ struct ShareOptions: Codable {
         address = try c.decodeIfPresent(String.self, forKey: .address) ?? ""
         position = try c.decodeIfPresent(String.self, forKey: .position) ?? "right"
         advanced = (try? c.decodeIfPresent(ShareAdvanced.self, forKey: .advanced)) ?? ShareAdvanced()
+        platforms = (try? c.decodeIfPresent([String: String].self, forKey: .platforms)) ?? [:]
         layout = ((try? c.decodeIfPresent([String: [Int]].self, forKey: .layout)) ?? [:]).filter { $0.value.count == 2 && abs($0.value[0]) <= 2 && abs($0.value[1]) <= 2 }
     }
 }
@@ -115,14 +118,16 @@ final class ShareSettings {
         }
         return result
     }
-    static func config(_ direction: String, _ a: ShareAdvanced = ShareAdvanced(), receivers: [String] = [], layout: [String: [Int]] = [:]) throws -> String {
+    static func config(_ direction: String, _ a: ShareAdvanced = ShareAdvanced(), receivers: [String] = [], layout: [String: [Int]] = [:], platforms: [String: String] = [:]) throws -> String {
         guard directions.contains(direction) else { throw ShareError.message("請選擇有效的螢幕位置。") }
         let grid = cells(direction, receivers: receivers, layout: layout)
         var text = "section: screens\n"
         for (name, _) in grid {
             text += " \(name):\n"
-            // Swap on the receiving screens: Ctrl acts as Command/Windows there and the other way round.
-            if a.swapModifiers && name != hostName { text += "  ctrl = super\n  super = ctrl\n" }
+            // Swap on non-Mac receivers only: a Mac keyboard's Command then acts as Ctrl there.
+            // Mac to Mac needs no swap; a receiver whose system is unknown is treated as Windows.
+            let platform = receivers.first(where: { screenName($0) == name }).flatMap { platforms[$0] }
+            if a.swapModifiers && name != hostName && platform != "mac" { text += "  ctrl = super\n  super = ctrl\n" }
         }
         // The first receiver also answers to "windows", the name receivers used before 0.3.9.
         if let first = receivers.first { text += "end\nsection: aliases\n \(screenName(first)):\n  windows\n" }
@@ -154,7 +159,7 @@ final class ShareSettings {
         var args = ["-f", "--no-tray", "--file-clipboard", "--profile-dir", p.path, "--log", p.appendingPathComponent(options.host ? "server.log" : "mac.log").path, "--name", options.host ? hostName : receiverName]
         if options.host {
             let path = p.appendingPathComponent("screens.conf")
-            try config(options.position, options.advanced, receivers: receivers, layout: options.layout).write(to: path, atomically: true, encoding: .utf8)
+            try config(options.position, options.advanced, receivers: receivers, layout: options.layout, platforms: options.platforms).write(to: path, atomically: true, encoding: .utf8)
             args += ["-c", path.path]
         } else {
             var ip = in_addr()
@@ -514,7 +519,7 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let tap = number("輕敲兩下邊緣才切換（兩次間隔毫秒，0 = 關閉）", a.doubleTap)
         let corners = check("螢幕四個角落不切換", a.corners)
         let cornerSize = number("　角落範圍（像素）", a.cornerSize)
-        let swap = check("接收端的 Control 與 Command／Windows 鍵對調（Mac 與 Windows 混用時）", a.swapModifiers)
+        let swap = check("Windows 接收端的 Control 與 Command 鍵對調（兩台都是 Mac 時不會對調）", a.swapModifiers)
         let relative = check("相對滑鼠移動（全螢幕遊戲用）", a.relativeMouse)
         let saver = check("螢幕保護程式同步", a.screenSaver)
         let keys = check("Control+Option+方向鍵切換到另一台", a.switchKeys)
@@ -600,6 +605,12 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
             let index = nearby.indexOfSelectedItem, selected = nearby.indexOfSelectedItem >= 0 && nearby.indexOfSelectedItem < computers.count ? computers[index].fingerprint : ""
             computers.removeAll { $0.fingerprint == f[1] }; computers.append(NearbyComputer(fingerprint: f[1], name: decoded(f[2]), address: f[3])); computers.sort { $0.name < $1.name }
             nearby.removeAllItems(); nearby.addItems(withTitles: computers.map { $0.name + "  ·  " + $0.address }); if let item = computers.firstIndex(where: { $0.fingerprint == selected }) { nearby.selectItem(at: item) }
+        } else if f[0] == "PLATFORM" && f.count == 3 {
+            guard options.platforms[f[1]] != f[2] else { return }
+            options.platforms[f[1]] = f[2]
+            do { try ShareSettings.save(options) } catch { showError(error) }
+            // The swap is written into the host's screen config, so restart the core to apply it.
+            if options.host && core != nil { stopBackend(); startBackend() }
         } else if f[0] == "GONE" && f.count == 2 { if let index = computers.firstIndex(where: { $0.fingerprint == f[1] }) { computers.remove(at: index); nearby.removeItem(at: index) } }
         else if (f[0] == "SAVED" || f[0] == "PAIRED") && f.count == 3 {
             // A receiver has one host; a host's new receiver needs the core restarted with the new screen list.
@@ -783,6 +794,10 @@ func selfTest(_ directory: URL) throws {
     var swapped = ShareAdvanced(); swapped.swapModifiers = true
     let multi = try ShareSettings.config("right", swapped, receivers: [fa, fb, fc], layout: [fb: [0, -1]])
     let (na, nb, nc) = (ShareSettings.screenName(fa), ShareSettings.screenName(fb), ShareSettings.screenName(fc))
+    let mixed = try ShareSettings.config("right", swapped, receivers: [fa, fb, fc], platforms: [fa: "mac", fb: "windows"])
+    guard !mixed.contains(" \(na):\n  ctrl = super"), mixed.contains(" \(nb):\n  ctrl = super\n"), mixed.contains(" \(nc):\n  ctrl = super\n") else { throw ShareError.message("Ctrl/Command swap applied to a Mac receiver or skipped a Windows/unknown one") }
+    var withPlatform = ShareOptions(); withPlatform.platforms = [fa: "mac"]; try ShareSettings.save(withPlatform)
+    guard try ShareSettings.load().platforms == [fa: "mac"] else { throw ShareError.message("Receiver platforms were not saved") }
     for expected in [" windows-host:\n  right = \(na)\n  left = \(nc)\n  up = \(nb)\n", " \(na):\n  left = windows-host\n", " \(nb):\n  down = windows-host\n", "section: aliases\n \(na):\n  windows\nend\n", " \(nb):\n  ctrl = super\n  super = ctrl\n", "switchInDirection(up)", "switchInDirection(down)"] where !multi.contains(expected) {
         throw ShareError.message("Multi-screen config missing: \(expected)")
     }
