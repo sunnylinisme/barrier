@@ -829,6 +829,7 @@ sealed class ShareWindow : Form
     void Startup()
     {
         if (started) return; started = true; Diagnose(ShareUpdate.Details);
+        Diagnose("權限：" + ShareElevation.Describe());
         if (!testing) { ShareCursor.Restore(); ShareLogin.Refresh(); }
         try {
             ShareSettings.Import(ShareSettings.Bin, true, false); ShareSettings.Import(ShareSettings.Bin, false, false);
@@ -1680,6 +1681,41 @@ sealed class ShareLayoutEditor : Form
     }
 }
 
+// UAC elevation of this process. Only a split (UAC) token counts: with UAC off every process is "full".
+static class ShareElevation
+{
+    [System.Runtime.InteropServices.DllImport("advapi32.dll", SetLastError = true)]
+    static extern bool GetTokenInformation(IntPtr token, int infoClass, out int info, int length, out int returned);
+    // TOKEN_ELEVATION_TYPE: 1 default (no UAC split), 2 full (elevated), 3 limited.
+    public static int Type
+    {
+        get {
+            int type, returned;
+            using (var identity = System.Security.Principal.WindowsIdentity.GetCurrent())
+                return GetTokenInformation(identity.Token, 18 /* TokenElevationType */, out type, 4, out returned) ? type : 0;
+        }
+    }
+    public static string Describe()
+    {
+        int type = Type;
+        return type == 2 ? "以系統管理員身分執行（另一台的滑鼠無法操作這個視窗）" : type == 3 ? "一般使用者" : type == 1 ? "未啟用 UAC" : "未知";
+    }
+    // Started elevated (for example by an installer run as administrator): ask the shell to start a normal
+    // copy and quit. A marker stops a loop when the shell itself is elevated.
+    public static bool Relaunch()
+    {
+        try {
+            if (Type != 2) return false;
+            string marker = Path.Combine(Path.GetTempPath(), "BarrierShare.unelevated");
+            if (File.Exists(marker) && DateTime.UtcNow - File.GetLastWriteTimeUtc(marker) < TimeSpan.FromSeconds(30)) return false;
+            File.WriteAllText(marker, "");
+            // explorer.exe hands the path to the running (unelevated) shell, which starts it with normal rights.
+            Process.Start(new ProcessStartInfo(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "explorer.exe"), "\"" + Application.ExecutablePath + "\"") { UseShellExecute = false });
+            return true;
+        } catch (Exception) { return false; }
+    }
+}
+
 static class ShareProgram
 {
     // windows-setup.iss signals this before replacing files; keep the name in sync.
@@ -1689,6 +1725,9 @@ static class ShareProgram
     {
         Application.EnableVisualStyles(); Application.SetCompatibleTextRenderingDefault(false);
         if (args.Length == 2 && args[0] == "--self-test") return SelfTest(args[1]);
+        // An elevated window cannot be controlled by the other computer: the core injects input with the
+        // user's normal rights and Windows blocks that for higher-integrity windows. Start again unelevated.
+        if (args.Length == 0 && ShareElevation.Relaunch()) return 0;
         bool created;
         using (var mutex = new Mutex(true, "Local\\BarrierShare.Desktop", out created)) {
             if (!created) { MessageBox.Show("Barrier Share 已在執行，請從右下角圖示開啟。", "Barrier Share"); return 0; }
