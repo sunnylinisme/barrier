@@ -493,7 +493,7 @@ sealed class ShareWindow : Form
     // Paired computers: every receiver for a host, the one host for a receiver (fingerprint -> name).
     readonly Dictionary<string, string> peers = new Dictionary<string, string>();
     readonly ShareButton arrange = new ShareButton();
-    bool closing, loading = true, enabled = true, discoveryReady, started, transferring, keepServiceCore;
+    bool manualUpdateCheck, closing, loading = true, enabled = true, discoveryReady, started, transferring, keepServiceCore;
     readonly CheckBox autostart = new CheckBox();
     readonly ShareProgress progress = new ShareProgress();
     ShareTransferPopup popup;
@@ -561,9 +561,30 @@ sealed class ShareWindow : Form
         autostart.CheckedChanged += delegate { if (!testing) try { ShareLogin.Enabled = autostart.Checked; } catch (Exception e) { Error(e); } };
         var advancedButton = new ShareButton { Text="進階設定", BackColor=ShareStyle.Background, Font=new Font(Font.FontFamily,10F), TabIndex=6 }; At(advancedButton,524,602,120,36); advancedButton.Click += delegate { ShowAdvanced(); };
         details.Multiline=true; details.ReadOnly=true; details.ScrollBars=ScrollBars.Vertical; details.Font=new Font("Consolas",9F); details.BackColor=Color.FromArgb(249,251,255); details.BorderStyle=BorderStyle.None;
-        var menu = new ContextMenuStrip(); menu.Items.Add("開啟視窗", null, delegate { Show(); WindowState = FormWindowState.Normal; Activate(); });
+        // Tray menu: status and the everyday actions without opening the window.
+        var menu = new ContextMenuStrip();
+        var trayStatus = new ToolStripMenuItem { Enabled = false };
+        var trayPause = new ToolStripMenuItem();
+        var trayLogin = new ToolStripMenuItem("登入時自動啟動") { CheckOnClick = false };
+        var trayArrange = new ToolStripMenuItem("排列螢幕…", null, delegate { ShowWindow(); ShowLayout(); });
+        menu.Items.Add(trayStatus); menu.Items.Add(new ToolStripSeparator());
+        menu.Items.Add("開啟視窗", null, delegate { ShowWindow(); });
+        menu.Items.Add(trayPause); menu.Items.Add(new ToolStripSeparator());
+        menu.Items.Add(trayArrange);
+        menu.Items.Add("進階設定…", null, delegate { ShowWindow(); ShowAdvanced(); });
+        menu.Items.Add(trayLogin); menu.Items.Add(new ToolStripSeparator());
+        menu.Items.Add("診斷紀錄", null, delegate { ShowWindow(); ShowDiagnostics(); });
+        menu.Items.Add("檢查更新", null, delegate { manualUpdateCheck = true; CheckUpdate(); });
+        menu.Items.Add(new ToolStripSeparator());
+        trayPause.Click += delegate { if (enabled) stop.PerformClick(); else start.PerformClick(); };
+        trayLogin.Click += delegate { autostart.Checked = !autostart.Checked; };
+        menu.Opening += delegate {
+            string text = status.Text; trayStatus.Text = text.Length > 40 ? text.Substring(0, 40) + "…" : text;
+            trayPause.Text = enabled ? "暫停共用" : "繼續共用"; trayLogin.Checked = autostart.Checked;
+            trayArrange.Visible = Host; trayArrange.Enabled = peers.Count > 0;
+        };
         menu.Items.Add("結束", null, delegate { closing = true; Close(); }); tray.Icon = Icon; tray.Text = "Barrier Share " + ShareUpdate.Label; tray.ContextMenuStrip = menu; tray.Visible = !testing;
-        tray.DoubleClick += delegate { Show(); WindowState = FormWindowState.Normal; Activate(); };
+        tray.DoubleClick += delegate { ShowWindow(); };
         start.Click += delegate {
             // While a file is moving the same button cancels it: restarting the connection drops the partial copy on both sides.
             if (transferring) { CancelTransfer(); return; }
@@ -662,13 +683,16 @@ sealed class ShareWindow : Form
         FormClosed += delegate { timer.Dispose(); };
         Shown += delegate { timer.Start(); };
     }
+    void ShowWindow() { Show(); WindowState = FormWindowState.Normal; Activate(); }
     void Error(Exception e) { status.Text = "操作未完成：" + e.Message; }
     // Offline or rate-limited checks stay silent; the local network connection never depends on them.
     void CheckUpdate()
     {
         Task.Factory.StartNew(() => ShareUpdate.Check()).ContinueWith(task => {
             if (closing || !IsHandleCreated) return;
-            try { BeginInvoke((Action)delegate { if (task.Status == TaskStatus.RanToCompletion) ShowUpdate(task.Result); else LogLine("檢查更新失敗：" + task.Exception.GetBaseException().Message); }); }
+            try { BeginInvoke((Action)delegate { bool manual = manualUpdateCheck; manualUpdateCheck = false;
+                if (task.Status == TaskStatus.RanToCompletion) { if (manual) announcedUpdate = null; ShowUpdate(task.Result); if (manual && task.Result == null) tray.ShowBalloonTip(3000, "Barrier Share", "已是最新版本（" + ShareUpdate.Label + "）。", ToolTipIcon.Info); }
+                else { LogLine("檢查更新失敗：" + task.Exception.GetBaseException().Message); if (manual) tray.ShowBalloonTip(3000, "Barrier Share", "無法檢查更新，請確認網路連線。", ToolTipIcon.Warning); } }); }
             catch (InvalidOperationException) { }
         });
     }
