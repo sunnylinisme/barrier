@@ -423,12 +423,15 @@ final class ShareBadge: NSView {
 }
 // Computer icon on a tinted rounded square.
 final class ShareComputerMark: NSView {
-    var symbol = "laptopcomputer"
+    var symbol = ""  // kept for callers; every computer uses the same monitor outline as on Windows
+    override var isFlipped: Bool { true }
     override func draw(_ dirtyRect: NSRect) {
-        ShareStyle.tint.setFill(); NSBezierPath(roundedRect: bounds, xRadius: 11, yRadius: 11).fill()
-        let config = NSImage.SymbolConfiguration(pointSize: bounds.height * 0.46, weight: .medium).applying(.init(paletteColors: [ShareStyle.blue]))
-        if let image = NSImage(systemSymbolName: symbol, accessibilityDescription: "電腦")?.withSymbolConfiguration(config) {
-            image.draw(in: NSRect(x: (bounds.width - image.size.width) / 2, y: (bounds.height - image.size.height) / 2, width: image.size.width, height: image.size.height))
+        let k = bounds.width / 52
+        ShareStyle.tint.setFill(); NSBezierPath(roundedRect: bounds, xRadius: 12 * k, yRadius: 12 * k).fill()
+        ShareStyle.blue.setStroke()
+        let screen = NSBezierPath(rect: NSRect(x: 12 * k, y: 12 * k, width: 28 * k, height: 20 * k)); screen.lineWidth = 2 * k; screen.stroke()
+        for (a, b) in [(NSPoint(x: 8, y: 37), NSPoint(x: 44, y: 37)), (NSPoint(x: 22, y: 32), NSPoint(x: 22, y: 36)), (NSPoint(x: 30, y: 32), NSPoint(x: 30, y: 36))] {
+            let line = NSBezierPath(); line.move(to: NSPoint(x: a.x * k, y: a.y * k)); line.line(to: NSPoint(x: b.x * k, y: b.y * k)); line.lineWidth = 2 * k; line.stroke()
         }
     }
 }
@@ -437,7 +440,32 @@ final class ShareScreenMap: NSView {
     struct Tile { var cell: ShareSettings.Cell; var name: String; var isSelf = false; var placeholder = false; var color: NSColor? = nil }
     var tiles: [Tile] = [] { didSet { needsDisplay = true } }
     override var isFlipped: Bool { true }
-    override func draw(_ dirtyRect: NSRect) { ShareScreenMap.drawTiles(tiles, in: bounds, size: NSSize(width: 60, height: 38)) }
+    // Grey rounded frame; 16:10 screens up to 76×48 with the name underneath; this one has a mouse outline.
+    override func draw(_ dirtyRect: NSRect) {
+        ShareStyle.background.setFill(); NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5), xRadius: 10, yRadius: 10).fill()
+        guard !tiles.isEmpty else { return }
+        let xs = tiles.map { $0.cell.x }, ys = tiles.map { $0.cell.y }
+        let cols = CGFloat(xs.max()! - xs.min()! + 1), rows = CGFloat(ys.max()! - ys.min()! + 1), gap: CGFloat = 8, label: CGFloat = 16
+        var cw = min(76, (bounds.width - 16 - gap * (cols - 1)) / cols), ch = min(48, (bounds.height - 12 - (gap + label) * rows) / rows)
+        cw = min(cw, ch * 1.6); ch = min(ch, cw / 1.6)
+        let totalW = cols * cw + (cols - 1) * gap, totalH = rows * (ch + label) + (rows - 1) * gap
+        let x0 = (bounds.width - totalW) / 2, y0 = (bounds.height - totalH) / 2
+        for t in tiles {
+            let r = NSRect(x: x0 + CGFloat(t.cell.x - xs.min()!) * (cw + gap), y: y0 + CGFloat(t.cell.y - ys.min()!) * (ch + label + gap), width: cw, height: ch)
+            let path = NSBezierPath(roundedRect: r, xRadius: 5, yRadius: 5); path.lineWidth = t.isSelf ? 1.5 : 1
+            if t.placeholder { path.setLineDash([4, 3], count: 2, phase: 0) } else { (t.isSelf ? ShareStyle.tint : NSColor.white).setFill(); path.fill() }
+            (t.isSelf ? ShareStyle.blue : t.placeholder ? ShareStyle.faint : ShareStyle.border).setStroke(); path.stroke()
+            if t.isSelf {
+                // A mouse outline marks the computer whose keyboard and mouse are used.
+                ShareStyle.blue.setStroke()
+                let mouse = NSBezierPath(ovalIn: NSRect(x: r.midX - 5, y: r.midY - 8, width: 10, height: 16)); mouse.lineWidth = 1.5; mouse.stroke()
+                let wheel = NSBezierPath(); wheel.move(to: NSPoint(x: r.midX, y: r.midY - 8)); wheel.line(to: NSPoint(x: r.midX, y: r.midY - 3)); wheel.lineWidth = 1.5; wheel.stroke()
+            }
+            let style = NSMutableParagraphStyle(); style.alignment = .center; style.lineBreakMode = .byTruncatingTail
+            NSAttributedString(string: t.name, attributes: [.font: NSFont.systemFont(ofSize: 11), .foregroundColor: t.placeholder ? ShareStyle.faint : ShareStyle.muted, .paragraphStyle: style])
+                .draw(in: NSRect(x: r.minX - gap / 2, y: r.maxY + 1, width: r.width + gap, height: label))
+        }
+    }
     // Shared with the arrange editor so both maps look the same.
     static func drawTiles(_ tiles: [Tile], in bounds: NSRect, size: NSSize, gap: CGFloat = 6, fontSize: CGFloat = 10) {
         guard !tiles.isEmpty else { return }
@@ -500,13 +528,30 @@ final class ShareDeviceRow: NSView {
         let sub = NSTextField(labelWithString: detail); sub.font = .systemFont(ofSize: 12); sub.textColor = offline ? ShareStyle.faint : ShareStyle.muted
         sub.lineBreakMode = .byTruncatingTail; sub.frame = NSRect(x: 64, y: 30, width: width - 220, height: 17); addSubview(sub)
         if let invite = invite { invite.frame = NSRect(x: width - 128, y: 13, width: 112, height: 32); addSubview(invite) }
-        else if paired && !offline {
-            let state = NSTextField(labelWithString: "已配對"); state.font = .systemFont(ofSize: 12, weight: .medium); state.textColor = ShareStyle.green
-            state.alignment = .right; state.frame = NSRect(x: width - 128, y: 20, width: 112, height: 17); addSubview(state)
+        else if paired {
+            // Pairing state on the right, as on Windows: green ✓ when online, grey when offline.
+            let state = NSTextField(labelWithString: offline ? "已配對 · 離線" : "✓ 已配對"); state.font = .systemFont(ofSize: 12, weight: offline ? .regular : .medium)
+            state.textColor = offline ? ShareStyle.faint : ShareStyle.green; state.alignment = .right; state.frame = NSRect(x: width - 160, y: 20, width: 144, height: 17); addSubview(state)
         }
         let line = NSBox(frame: NSRect(x: 16, y: 57, width: width - 32, height: 1)); line.boxType = .custom; line.borderWidth = 0; line.fillColor = ShareStyle.line; addSubview(line)
     }
     required init?(coder: NSCoder) { fatalError("unused") }
+}
+// Borderless text button; a light background appears only while the pointer is over it.
+final class ShareQuietButton: NSButton {
+    var hovering = false { didSet { needsDisplay = true } }
+    convenience init(_ title: String, _ target: AnyObject, _ action: Selector) { self.init(title: title, target: target, action: action) }
+    override init(frame: NSRect) { super.init(frame: frame); isBordered = false; font = .systemFont(ofSize: 13) }
+    required init?(coder: NSCoder) { super.init(coder: coder) }
+    override func updateTrackingAreas() { super.updateTrackingAreas(); trackingAreas.forEach(removeTrackingArea); addTrackingArea(NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeInActiveApp], owner: self)) }
+    override func mouseEntered(with event: NSEvent) { hovering = true }
+    override func mouseExited(with event: NSEvent) { hovering = false }
+    override func draw(_ dirtyRect: NSRect) {
+        if hovering || isHighlighted { ShareStyle.border.setFill(); NSBezierPath(roundedRect: bounds.insetBy(dx: 1, dy: 1), xRadius: 7, yRadius: 7).fill() }
+        let style = NSMutableParagraphStyle(); style.alignment = .center
+        let text = NSAttributedString(string: title, attributes: [.font: font ?? .systemFont(ofSize: 13), .foregroundColor: isEnabled ? ShareStyle.ink : ShareStyle.faint, .paragraphStyle: style])
+        text.draw(in: NSRect(x: 4, y: (bounds.height - text.size().height) / 2, width: bounds.width - 8, height: text.size().height))
+    }
 }
 // Filled blue push button used for the main action of a row or dialog.
 final class SharePrimaryButton: NSButton {
@@ -535,7 +580,7 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuD
     // role is the model of the 主控端／接收端 segment (kept as a hidden pop-up for older code paths and tests).
     let role = NSPopUpButton(), segment = NSSegmentedControl(labels: ["主控端", "接收端"], trackingMode: .selectOne, target: nil, action: nil)
     let peerLabel = NSTextField(labelWithString: ""), status = NSTextField(labelWithString: ""), roleLabel = NSTextField(labelWithString: "")
-    let start = NSButton(title: "繼續共用", target: nil, action: nil), stop = NSButton(title: "暫停共用", target: nil, action: nil), search = NSButton(title: "重新搜尋", target: nil, action: nil), cancelSend = NSButton(title: "取消傳送", target: nil, action: nil), forget = NSButton(title: "解除配對", target: nil, action: nil), clear = NSButton(title: "清除檔案暫存", target: nil, action: nil)
+    let start = NSButton(title: "繼續共用", target: nil, action: nil), stop = NSButton(title: "暫停共用", target: nil, action: nil), search = ShareQuietButton(title: "重新搜尋", target: nil, action: nil), cancelSend = NSButton(title: "取消傳送", target: nil, action: nil), forget = NSButton(title: "解除配對", target: nil, action: nil), clear = NSButton(title: "清除檔案暫存", target: nil, action: nil)
     let badge = ShareBadge(), map = ShareScreenMap(), filter = NSSearchField(), nearbyCount = NSTextField(labelWithString: ""), nearbyScroll = NSScrollView(), nearbyList = FlippedView()
     let body = FlippedView(), banner = NSView(), bannerText = NSTextField(labelWithString: "")
     // connections: core sessions currently up; dismissedUpdate: version whose banner was closed; announcedUpdate: version already notified.
@@ -612,7 +657,7 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuD
         let nearbyTitle = NSTextField(labelWithString: "附近電腦"); text(nearbyTitle, 15, .semibold); at(nearbyTitle, 24, 274, 90, 20)
         text(nearbyCount, 13, .regular, ShareStyle.muted); at(nearbyCount, 100, 276, 120, 18)
         filter.placeholderString = "搜尋名稱或 IP"; filter.target = self; filter.action = #selector(filterChanged); filter.sendsSearchStringImmediately = true; filter.isHidden = true; at(filter, 352, 270, 234, 28)
-        plain(search, #selector(searchNow)); at(search, 596, 268, 100, 30)
+        search.target = self; search.action = #selector(searchNow); at(search, 596, 268, 100, 30)
         let listCard = ShareCard(); at(listCard, 24, 306, 672, 236)
         nearbyScroll.frame = NSRect(x: 1, y: 6, width: 670, height: 224); nearbyScroll.drawsBackground = false; nearbyScroll.hasVerticalScroller = true; nearbyScroll.autohidesScrollers = true
         nearbyScroll.documentView = nearbyList; listCard.addSubview(nearbyScroll)
@@ -620,9 +665,9 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuD
         // Footer: everyday switches; the rarely used actions sit under 更多.
         let rule = NSBox(); rule.boxType = .custom; rule.borderWidth = 0; rule.fillColor = ShareStyle.border; at(rule, 0, 556, W, 1)
         autostart.target = self; autostart.action = #selector(toggleLogin); autostart.state = !test && ShareLogin.enabled ? .on : .off; autostart.font = .systemFont(ofSize: 13); at(autostart, 24, 572, 200, 22)
-        let advancedButton = NSButton(title: "進階設定", target: nil, action: nil); plain(advancedButton, #selector(showAdvanced)); at(advancedButton, 404, 568, 100, 30)
-        let records = NSButton(title: "診斷紀錄", target: nil, action: nil); plain(records, #selector(showDiagnostics)); at(records, 508, 568, 100, 30)
-        let more = NSButton(title: "更多 ▾", target: nil, action: nil); plain(more, #selector(showMore(_:))); at(more, 612, 568, 84, 30)
+        at(ShareQuietButton("進階設定", self, #selector(showAdvanced)), 404, 568, 100, 30)
+        at(ShareQuietButton("診斷紀錄", self, #selector(showDiagnostics)), 508, 568, 100, 30)
+        at(ShareQuietButton("更多  ▾", self, #selector(showMore(_:))), 612, 568, 84, 30)
         details.isEditable=false; details.font = .monospacedSystemFont(ofSize:12,weight:.regular); details.isVerticallyResizable=true; details.autoresizingMask = [.width]
         tray = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         // The app icon itself (same as the Dock and the Windows tray). It is a full-colour tile with
@@ -688,7 +733,7 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuD
         var y: CGFloat = 0
         func add(_ view: NSView) { view.frame.origin = NSPoint(x: 0, y: y); nearbyList.addSubview(view); y += view.frame.height }
         func system(_ fp: String) -> String { switch options.platforms[fp] { case "mac": return "Mac"; case "windows": return "Windows"; case "linux": return "Linux"; default: return "電腦" } }
-        if !paired.isEmpty { add(ShareDeviceRow.header("已配對", width: width)); for (c, offline) in paired { add(ShareDeviceRow(width: width, name: c.name, detail: offline ? "已配對 · 離線" : "\(system(c.fingerprint)) · \(c.address)", offline: offline, paired: true, mac: options.platforms[c.fingerprint] == "mac", invite: nil)) } }
+        if !paired.isEmpty { add(ShareDeviceRow.header("已配對", width: width)); for (c, offline) in paired { add(ShareDeviceRow(width: width, name: c.name, detail: offline ? system(c.fingerprint) : "\(system(c.fingerprint)) · \(c.address)", offline: offline, paired: true, mac: options.platforms[c.fingerprint] == "mac", invite: nil)) } }
         if !others.isEmpty {
             if !paired.isEmpty { add(ShareDeviceRow.header("其他電腦", width: width)) }
             for c in others {
