@@ -9,6 +9,8 @@
 #define AppVersion "0.3.9"
 
 [Setup]
+; No finish page to forget: the app starts on its own and setup closes.
+DisableFinishedPage=yes
 AppId=org.barriershare.desktop
 AppName=Barrier Share
 AppVersion={#AppVersion}
@@ -73,7 +75,7 @@ Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: 
 ; A copy that was running before the update is started again, also for silent installs.
 ; The app runs as the signed-in user, never with the installer's administrator rights.
 Filename: "{app}\BarrierShare.exe"; WorkingDir: "{app}"; Flags: nowait runasoriginaluser; Check: WasRunning
-Filename: "{app}\BarrierShare.exe"; Description: "{cm:LaunchProgram,Barrier Share}"; WorkingDir: "{app}"; Flags: nowait postinstall skipifsilent unchecked runasoriginaluser; Check: not WasRunning
+Filename: "{app}\BarrierShare.exe"; WorkingDir: "{app}"; Flags: nowait skipifsilent runasoriginaluser; Check: not WasRunning
 
 ; Settings and pairing live in LocalAppData\BarrierShare and are kept. The service's copy of them
 ; (pairing identity, screen settings, logs, received files) lives in {app}\state and goes with the app.
