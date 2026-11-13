@@ -31,6 +31,7 @@
 #include "base/IEventQueue.h"
 
 #include <atomic>
+#include <cstdlib>
 #include <malloc.h>
 #include <VersionHelpers.h>
 
@@ -150,18 +151,14 @@ MSWindowsDesks::MSWindowsDesks(bool isPrimary, bool noHooks,
     m_deskClass = createDeskWindowClass(m_isPrimary);
     m_keyLayout = GetKeyboardLayout(GetCurrentThreadId());
     resetOptions();
-    if (m_isPrimary) {
-        // Recover from a previous run that ended while the cursors were hidden.
-        restoreSystemCursors(true);
-    }
+    // Recover from a previous run that ended while the cursors were hidden.
+    restoreSystemCursors(true);
 }
 
 MSWindowsDesks::~MSWindowsDesks()
 {
     disable();
-    if (m_isPrimary) {
-        restoreSystemCursors();
-    }
+    restoreSystemCursors();
     destroyClass(m_deskClass);
     destroyCursor(m_cursor);
 }
@@ -488,9 +485,23 @@ MSWindowsDesks::secondaryDeskProc(
             hide = true;
         }
         break;
+
+    case WM_TIMER: {
+        // The capture above is not reliable for a background process, so also
+        // notice the local mouse by the cursor leaving the parking spot.
+        RECT parked; POINT now;
+        if (GetWindowRect(hwnd, &parked) && GetCursorPos(&now) &&
+            (std::abs(now.x - parked.left) > 2 || std::abs(now.y - parked.top) > 2)) {
+            hide = true;
+        }
+        break;
+    }
     }
 
     if (hide && IsWindowVisible(hwnd)) {
+        // Someone is using this computer's own mouse: show the cursor again.
+        KillTimer(hwnd, 1);
+        restoreSystemCursors();
         ReleaseCapture();
         SetWindowPos(hwnd, HWND_BOTTOM, 0, 0, 0, 0,
                             SWP_NOMOVE | SWP_NOSIZE |
@@ -555,11 +566,10 @@ MSWindowsDesks::deskEnter(Desk* desk)
 {
     if (!m_isPrimary) {
         ReleaseCapture();
+        KillTimer(desk->m_window, 1);
     }
     ShowCursor(TRUE);
-    if (m_isPrimary) {
-        restoreSystemCursors();
-    }
+    restoreSystemCursors();
     SetWindowPos(desk->m_window, HWND_BOTTOM, 0, 0, 0, 0,
                             SWP_NOMOVE | SWP_NOSIZE |
                             SWP_NOACTIVATE | SWP_HIDEWINDOW);
@@ -645,6 +655,12 @@ MSWindowsDesks::deskLeave(Desk* desk, HKL keyLayout)
         // warp the mouse to the cursor center
         LOG((CLOG_DEBUG2 "warping cursor to center: %+d,%+d", m_xCenter, m_yCenter));
         deskMouseMove(m_xCenter, m_yCenter);
+
+        // As on the host, the 1x1 hider often cannot cover the cursor, which then
+        // stays visible in the middle of this screen. Blank the system cursors
+        // until the cursor comes back or this computer's own mouse moves.
+        hideSystemCursors(m_cursor);
+        SetTimer(desk->m_window, 1, 200, NULL);
     }
 }
 

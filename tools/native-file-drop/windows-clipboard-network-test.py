@@ -338,6 +338,8 @@ for role, direction, via_service in runs:
                         wire.send(b"DMMV" + struct.pack("!hh", *entry))
                         wait_cursor(entry)
                         wire.send(b"COUT")
+                        # The receiver parks its cursor in the middle while away; it must not stay visible there.
+                        driver("--cursor-hidden")
                         digest, size, _ = wire.read_clipboard()
                         assert digest == hashlib.sha256(local_bytes).digest() and size == len(local_bytes)
                     assert (source / name).read_bytes() == local_bytes, "Source file changed"
