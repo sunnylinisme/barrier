@@ -3,6 +3,7 @@ import AppKit
 import ApplicationServices
 import Foundation
 import ServiceManagement
+import UserNotifications
 
 struct ShareOptions: Codable {
     var host = true
@@ -321,6 +322,8 @@ struct ShareProgress {
 final class ShareLayoutView: NSView {
     static let cell = CGSize(width: 104, height: 64), span = 2
     var names: [String: String], placement: [String: ShareSettings.Cell], blue: NSColor, onChange: (() -> Void)?
+    var colors: [String: NSColor] = [:], defaults: (() -> [String: ShareSettings.Cell])?
+    @objc func restoreDefaults() { if let d = defaults?() { placement = d; needsDisplay = true; onChange?() } }
     var dragging: String?, pointer = NSPoint.zero
     override var isFlipped: Bool { true }
     init(names: [String: String], placement: [String: ShareSettings.Cell], blue: NSColor) {
@@ -352,20 +355,27 @@ final class ShareLayoutView: NSView {
         NSColor(srgbRed: 244/255, green: 246/255, blue: 250/255, alpha: 1).setFill(); bounds.fill()
         let dash = NSColor(srgbRed: 219/255, green: 226/255, blue: 237/255, alpha: 1)
         for y in -2...2 { for x in -2...2 { let path = NSBezierPath(rect: rect(ShareSettings.Cell(x: x, y: y))); path.setLineDash([4, 3], count: 2, phase: 0); dash.setStroke(); path.stroke() } }
-        func tile(_ r: NSRect, _ text: String, host: Bool) {
-            let shape = NSBezierPath(roundedRect: r, xRadius: 10, yRadius: 10); (host ? blue : .white).setFill(); shape.fill(); blue.setStroke(); shape.lineWidth = 1.5; shape.stroke()
-            let style = NSMutableParagraphStyle(); style.alignment = .center; style.lineBreakMode = .byTruncatingTail
-            let string = NSAttributedString(string: text, attributes: [.font: NSFont.systemFont(ofSize: 12, weight: .medium), .foregroundColor: host ? NSColor.white : NSColor.labelColor, .paragraphStyle: style])
-            string.draw(in: NSRect(x: r.minX + 6, y: r.midY - 9, width: r.width - 12, height: 18))
-        }
-        tile(rect(ShareSettings.Cell(x: 0, y: 0)), "這台（主控端）", host: true)
+        ShareScreenMap.drawTile(.init(cell: .init(x: 0, y: 0), name: "這台", isSelf: true), rect(ShareSettings.Cell(x: 0, y: 0)), fontSize: 12)
         for (fp, c) in placement {
             var r = rect(c); if fp == dragging { r.origin = NSPoint(x: pointer.x - r.width / 2, y: pointer.y - r.height / 2) }
-            tile(r, names[fp] ?? "", host: false)
+            ShareScreenMap.drawTile(.init(cell: c, name: names[fp] ?? "", color: colors[fp] ?? blue), r, fontSize: 12)
         }
     }
 }
 
+// Calls a closure from a control; toggle() flips `open` and passes it on.
+final class ShareBlockTarget: NSObject {
+    let action: (Bool) -> Void; var open = false
+    init(_ action: @escaping (Bool) -> Void) { self.action = action }
+    @objc func toggle() { open.toggle(); action(open) }
+}
+// Ends a modal panel with accept or cancel.
+final class ShareModalCloser: NSObject {
+    weak var panel: NSWindow?; var accepted = false
+    init(_ panel: NSWindow) { self.panel = panel }
+    @objc func accept() { accepted = true; NSApp.stopModal(); panel?.orderOut(nil) }
+    @objc func cancel() { accepted = false; NSApp.stopModal(); panel?.orderOut(nil) }
+}
 final class ShareActionButton: NSButton {
     override func draw(_ dirtyRect: NSRect) {
         let blue = NSColor(srgbRed:47/255,green:101/255,blue:235/255,alpha:1)
@@ -378,8 +388,138 @@ final class ShareActionButton: NSButton {
     }
 }
 struct NearbyComputer { var fingerprint: String; var name: String; var address: String }
+// Shared palette of the redesigned window (same values as the Windows ShareStyle).
+enum ShareStyle {
+    static func rgb(_ r: CGFloat, _ g: CGFloat, _ b: CGFloat) -> NSColor { NSColor(srgbRed: r / 255, green: g / 255, blue: b / 255, alpha: 1) }
+    static let background = rgb(244, 246, 250), border = rgb(228, 233, 242), line = rgb(236, 240, 246)
+    static let blue = rgb(47, 101, 235), blueInk = rgb(31, 72, 180), tint = rgb(232, 239, 253)
+    static let ink = rgb(24, 37, 57), muted = rgb(109, 122, 141), faint = rgb(150, 160, 175), field = rgb(238, 241, 246)
+    static let green = rgb(24, 140, 82), greenTint = rgb(226, 245, 234), danger = rgb(200, 45, 45)
+    // One colour per receiver in the screen maps: green, purple, orange, pink, amber.
+    static let peers = [rgb(34, 160, 96), rgb(132, 86, 214), rgb(232, 120, 40), rgb(221, 72, 140), rgb(214, 160, 20)]
+    static func peer(_ index: Int) -> NSColor { peers[index % peers.count] }
+}
+// White rounded card with a hairline border.
+final class ShareCard: NSView {
+    override var isFlipped: Bool { true }
+    override func draw(_ dirtyRect: NSRect) {
+        let shape = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5), xRadius: 14, yRadius: 14)
+        NSColor.white.setFill(); shape.fill(); ShareStyle.border.setStroke(); shape.lineWidth = 1; shape.stroke()
+    }
+}
+// Small pill showing the connection state.
+final class ShareBadge: NSView {
+    var text = "", fore = ShareStyle.muted, back = ShareStyle.field
+    func set(_ text: String, _ fore: NSColor, _ back: NSColor) { self.text = text; self.fore = fore; self.back = back; needsDisplay = true }
+    override func draw(_ dirtyRect: NSRect) {
+        let label = NSAttributedString(string: text, attributes: [.font: NSFont.systemFont(ofSize: 12, weight: .semibold), .foregroundColor: fore])
+        let width = min(bounds.width, label.size().width + 28)
+        let pill = NSRect(x: 0, y: 0, width: width, height: bounds.height)
+        back.setFill(); NSBezierPath(roundedRect: pill, xRadius: bounds.height / 2, yRadius: bounds.height / 2).fill()
+        fore.setFill(); NSBezierPath(ovalIn: NSRect(x: 10, y: bounds.height / 2 - 3, width: 6, height: 6)).fill()
+        label.draw(at: NSPoint(x: 21, y: (bounds.height - label.size().height) / 2))
+    }
+    override var isFlipped: Bool { true }
+}
+// Computer icon on a tinted rounded square.
+final class ShareComputerMark: NSView {
+    var symbol = "laptopcomputer"
+    override func draw(_ dirtyRect: NSRect) {
+        ShareStyle.tint.setFill(); NSBezierPath(roundedRect: bounds, xRadius: 11, yRadius: 11).fill()
+        let config = NSImage.SymbolConfiguration(pointSize: bounds.height * 0.46, weight: .medium).applying(.init(paletteColors: [ShareStyle.blue]))
+        if let image = NSImage(systemSymbolName: symbol, accessibilityDescription: "電腦")?.withSymbolConfiguration(config) {
+            image.draw(in: NSRect(x: (bounds.width - image.size.width) / 2, y: (bounds.height - image.size.height) / 2, width: image.size.width, height: image.size.height))
+        }
+    }
+}
+// Miniature of the screen arrangement in the connection card.
+final class ShareScreenMap: NSView {
+    struct Tile { var cell: ShareSettings.Cell; var name: String; var isSelf = false; var placeholder = false; var color: NSColor? = nil }
+    var tiles: [Tile] = [] { didSet { needsDisplay = true } }
+    override var isFlipped: Bool { true }
+    override func draw(_ dirtyRect: NSRect) { ShareScreenMap.drawTiles(tiles, in: bounds, size: NSSize(width: 60, height: 38)) }
+    // Shared with the arrange editor so both maps look the same.
+    static func drawTiles(_ tiles: [Tile], in bounds: NSRect, size: NSSize, gap: CGFloat = 6, fontSize: CGFloat = 10) {
+        guard !tiles.isEmpty else { return }
+        let xs = tiles.map { $0.cell.x }, ys = tiles.map { $0.cell.y }
+        let cols = CGFloat(xs.max()! - xs.min()! + 1), rows = CGFloat(ys.max()! - ys.min()! + 1)
+        let scale = min(1, (bounds.width - 8) / (cols * size.width + (cols - 1) * gap), (bounds.height - 8) / (rows * size.height + (rows - 1) * gap))
+        let w = size.width * scale, h = size.height * scale, g = gap * scale
+        let ox = bounds.midX - (cols * w + (cols - 1) * g) / 2, oy = bounds.midY - (rows * h + (rows - 1) * g) / 2
+        for t in tiles {
+            let r = NSRect(x: ox + CGFloat(t.cell.x - xs.min()!) * (w + g), y: oy + CGFloat(t.cell.y - ys.min()!) * (h + g), width: w, height: h)
+            drawTile(t, r, fontSize: fontSize * max(scale, 0.8))
+        }
+    }
+    static func drawTile(_ t: Tile, _ r: NSRect, fontSize: CGFloat) {
+        let shape = NSBezierPath(roundedRect: r.insetBy(dx: 0.75, dy: 0.75), xRadius: 6, yRadius: 6); shape.lineWidth = 1.5
+        let accent = t.color ?? ShareStyle.faint
+        if t.isSelf { ShareStyle.tint.setFill(); shape.fill(); ShareStyle.blue.setStroke(); shape.stroke() }
+        else if t.placeholder { shape.setLineDash([4, 3], count: 2, phase: 0); ShareStyle.faint.setStroke(); shape.stroke() }
+        else { NSColor.white.setFill(); shape.fill(); accent.setStroke(); shape.stroke() }
+        let style = NSMutableParagraphStyle(); style.alignment = .center; style.lineBreakMode = .byTruncatingTail
+        let color: NSColor = t.isSelf ? ShareStyle.blueInk : t.placeholder ? ShareStyle.faint : ShareStyle.ink
+        let text = NSAttributedString(string: t.name, attributes: [.font: NSFont.systemFont(ofSize: fontSize, weight: .medium), .foregroundColor: color, .paragraphStyle: style])
+        let height = text.size().height
+        if t.isSelf, let cursor = NSImage(systemSymbolName: "cursorarrow", accessibilityDescription: nil)?.withSymbolConfiguration(.init(pointSize: fontSize, weight: .semibold).applying(.init(paletteColors: [ShareStyle.blue]))) {
+            cursor.draw(in: NSRect(x: r.midX - cursor.size.width / 2, y: r.midY - (height + cursor.size.height) / 2, width: cursor.size.width, height: cursor.size.height))
+            text.draw(in: NSRect(x: r.minX + 3, y: r.midY - (height + cursor.size.height) / 2 + cursor.size.height, width: r.width - 6, height: height))
+        } else { text.draw(in: NSRect(x: r.minX + 3, y: r.midY - height / 2, width: r.width - 6, height: height)) }
+    }
+}
+// Six-digit pairing code in two groups of three large boxes.
+final class ShareCodeView: NSView {
+    var code = ""
+    override var isFlipped: Bool { true }
+    override func draw(_ dirtyRect: NSRect) {
+        let digits = Array(code.prefix(6)), box = NSSize(width: 46, height: 58), gap: CGFloat = 8, split: CGFloat = 22
+        let total = 6 * box.width + 4 * gap + split; var x = (bounds.width - total) / 2
+        for (i, d) in digits.enumerated() {
+            let r = NSRect(x: x, y: (bounds.height - box.height) / 2, width: box.width, height: box.height)
+            ShareStyle.field.setFill(); NSBezierPath(roundedRect: r, xRadius: 9, yRadius: 9).fill()
+            let text = NSAttributedString(string: String(d), attributes: [.font: NSFont.monospacedDigitSystemFont(ofSize: 30, weight: .bold), .foregroundColor: ShareStyle.ink])
+            text.draw(at: NSPoint(x: r.midX - text.size().width / 2, y: r.midY - text.size().height / 2))
+            x += box.width + (i == 2 ? split : gap)
+        }
+    }
+}
+// One row in the nearby list: a section header, or a computer with its system, address and action.
+final class ShareDeviceRow: NSView {
+    override var isFlipped: Bool { true }
+    static func header(_ text: String, width: CGFloat) -> NSView {
+        let view = FlippedView(frame: NSRect(x: 0, y: 0, width: width, height: 28))
+        let label = NSTextField(labelWithString: text); label.font = .systemFont(ofSize: 11, weight: .semibold); label.textColor = ShareStyle.muted
+        label.frame = NSRect(x: 16, y: 8, width: width - 32, height: 16); view.addSubview(label); return view
+    }
+    init(width: CGFloat, name: String, detail: String, offline: Bool, paired: Bool, mac: Bool, invite: NSButton?) {
+        super.init(frame: NSRect(x: 0, y: 0, width: width, height: 58))
+        let mark = ShareComputerMark(frame: NSRect(x: 16, y: 11, width: 36, height: 36)); mark.symbol = mac ? "laptopcomputer" : "desktopcomputer"
+        mark.alphaValue = offline ? 0.45 : 1; addSubview(mark)
+        let title = NSTextField(labelWithString: name); title.font = .systemFont(ofSize: 14, weight: .semibold); title.textColor = offline ? ShareStyle.faint : ShareStyle.ink
+        title.lineBreakMode = .byTruncatingTail; title.frame = NSRect(x: 64, y: 10, width: width - 220, height: 19); addSubview(title)
+        let sub = NSTextField(labelWithString: detail); sub.font = .systemFont(ofSize: 12); sub.textColor = offline ? ShareStyle.faint : ShareStyle.muted
+        sub.lineBreakMode = .byTruncatingTail; sub.frame = NSRect(x: 64, y: 30, width: width - 220, height: 17); addSubview(sub)
+        if let invite = invite { invite.frame = NSRect(x: width - 128, y: 13, width: 112, height: 32); addSubview(invite) }
+        else if paired && !offline {
+            let state = NSTextField(labelWithString: "已配對"); state.font = .systemFont(ofSize: 12, weight: .medium); state.textColor = ShareStyle.green
+            state.alignment = .right; state.frame = NSRect(x: width - 128, y: 20, width: 112, height: 17); addSubview(state)
+        }
+        let line = NSBox(frame: NSRect(x: 16, y: 57, width: width - 32, height: 1)); line.boxType = .custom; line.borderWidth = 0; line.fillColor = ShareStyle.line; addSubview(line)
+    }
+    required init?(coder: NSCoder) { fatalError("unused") }
+}
+// Filled blue push button used for the main action of a row or dialog.
+final class SharePrimaryButton: NSButton {
+    override func draw(_ dirtyRect: NSRect) {
+        let shape = NSBezierPath(roundedRect: bounds.insetBy(dx: 1, dy: 1), xRadius: 8, yRadius: 8)
+        (isEnabled ? (isHighlighted ? ShareStyle.blue.blended(withFraction: 0.18, of: .black)! : ShareStyle.blue) : ShareStyle.field).setFill(); shape.fill()
+        let style = NSMutableParagraphStyle(); style.alignment = .center
+        let text = NSAttributedString(string: title, attributes: [.font: NSFont.systemFont(ofSize: 13, weight: .semibold), .foregroundColor: isEnabled ? NSColor.white : ShareStyle.faint, .paragraphStyle: style])
+        text.draw(in: NSRect(x: 6, y: (bounds.height - text.size().height) / 2, width: bounds.width - 12, height: text.size().height))
+    }
+}
 final class FlippedView: NSView { override var isFlipped: Bool { true } }
-final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDelegate {
+final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDelegate, UNUserNotificationCenterDelegate {
     // "0.3.9" for releases; "0.3.9.N 測試版" for test builds, whose Info.plist carries "N commit".
     static let testBuild = (Bundle.main.object(forInfoDictionaryKey: "BarrierShareTestBuild") as? String ?? "").split(separator: " ").map(String.init)
     static let testCommit = testBuild.count == 2 ? testBuild[1] : ""
@@ -392,16 +532,20 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuD
     var diagnostics: NSWindow?
     let emptyNearby = NSTextField(wrappingLabelWithString: "正在尋找附近的電腦…\n在另一台開啟程式，並選擇另一個角色。")
     let blue = NSColor(srgbRed: 47/255, green: 101/255, blue: 235/255, alpha: 1), ink = NSColor(srgbRed: 24/255, green: 37/255, blue: 57/255, alpha: 1), muted = NSColor(srgbRed: 109/255, green: 122/255, blue: 141/255, alpha: 1)
-    let role = NSPopUpButton(), position = NSPopUpButton(), nearby = NSPopUpButton()
-    let peerLabel = NSTextField(wrappingLabelWithString: ""), status = NSTextField(wrappingLabelWithString: ""), positionHint = NSTextField(labelWithString: "由主控端設定")
-    let start = NSButton(title: "恢復連線", target: nil, action: nil), stop = NSButton(title: "暫停", target: nil, action: nil), search = NSButton(title: "重新搜尋", target: nil, action: nil), pair = ShareActionButton(title: "邀請配對", target: nil, action: nil), forget = NSButton(title: "解除配對", target: nil, action: nil), clear = NSButton(title: "清除檔案暫存", target: nil, action: nil)
+    // role is the model of the 主控端／接收端 segment (kept as a hidden pop-up for older code paths and tests).
+    let role = NSPopUpButton(), segment = NSSegmentedControl(labels: ["主控端", "接收端"], trackingMode: .selectOne, target: nil, action: nil)
+    let peerLabel = NSTextField(labelWithString: ""), status = NSTextField(labelWithString: ""), roleLabel = NSTextField(labelWithString: "")
+    let start = NSButton(title: "繼續共用", target: nil, action: nil), stop = NSButton(title: "暫停共用", target: nil, action: nil), search = NSButton(title: "重新搜尋", target: nil, action: nil), cancelSend = NSButton(title: "取消傳送", target: nil, action: nil), forget = NSButton(title: "解除配對", target: nil, action: nil), clear = NSButton(title: "清除檔案暫存", target: nil, action: nil)
+    let badge = ShareBadge(), map = ShareScreenMap(), filter = NSSearchField(), nearbyCount = NSTextField(labelWithString: ""), nearbyScroll = NSScrollView(), nearbyList = FlippedView()
+    let body = FlippedView(), banner = NSView(), bannerText = NSTextField(labelWithString: "")
+    // connections: core sessions currently up; dismissedUpdate: version whose banner was closed; announcedUpdate: version already notified.
+    var connections = 0, dismissedUpdate = "", announcedUpdate = ""
     let details = NSTextView()
     var tray: NSStatusItem!, core: Process?, corePipe: Pipe?, link: Process?, linkOutput: Pipe?, linkInput: Pipe?, pendingCore = Data(), pendingLink = Data(), retry: Timer?
     // Paired computers in pairing order: every receiver for a host, the one host for a receiver.
     var peers: [(fingerprint: String, name: String)] = []
-    let arrange = NSButton(title: "排列螢幕…", target: nil, action: nil)
-    var computers: [NearbyComputer] = [], connectedAddress = "", consent: NSAlert?, consentId: String?, enabled = true, loading = true, promptedPermissions = false
-    let network = NSTextField(labelWithString: "●  區域網路"), update = NSButton(title: "", target: nil, action: nil)
+    let arrange = NSButton(title: "排列螢幕", target: nil, action: nil)
+    var computers: [NearbyComputer] = [], connectedAddress = "", consent: NSWindow?, consentId: String?, enabled = true, loading = true, promptedPermissions = false
     var updateURL: URL?, updateTimer: Timer?
     let autostart = NSButton(checkboxWithTitle: "登入時自動啟動", target: nil, action: nil)
     var transferring = false, progress = ShareProgress()
@@ -435,42 +579,51 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuD
         editMenu.addItem(withTitle: "拷貝", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
         editMenu.addItem(withTitle: "全選", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
         editItem.submenu = editMenu; menu.addItem(editItem); NSApp.mainMenu = menu
-        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 840, height: 710), styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
+        let W: CGFloat = 720, H: CGFloat = 608
+        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: W, height: H), styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
         window.title = "Barrier Share " + ShareApp.versionLabel; window.delegate = self; window.isReleasedWhenClosed = false
-        window.contentView = FlippedView(frame: NSRect(x: 0, y: 0, width: 840, height: 710)); window.contentView!.wantsLayer = true
-        window.contentView!.layer?.backgroundColor = NSColor(srgbRed: 244/255, green: 246/255, blue: 250/255, alpha: 1).cgColor
-        func at(_ view: NSView, _ x: CGFloat, _ y: CGFloat, _ width: CGFloat, _ height: CGFloat) { view.frame = NSRect(x: x, y: y, width: width, height: height); window.contentView!.addSubview(view) }
-        func label(_ text: String, _ x: CGFloat, _ y: CGFloat, _ width: CGFloat, _ size: CGFloat = 14, bold: Bool = false, color: NSColor? = nil) { let l = NSTextField(labelWithString: text); l.font = .systemFont(ofSize: size, weight: bold ? .semibold : .regular); l.textColor = color ?? ink; l.lineBreakMode = .byTruncatingTail; at(l,x,y,width,size+14) }
-        label("Barrier Share",32,24,550,30,bold:true)
-        label("同一張桌面，連上兩台電腦。",34,77,600,14,color:muted)
-        network.font = .systemFont(ofSize: 13); network.textColor = blue; network.alignment = .right; at(network,640,42,168,27)
-        update.isBordered = false; update.alignment = .right; update.target = self; update.action = #selector(openUpdate); update.isHidden = true; at(update,560,40,248,28)
-        for rect in [NSRect(x:32,y:118,width:776,height:112), NSRect(x:32,y:250,width:468,height:250), NSRect(x:520,y:250,width:288,height:250), NSRect(x:32,y:520,width:776,height:94)] {
-            let card = NSBox(); card.boxType = .custom; card.borderWidth = 1; card.cornerRadius = 16; card.fillColor = .white; card.borderColor = NSColor(srgbRed:228/255,green:233/255,blue:242/255,alpha:1); at(card,rect.minX,rect.minY,rect.width,rect.height)
-        }
-        let mark = NSView(); mark.wantsLayer=true; mark.layer?.cornerRadius=12; mark.layer?.backgroundColor=blue.withAlphaComponent(0.09).cgColor; at(mark,52,151,52,52)
-        let icon = NSImageView(); icon.image=NSImage(systemSymbolName:"laptopcomputer",accessibilityDescription:"這台電腦"); icon.contentTintColor=blue; icon.imageScaling = .scaleProportionallyUpOrDown; at(icon,64,163,28,28)
-        label("這台電腦",120,140,274,12,color:muted); label(Host.current().localizedName ?? "Mac",120,168,274,19,bold:true)
-        label("角色",416,140,370,13,color:muted); at(role,412,165,378,34); role.addItems(withTitles:["主控端 · 鍵盤滑鼠在這台","接收端 · 等待主控端邀請"])
-        label("附近電腦",52,272,300,18,bold:true); at(search,376,268,104,34); search.bezelStyle = .rounded; search.target=self; search.action = #selector(searchNow)
-        at(nearby,48,324,436,38); nearby.font = .systemFont(ofSize:15)
-        emptyNearby.font = .systemFont(ofSize:14); emptyNearby.textColor=muted; emptyNearby.maximumNumberOfLines=3; at(emptyNearby,52,325,428,62)
-        label("首次核對短碼，對方同意後即可連線。",52,397,428,13,color:muted)
-        pair.title="邀請配對  →"; pair.bezelStyle = .rounded; pair.bezelColor=blue; pair.contentTintColor = .white; pair.font = .systemFont(ofSize:15,weight:.semibold); pair.target=self; pair.action = #selector(invite); at(pair,48,438,436,44)
-        label("連線狀態",540,272,248,18,bold:true)
-        status.textColor=blue; status.font = .systemFont(ofSize:16,weight:.semibold); status.maximumNumberOfLines=3; at(status,540,321,248,70)
-        peerLabel.textColor=muted; peerLabel.font = .systemFont(ofSize:12); peerLabel.maximumNumberOfLines=2; peerLabel.lineBreakMode = .byTruncatingTail; at(peerLabel,540,394,248,42)
-        for (button,x,width,action) in [(start,CGFloat(536),CGFloat(150),#selector(resume)),(stop,688,104,#selector(pause))] { button.bezelStyle = .rounded; button.target=self; button.action=action; at(button,x,444,width,38) }
-        label("螢幕位置",52,551,140,17,bold:true); at(position,216,545,420,36); arrange.bezelStyle = .rounded; arrange.target = self; arrange.action = #selector(showLayout); at(arrange,648,544,142,38); position.addItems(withTitles:["接收端在右邊  →","接收端在左邊  ←","接收端在上方  ↑","接收端在下方  ↓"])
-        positionHint.stringValue="由主控端設定兩台螢幕的相對位置"; positionHint.textColor=muted; at(positionHint,220,553,416,32)
-        clear.title="清除暫存"; for (button,x,action) in [(forget,CGFloat(28),#selector(forgetPeer)),(clear,156,#selector(clearCache))] { button.bezelStyle = .rounded; button.target=self; button.action=action; at(button,x,632,124,38) }
-        let permissions = NSButton(title:"權限設定",target:self,action:#selector(openPermissions)); permissions.bezelStyle = .rounded; at(permissions,284,632,124,38)
-        autostart.target = self; autostart.action = #selector(toggleLogin); autostart.state = !test && ShareLogin.enabled ? .on : .off; at(autostart,418,640,150,22)
-        let advancedButton = NSButton(title:"進階設定",target:self,action:#selector(showAdvanced)); advancedButton.bezelStyle = .rounded; at(advancedButton,566,632,106,38)
-        let records = NSButton(title:"診斷紀錄",target:self,action:#selector(showDiagnostics)); records.bezelStyle = .rounded; at(records,676,632,136,38)
-        label("複製 → 換到另一台 → 等接收完成後貼上",34,682,740,12,color:muted)
+        let root = FlippedView(frame: NSRect(x: 0, y: 0, width: W, height: H)); root.wantsLayer = true; root.layer?.backgroundColor = ShareStyle.background.cgColor
+        window.contentView = root
+        // Update banner above everything; the window grows by its height while it shows.
+        banner.frame = NSRect(x: 0, y: 0, width: W, height: 44); banner.wantsLayer = true; banner.layer?.backgroundColor = ShareStyle.tint.cgColor; banner.isHidden = true
+        bannerText.textColor = ShareStyle.blueInk; bannerText.font = .systemFont(ofSize: 13); bannerText.lineBreakMode = .byTruncatingTail; bannerText.frame = NSRect(x: 24, y: 13, width: 500, height: 18); banner.addSubview(bannerText)
+        let download = SharePrimaryButton(title: "下載更新", target: self, action: #selector(openUpdate)); download.frame = NSRect(x: 560, y: 7, width: 104, height: 30); banner.addSubview(download)
+        let dismiss = NSButton(title: "✕", target: self, action: #selector(dismissUpdate)); dismiss.isBordered = false; dismiss.frame = NSRect(x: 670, y: 7, width: 30, height: 30); dismiss.toolTip = "稍後再說"; banner.addSubview(dismiss)
+        body.frame = NSRect(x: 0, y: 0, width: W, height: H); root.addSubview(body); root.addSubview(banner)
+        func at(_ view: NSView, _ x: CGFloat, _ y: CGFloat, _ width: CGFloat, _ height: CGFloat) { view.frame = NSRect(x: x, y: y, width: width, height: height); body.addSubview(view) }
+        func text(_ field: NSTextField, _ size: CGFloat, _ weight: NSFont.Weight = .regular, _ color: NSColor = ShareStyle.ink) { field.font = .systemFont(ofSize: size, weight: weight); field.textColor = color; field.lineBreakMode = .byTruncatingTail }
+        func plain(_ button: NSButton, _ action: Selector) { button.bezelStyle = .rounded; button.target = self; button.action = action; button.font = .systemFont(ofSize: 13) }
+        // Header: this computer and its role.
+        at(ShareComputerMark(), 24, 20, 44, 44)
+        let name = NSTextField(labelWithString: Host.current().localizedName ?? "Mac"); text(name, 20, .bold); at(name, 80, 17, 420, 26)
+        text(roleLabel, 13, .regular, ShareStyle.muted); at(roleLabel, 80, 45, 420, 18)
+        segment.target = self; segment.action = #selector(segmentChanged); segment.segmentStyle = .rounded; segment.setAccessibilityLabel("這台電腦的角色")
+        segment.setWidth(84, forSegment: 0); segment.setWidth(84, forSegment: 1); at(segment, 520, 28, 176, 30)
+        role.addItems(withTitles: ["主控端 · 使用這台的鍵盤滑鼠", "接收端 · 等待主控端邀請"]); role.isHidden = true; role.target = self; role.action = #selector(roleChanged); at(role, 0, 0, 1, 1)
+        // Connection card: state, what to do next, and a small map of the screens.
+        at(ShareCard(), 24, 84, 672, 168)
+        at(badge, 44, 102, 140, 24)
+        text(status, 17, .bold); status.maximumNumberOfLines = 2; status.cell?.wraps = true; status.cell?.truncatesLastVisibleLine = true; at(status, 44, 132, 412, 46)
+        text(peerLabel, 13, .regular, ShareStyle.muted); at(peerLabel, 44, 180, 412, 18)
+        plain(stop, #selector(pause)); plain(start, #selector(resume)); plain(arrange, #selector(showLayout)); plain(cancelSend, #selector(cancelTransfer))
+        at(stop, 40, 208, 120, 32); at(start, 40, 208, 120, 32); at(arrange, 164, 208, 120, 32); at(cancelSend, 288, 208, 120, 32)
+        at(map, 472, 100, 204, 132)
+        // Nearby computers: paired ones first, a search box once the list gets long.
+        let nearbyTitle = NSTextField(labelWithString: "附近電腦"); text(nearbyTitle, 15, .semibold); at(nearbyTitle, 24, 274, 90, 20)
+        text(nearbyCount, 13, .regular, ShareStyle.muted); at(nearbyCount, 100, 276, 120, 18)
+        filter.placeholderString = "搜尋名稱或 IP"; filter.target = self; filter.action = #selector(filterChanged); filter.sendsSearchStringImmediately = true; filter.isHidden = true; at(filter, 352, 270, 234, 28)
+        plain(search, #selector(searchNow)); at(search, 596, 268, 100, 30)
+        let listCard = ShareCard(); at(listCard, 24, 306, 672, 236)
+        nearbyScroll.frame = NSRect(x: 1, y: 6, width: 670, height: 224); nearbyScroll.drawsBackground = false; nearbyScroll.hasVerticalScroller = true; nearbyScroll.autohidesScrollers = true
+        nearbyScroll.documentView = nearbyList; listCard.addSubview(nearbyScroll)
+        emptyNearby.alignment = .center; text(emptyNearby, 13, .regular, ShareStyle.muted); emptyNearby.maximumNumberOfLines = 3; emptyNearby.frame = NSRect(x: 40, y: 88, width: 592, height: 60); listCard.addSubview(emptyNearby)
+        // Footer: everyday switches; the rarely used actions sit under 更多.
+        let rule = NSBox(); rule.boxType = .custom; rule.borderWidth = 0; rule.fillColor = ShareStyle.border; at(rule, 0, 556, W, 1)
+        autostart.target = self; autostart.action = #selector(toggleLogin); autostart.state = !test && ShareLogin.enabled ? .on : .off; autostart.font = .systemFont(ofSize: 13); at(autostart, 24, 572, 200, 22)
+        let advancedButton = NSButton(title: "進階設定", target: nil, action: nil); plain(advancedButton, #selector(showAdvanced)); at(advancedButton, 404, 568, 100, 30)
+        let records = NSButton(title: "診斷紀錄", target: nil, action: nil); plain(records, #selector(showDiagnostics)); at(records, 508, 568, 100, 30)
+        let more = NSButton(title: "更多 ▾", target: nil, action: nil); plain(more, #selector(showMore(_:))); at(more, 612, 568, 84, 30)
         details.isEditable=false; details.font = .monospacedSystemFont(ofSize:12,weight:.regular); details.isVerticallyResizable=true; details.autoresizingMask = [.width]
-        role.target = self; role.action = #selector(roleChanged); position.target = self; position.action = #selector(positionChanged); nearby.target = self; nearby.action = #selector(selectionChanged)
         tray = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         // The app icon itself (same as the Dock and the Windows tray). It is a full-colour tile with
         // its own light background, so it stays legible on light and dark menu bars; not a template image.
@@ -480,9 +633,10 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuD
         } else { tray.button?.title = "⇄" }
         tray.button?.toolTip = "Barrier Share"; let trayMenu = NSMenu()
         trayMenu.delegate = self; trayMenu.autoenablesItems = false; tray.menu = trayMenu
+        if !test { UNUserNotificationCenter.current().delegate = self }
         do {
             if !test { let old = Bundle.main.bundleURL.deletingLastPathComponent(); try ShareSettings.importPairing(old, true, replace: false); try ShareSettings.importPairing(old, false, replace: false) }
-            options = try ShareSettings.load(); role.selectItem(at: options.host ? 0 : 1); position.selectItem(at: ShareSettings.directions.firstIndex(of: options.position) ?? 0)
+            options = try ShareSettings.load(); role.selectItem(at: options.host ? 0 : 1); segment.selectedSegment = options.host ? 0 : 1; roleChangedLabel()
             loading = false; try refreshRole()
             if !test { startLink(); retry = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in if let self = self, self.enabled && self.link == nil { self.startLink() } } }
             if !test { checkUpdate(); updateTimer = Timer.scheduledTimer(withTimeInterval: 6 * 60 * 60, repeats: true) { [weak self] _ in self?.checkUpdate() } }
@@ -492,14 +646,103 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuD
         let loginLaunch = NSAppleEventManager.shared().currentAppleEvent?.paramDescriptor(forKeyword: AEKeyword(keyAELaunchedAsLogInItem)) != nil
         if !loginLaunch || test { window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true) } else { NSApp.setActivationPolicy(.accessory) }
     }
+    func roleChangedLabel() { roleLabel.stringValue = options.host ? "主控端 · 使用這台的鍵盤滑鼠" : "接收端 · 由主控端操作" }
+    @objc func segmentChanged() { guard role.indexOfSelectedItem != segment.selectedSegment else { return }; role.selectItem(at: segment.selectedSegment); roleChanged() }
+    @objc func filterChanged() { rebuildNearby() }
+    @objc func cancelTransfer() { if transferring { resume() } }
+    @objc func dismissUpdate() { dismissedUpdate = bannerVersion; setBanner(false) }
+    var bannerVersion = ""
+    func setBanner(_ show: Bool) {
+        guard banner.isHidden == show else { return }
+        banner.isHidden = !show; body.frame.origin.y = show ? 44 : 0
+        var frame = window.frame; let delta: CGFloat = show ? 44 : -44
+        frame.size.height += delta; frame.origin.y -= delta; window.setFrame(frame, display: true)
+        (window.contentView as? FlippedView)?.frame.size.height = body.frame.maxY
+    }
+    @objc func showMore(_ sender: NSButton) {
+        let menu = NSMenu(); menu.autoenablesItems = false
+        let clearItem = menu.addItem(withTitle: "清除暫存檔案", action: #selector(clearCache), keyEquivalent: ""); clearItem.target = self; clearItem.isEnabled = !enabled && core == nil
+        menu.addItem(withTitle: "關於 Barrier Share", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
+        menu.addItem(.separator())
+        let unpair = menu.addItem(withTitle: "解除配對…", action: peers.count > 1 ? nil : #selector(forgetPeer), keyEquivalent: ""); unpair.target = self
+        unpair.attributedTitle = NSAttributedString(string: "解除配對…", attributes: [.foregroundColor: ShareStyle.danger, .font: NSFont.menuFont(ofSize: 0)])
+        unpair.isEnabled = link != nil && !peers.isEmpty
+        if peers.count > 1 {
+            let choices = NSMenu()
+            for p in peers { let item = choices.addItem(withTitle: "解除「\(p.name)」", action: #selector(forgetChosen(_:)), keyEquivalent: ""); item.target = self; item.representedObject = p.fingerprint }
+            choices.addItem(.separator())
+            let all = choices.addItem(withTitle: "全部解除", action: #selector(forgetChosen(_:)), keyEquivalent: ""); all.target = self
+            all.attributedTitle = NSAttributedString(string: "全部解除", attributes: [.foregroundColor: ShareStyle.danger, .font: NSFont.menuFont(ofSize: 0)])
+            unpair.submenu = choices
+        }
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.height + 4), in: sender)
+    }
+    // Paired computers first (offline ones greyed), then the others by name, filtered by the search box.
+    func rebuildNearby() {
+        let query = filter.stringValue.trimmingCharacters(in: .whitespaces).lowercased()
+        let match = { (c: NearbyComputer) in query.isEmpty || c.name.lowercased().contains(query) || c.address.contains(query) }
+        let paired = peers.map { p in computers.first { $0.fingerprint == p.fingerprint }.map { ($0, false) } ?? (NearbyComputer(fingerprint: p.fingerprint, name: p.name, address: ""), true) }.filter { match($0.0) }
+        let others = computers.filter { c in !peers.contains { $0.fingerprint == c.fingerprint } }.filter(match).sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+        let width = nearbyScroll.contentSize.width
+        nearbyList.subviews.forEach { $0.removeFromSuperview() }
+        var y: CGFloat = 0
+        func add(_ view: NSView) { view.frame.origin = NSPoint(x: 0, y: y); nearbyList.addSubview(view); y += view.frame.height }
+        func system(_ fp: String) -> String { switch options.platforms[fp] { case "mac": return "Mac"; case "windows": return "Windows"; case "linux": return "Linux"; default: return "電腦" } }
+        if !paired.isEmpty { add(ShareDeviceRow.header("已配對", width: width)); for (c, offline) in paired { add(ShareDeviceRow(width: width, name: c.name, detail: offline ? "已配對 · 離線" : "\(system(c.fingerprint)) · \(c.address)", offline: offline, paired: true, mac: options.platforms[c.fingerprint] == "mac", invite: nil)) } }
+        if !others.isEmpty {
+            if !paired.isEmpty { add(ShareDeviceRow.header("其他電腦", width: width)) }
+            for c in others {
+                var button: NSButton? = nil
+                if options.host {
+                    let invite = SharePrimaryButton(title: "邀請配對", target: self, action: #selector(inviteRow(_:))); invite.identifier = NSUserInterfaceItemIdentifier(c.fingerprint)
+                    invite.isEnabled = link != nil && consent == nil; button = invite
+                }
+                add(ShareDeviceRow(width: width, name: c.name, detail: "\(system(c.fingerprint)) · \(c.address)", offline: false, paired: false, mac: options.platforms[c.fingerprint] == "mac", invite: button))
+            }
+        }
+        nearbyList.frame = NSRect(x: 0, y: 0, width: width, height: max(y, nearbyScroll.contentSize.height))
+        let empty = paired.isEmpty && others.isEmpty
+        emptyNearby.isHidden = !empty
+        emptyNearby.stringValue = !query.isEmpty && !computers.isEmpty ? "找不到符合的電腦" : !enabled ? "搜尋已暫停\n繼續共用後，會重新尋找附近電腦。" : options.host ? "正在尋找接收端…\n請在另一台選擇「接收端」，保持程式開啟。" : "尚未找到主控端…\n請在另一台選擇「主控端」，保持程式開啟。"
+        nearbyCount.stringValue = computers.isEmpty ? "" : "\(computers.count) 台"
+        filter.isHidden = computers.count <= 6 && filter.stringValue.isEmpty
+    }
+    @objc func inviteRow(_ sender: NSButton) {
+        guard let fp = sender.identifier?.rawValue, options.host, link != nil, consent == nil, !peers.contains(where: { $0.fingerprint == fp }) else { return }
+        stopBackend(); send("PAIR\t" + fp); status.stringValue = "正在發出邀請…"
+    }
+    // The connection card's badge and screen map follow the role, pairing and connection.
+    func updateCard() {
+        if !enabled { badge.set("已暫停", ShareStyle.muted, ShareStyle.field) }
+        else if connections > 0 { badge.set("已連線", ShareStyle.green, ShareStyle.greenTint) }
+        else if !peers.isEmpty { badge.set("連線中", ShareStyle.blue, ShareStyle.tint) }
+        else { badge.set(options.host ? "尚未配對" : "等待邀請", ShareStyle.muted, ShareStyle.field) }
+        var tiles = [ShareScreenMap.Tile(cell: .init(x: 0, y: 0), name: "這台", isSelf: true)]
+        if options.host {
+            let grid = ShareSettings.cells(options.position, receivers: peers.map { $0.fingerprint }, layout: options.layout)
+            for (i, p) in peers.enumerated() { if let cell = grid.first(where: { $0.0 == ShareSettings.screenName(p.fingerprint) })?.1 { tiles.append(.init(cell: cell, name: p.name, color: ShareStyle.peer(i))) } }
+            if peers.isEmpty { tiles.append(.init(cell: ShareSettings.step(options.position), name: "接收端", placeholder: true)) }
+        } else { tiles.append(.init(cell: .init(x: -1, y: 0), name: peers.first?.name ?? "主控端", placeholder: peers.isEmpty, color: peers.isEmpty ? nil : ShareStyle.peer(0))) }
+        map.tiles = tiles
+    }
     @objc func toggleLogin() {
         do { try ShareLogin.set(autostart.state == .on) } catch { showError(error) }
         autostart.state = ShareLogin.enabled ? .on : .off
         if autostart.state == .off && SMAppService.mainApp.status == .requiresApproval { status.stringValue = "請到「系統設定 › 一般 › 登入項目」允許 Barrier Share。" }
     }
-    func updateControls() { transferring = transferring && core != nil; start.title = transferring ? "取消傳送" : "恢復連線"; nearby.isHidden = computers.isEmpty; emptyNearby.isHidden = !computers.isEmpty; pair.title = options.host ? "邀請配對  →" : "等待主控端邀請"; start.isEnabled = transferring || !enabled || link == nil; stop.isEnabled = enabled; search.isEnabled = link != nil; pair.isEnabled = options.host && link != nil && nearby.indexOfSelectedItem >= 0 && consent == nil; forget.isEnabled = link != nil && !peers.isEmpty; clear.isEnabled = !enabled && core == nil }
+    func updateControls() {
+        transferring = transferring && core != nil
+        let linkDown = enabled && link == nil
+        stop.isHidden = !(enabled && !linkDown); start.isHidden = !stop.isHidden; start.title = enabled ? "恢復連線" : "繼續共用"
+        start.isEnabled = !enabled || link == nil; stop.isEnabled = enabled
+        arrange.isHidden = !options.host; arrange.isEnabled = !peers.isEmpty
+        cancelSend.isHidden = !transferring; cancelSend.frame.origin.x = options.host ? 288 : 164
+        status.textColor = enabled ? ShareStyle.ink : ShareStyle.muted
+        search.isEnabled = link != nil; forget.isEnabled = link != nil && !peers.isEmpty; clear.isEnabled = !enabled && core == nil
+        rebuildNearby(); updateCard()
+    }
     func refreshRole() throws {
-        peers.removeAll(); peersChanged(); computers.removeAll(); nearby.removeAllItems()
+        peers.removeAll(); peersChanged(); computers.removeAll()
         _ = try ShareSettings.initialize(options.host); try ShareSettings.save(options)
         status.stringValue = enabled ? "正在啟用區網搜尋…" : "已暫停"; updateControls()
     }
@@ -559,68 +802,129 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuD
         }.resume()
     }
     func showUpdate(_ found: (version: String, url: URL)?) {
-        update.isHidden = found == nil; network.isHidden = found != nil
-        guard let found = found else { return }
-        updateURL = found.url
-        update.attributedTitle = NSAttributedString(string: "有新版 \(found.version)，前往下載 ↗", attributes: [.font: NSFont.systemFont(ofSize: 13, weight: .semibold), .foregroundColor: blue, .underlineStyle: NSUnderlineStyle.single.rawValue])
+        guard let found = found else { setBanner(false); return }
+        updateURL = found.url; bannerVersion = found.version
+        bannerText.stringValue = "有新版 \(found.version) · 安裝時會自動關閉並重新開啟 Barrier Share"
+        setBanner(dismissedUpdate != found.version)
+        // While the window is closed a system notification announces it once per version.
+        if announcedUpdate != found.version && !test && !window.isVisible {
+            announcedUpdate = found.version
+            let center = UNUserNotificationCenter.current()
+            center.requestAuthorization(options: [.alert]) { granted, _ in
+                guard granted else { return }
+                let content = UNMutableNotificationContent(); content.title = "Barrier Share 有新版 \(found.version)"; content.body = "點這裡下載更新，安裝時會自動重新開啟。"
+                content.userInfo = ["url": found.url.absoluteString]
+                center.add(UNNotificationRequest(identifier: "update-" + found.version, content: content, trigger: nil))
+            }
+        }
+    }
+    func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse, withCompletionHandler completionHandler: @escaping () -> Void) {
+        if let text = response.notification.request.content.userInfo["url"] as? String, let url = URL(string: text) { NSWorkspace.shared.open(url) }
+        completionHandler()
     }
     func sendTargets() { do { let list = try options.advanced.targetList(); if !list.isEmpty || link != nil { send("TARGETS\t" + list) } } catch { showError(error) } }
     // Host-side Barrier options plus direct addresses for computers on another subnet or VPN.
-    func buildAdvanced(_ a: ShareAdvanced) -> (NSAlert, () -> ShareAdvanced) {
-        let alert = NSAlert(); alert.messageText = "進階設定"
-        alert.informativeText = options.host ? "以下切換設定由這台（主控端）套用到兩台。" : "切換設定只在主控端生效；這台目前是接收端。"
-        let view = FlippedView(frame: NSRect(x: 0, y: 0, width: 500, height: 520)); var y: CGFloat = 0
-        func number(_ title: String, _ value: Int) -> NSTextField {
-            let label = NSTextField(labelWithString: title); label.frame = NSRect(x: 0, y: y + 3, width: 380, height: 20); view.addSubview(label)
-            let field = NSTextField(string: String(value)); field.frame = NSRect(x: 390, y: y, width: 100, height: 24); field.alignment = .right; view.addSubview(field); y += 34; return field
+    // Advanced settings in three groups; each row has a name, a short explanation and a switch or menu.
+    func buildAdvanced(_ a: ShareAdvanced) -> (NSWindow, () -> ShareAdvanced, ShareModalCloser) {
+        let W: CGFloat = 520, width: CGFloat = W + 48
+        let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: width, height: 640), styleMask: [.titled], backing: .buffered, defer: false); panel.title = "進階設定"
+        let view = FlippedView(frame: NSRect(x: 0, y: 0, width: width, height: 640)); view.wantsLayer = true; view.layer?.backgroundColor = NSColor.white.cgColor; panel.contentView = view
+        var y: CGFloat = 18
+        func label(_ text: String, _ size: CGFloat, _ weight: NSFont.Weight, _ color: NSColor, _ x: CGFloat, _ yy: CGFloat, _ w: CGFloat) -> NSTextField {
+            let l = NSTextField(labelWithString: text); l.font = .systemFont(ofSize: size, weight: weight); l.textColor = color; l.lineBreakMode = .byTruncatingTail; l.frame = NSRect(x: x, y: yy, width: w, height: size + 6); view.addSubview(l); return l
         }
-        func check(_ title: String, _ value: Bool) -> NSButton {
-            let box = NSButton(checkboxWithTitle: title, target: nil, action: nil); box.state = value ? .on : .off; box.frame = NSRect(x: 0, y: y, width: 490, height: 22); view.addSubview(box); y += 30; return box
+        _ = label("進階設定", 18, .bold, ShareStyle.ink, 24, y, W); y += 30
+        _ = label(options.host ? "由這台（主控端）套用到所有螢幕；儲存後自動重新連線。" : "切換設定只在主控端生效；這台目前是接收端。", 12, .regular, ShareStyle.muted, 24, y, W); y += 30
+        var group: ShareCard?, rowY: CGFloat = 0
+        func section(_ text: String) { _ = label(text, 11, .semibold, ShareStyle.muted, 24, y, W); y += 20; let card = ShareCard(frame: NSRect(x: 24, y: y, width: W, height: 10)); view.addSubview(card); group = card; rowY = 0 }
+        func row(_ title: String, _ detail: String?, _ control: NSView) {
+            guard let card = group else { return }
+            let h: CGFloat = detail == nil ? 44 : 56
+            if rowY > 0 { let rule = NSBox(frame: NSRect(x: 14, y: rowY, width: W - 28, height: 1)); rule.boxType = .custom; rule.borderWidth = 0; rule.fillColor = ShareStyle.line; card.addSubview(rule) }
+            let t = NSTextField(labelWithString: title); t.font = .systemFont(ofSize: 13); t.textColor = ShareStyle.ink; t.frame = NSRect(x: 14, y: rowY + (detail == nil ? 13 : 9), width: W - 48 - control.frame.width, height: 18); card.addSubview(t)
+            if let detail = detail { let d = NSTextField(labelWithString: detail); d.font = .systemFont(ofSize: 11); d.textColor = ShareStyle.faint; d.frame = NSRect(x: 14, y: rowY + 30, width: W - 48 - control.frame.width, height: 16); card.addSubview(d) }
+            control.frame.origin = NSPoint(x: W - 14 - control.frame.width, y: rowY + (h - control.frame.height) / 2); control.setAccessibilityLabel(title); card.addSubview(control)
+            rowY += h; card.frame.size.height = rowY + 1; y = card.frame.maxY
         }
-        let delay = number("游標停在邊緣多久才切換（毫秒，0 = 立即）", a.switchDelay)
-        let tap = number("輕敲兩下邊緣才切換（兩次間隔毫秒，0 = 關閉）", a.doubleTap)
-        let corners = check("螢幕四個角落不切換", a.corners)
-        let cornerSize = number("　角落範圍（像素）", a.cornerSize)
-        let swap = check("Windows 接收端的 Control 與 Command 鍵對調（兩台都是 Mac 時不會對調）", a.swapModifiers)
-        let relative = check("相對滑鼠移動（全螢幕遊戲用）", a.relativeMouse)
-        let saver = check("螢幕保護程式同步", a.screenSaver)
-        let keys = check("Control+Option+方向鍵切換到另一台", a.switchKeys)
-        let lock = check("Control+Option+L 把游標鎖在目前這台（再按一次解除）", a.lockKey)
-        let targetsLabel = NSTextField(labelWithString: "其他網段或 VPN 的電腦（IP 或名稱，以逗號分隔）"); targetsLabel.frame = NSRect(x: 0, y: y, width: 490, height: 20); view.addSubview(targetsLabel); y += 24
-        let targets = NSTextField(string: a.targets); targets.frame = NSRect(x: 0, y: y, width: 490, height: 24); view.addSubview(targets); y += 34
-        let extraLabel = NSTextField(labelWithString: "額外設定（Barrier 設定檔 options 語法，例如自訂快捷鍵）"); extraLabel.frame = NSRect(x: 0, y: y, width: 490, height: 20); view.addSubview(extraLabel); y += 24
-        let scroll = NSScrollView(frame: NSRect(x: 0, y: y, width: 490, height: 80)); scroll.hasVerticalScroller = true; scroll.borderType = .bezelBorder
-        let extra = NSTextView(frame: scroll.bounds); extra.string = a.extra; extra.font = .monospacedSystemFont(ofSize: 12, weight: .regular); extra.isRichText = false; extra.autoresizingMask = [.width]
-        scroll.documentView = extra; view.addSubview(scroll); y += 88
-        view.frame.size.height = y; alert.accessoryView = view
-        alert.addButton(withTitle: "儲存並套用"); alert.addButton(withTitle: "取消")
+        func toggle(_ value: Bool) -> NSSwitch { let s = NSSwitch(); s.state = value ? .on : .off; s.frame.size = s.fittingSize; return s }
+        func choice(_ values: [Int], _ name: (Int) -> String, _ current: Int) -> NSPopUpButton {
+            var list = values; if !list.contains(current) { list.append(current); list.sort() }
+            let box = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 140, height: 26)); box.addItems(withTitles: list.map(name)); box.selectItem(at: list.firstIndex(of: current) ?? 0)
+            for (i, v) in list.enumerated() { box.item(at: i)?.tag = v }; return box
+        }
+        func seconds(_ v: Int) -> String { v % 1000 == 0 ? "\(v / 1000) 秒" : String(format: "%g 秒", Double(v) / 1000) }
+        section("切換螢幕")
+        let delay = choice([0, 250, 500, 1000], { $0 == 0 ? "立即" : seconds($0) }, a.switchDelay); row("停留多久才切換", "避免滑鼠擦過邊緣就跑到另一台", delay)
+        let tap = choice([0, 250, 400], { $0 == 0 ? "關閉" : seconds($0) + "內" }, a.doubleTap); row("連碰兩下邊緣才切換", nil, tap)
+        let corners = toggle(a.corners); row("螢幕角落不切換", "方便點角落的選單或關閉鈕", corners)
+        let keys = toggle(a.switchKeys); row("快速鍵切換", "Control+Option+方向鍵", keys)
+        y += 16; section("鍵盤與滑鼠")
+        let swap = toggle(a.swapModifiers); row("在 Windows 上對調 Control 與 Command", "Mac 鍵盤在 Windows 上可按 ⌘C／⌘V；兩台都是 Mac 時不對調", swap)
+        let lock = toggle(a.lockKey); row("鎖定游標在目前螢幕", "Control+Option+L 切換", lock)
+        let relative = toggle(a.relativeMouse); row("相對滑鼠移動", "全螢幕遊戲用", relative)
+        let saver = toggle(a.screenSaver); row("同步螢幕保護程式", nil, saver)
+        y += 16; section("連線")
+        let targetScroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 200, height: 44)); targetScroll.hasVerticalScroller = true; targetScroll.borderType = .bezelBorder
+        let targets = NSTextView(frame: targetScroll.bounds); targets.isRichText = false; targets.font = .monospacedSystemFont(ofSize: 12, weight: .regular); targets.autoresizingMask = [.width]
+        targets.string = a.targets.components(separatedBy: CharacterSet(charactersIn: ", ;\r\n")).filter { !$0.isEmpty }.joined(separator: "\n"); targetScroll.documentView = targets
+        row("手動位址", "跨網段或 VPN 時填入對方 IP，一行一個", targetScroll)
+        y += 12
+        let expertToggle = NSButton(title: "", target: nil, action: nil); expertToggle.isBordered = false; expertToggle.alignment = .left; expertToggle.frame = NSRect(x: 24, y: y, width: W, height: 22); view.addSubview(expertToggle); y += 28
+        let extraScroll = NSScrollView(frame: NSRect(x: 24, y: y, width: W, height: 70)); extraScroll.hasVerticalScroller = true; extraScroll.borderType = .bezelBorder
+        let extra = NSTextView(frame: extraScroll.bounds); extra.isRichText = false; extra.font = .monospacedSystemFont(ofSize: 12, weight: .regular); extra.string = a.extra; extra.autoresizingMask = [.width]
+        extraScroll.documentView = extra; extraScroll.setAccessibilityLabel("自訂 Barrier 選項"); view.addSubview(extraScroll)
+        let buttonsY = y + 8
+        let reset = NSButton(title: "恢復預設", target: nil, action: nil); reset.bezelStyle = .rounded; reset.frame = NSRect(x: 24, y: buttonsY, width: 100, height: 32); view.addSubview(reset)
+        let cancel = NSButton(title: "取消", target: nil, action: nil); cancel.bezelStyle = .rounded; cancel.keyEquivalent = "\u{1b}"; cancel.frame = NSRect(x: W + 24 - 232, y: buttonsY, width: 108, height: 32); view.addSubview(cancel)
+        let save = SharePrimaryButton(title: "儲存", target: nil, action: nil); save.frame = NSRect(x: W + 24 - 112, y: buttonsY, width: 112, height: 32); view.addSubview(save)
+        let closer = ShareModalCloser(panel); save.target = closer; save.action = #selector(ShareModalCloser.accept); cancel.target = closer; cancel.action = #selector(ShareModalCloser.cancel)
+        // The expert box opens on demand (or when it already holds something) and moves the buttons below it.
+        let expert = ShareBlockTarget { [weak extraScroll, weak expertToggle, weak panel, weak view] open in
+            guard let extraScroll = extraScroll, let view = view else { return }
+            extraScroll.isHidden = !open
+            expertToggle?.attributedTitle = NSAttributedString(string: (open ? "▾" : "▸") + " 自訂 Barrier 選項（專家）", attributes: [.foregroundColor: ShareStyle.muted, .font: NSFont.systemFont(ofSize: 12)])
+            let top = buttonsY + (open ? 80 : 0)
+            for b in [reset, cancel, save] { b.frame.origin.y = top }
+            let size = NSSize(width: width, height: top + 52); view.frame.size = size; panel?.setContentSize(size)
+        }
+        expertToggle.target = expert; expertToggle.action = #selector(ShareBlockTarget.toggle)
+        let resetter = ShareBlockTarget { _ in
+            let d = ShareAdvanced()
+            delay.selectItem(withTag: d.switchDelay); tap.selectItem(withTag: d.doubleTap)
+            for (box, on) in [(corners, d.corners), (keys, d.switchKeys), (swap, d.swapModifiers), (lock, d.lockKey), (relative, d.relativeMouse), (saver, d.screenSaver)] { box.state = on ? .on : .off }
+        }
+        reset.target = resetter; reset.action = #selector(ShareBlockTarget.toggle)
+        objc_setAssociatedObject(panel, "targets", [closer, expert, resetter], .OBJC_ASSOCIATION_RETAIN)
+        expert.open = !a.extra.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty; expert.action(expert.open)
         let read = { () -> ShareAdvanced in
-            var v = ShareAdvanced()
-            v.switchDelay = min(5000, max(0, delay.integerValue)); v.doubleTap = min(2000, max(0, tap.integerValue)); v.cornerSize = min(500, max(0, cornerSize.integerValue))
+            var v = ShareAdvanced(); v.cornerSize = a.cornerSize
+            v.switchDelay = delay.selectedTag(); v.doubleTap = tap.selectedTag()
             v.corners = corners.state == .on; v.swapModifiers = swap.state == .on; v.relativeMouse = relative.state == .on; v.screenSaver = saver.state == .on
-            v.switchKeys = keys.state == .on; v.lockKey = lock.state == .on; v.targets = targets.stringValue.trimmingCharacters(in: .whitespaces); v.extra = extra.string
+            v.switchKeys = keys.state == .on; v.lockKey = lock.state == .on
+            v.targets = targets.string.components(separatedBy: .newlines).map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }.joined(separator: ", ")
+            v.extra = extra.string
             return v
         }
-        return (alert, read)
+        return (panel, read, closer)
     }
     @objc func showAdvanced() {
-        let (alert, read) = buildAdvanced(options.advanced)
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
-        let value = read()
-        do {
-            _ = try value.targetList(); _ = try value.extraLines()
-            options.advanced = value; try ShareSettings.save(options); sendTargets()
-            // The host core reads options at start; the saved pairing reconnects it right away.
-            if options.host && core != nil { stopBackend() }
-            status.stringValue = "已儲存進階設定。"
-        } catch { showError(error) }
+        let (panel, read, closer) = buildAdvanced(options.advanced)
+        while true {
+            panel.center(); NSApp.runModal(for: panel); panel.orderOut(nil)
+            guard closer.accepted else { return }
+            let value = read()
+            do {
+                _ = try value.targetList(); _ = try value.extraLines()
+                options.advanced = value; try ShareSettings.save(options); sendTargets()
+                // The host core reads options at start; the saved pairing reconnects it right away.
+                if options.host && core != nil { stopBackend() }
+                status.stringValue = "已儲存進階設定。"; return
+            } catch { let alert = NSAlert(); alert.messageText = "進階設定"; alert.informativeText = error.localizedDescription; alert.runModal() }
+        }
     }
     @objc func openUpdate() { if let url = updateURL { NSWorkspace.shared.open(url) } }
-    @objc func roleChanged() { guard !loading else { return }; stopLink(); stopBackend(); options.host = role.indexOfSelectedItem == 0; do { try refreshRole(); if enabled { startLink() } } catch { showError(error) } }
-    @objc func positionChanged() { guard !loading else { return }; options.position = ShareSettings.directions[position.indexOfSelectedItem]; for p in peers { options.layout[p.fingerprint] = nil }; do { try ShareSettings.save(options); if core != nil { stopBackend() } } catch { showError(error) } }
-    @objc func selectionChanged() { updateControls() }
+    @objc func roleChanged() { guard !loading else { return }; stopLink(); stopBackend(); options.host = role.indexOfSelectedItem == 0; segment.selectedSegment = role.indexOfSelectedItem; roleChangedLabel(); do { try refreshRole(); if enabled { startLink() } } catch { showError(error) } }
     @objc func searchNow() { send("SEARCH"); status.stringValue = "正在搜尋同一區網的電腦…" }
-    @objc func invite() { let index = nearby.indexOfSelectedItem; guard index >= 0 && index < computers.count else { return }; stopBackend(); send("PAIR\t" + computers[index].fingerprint); status.stringValue = "正在發出邀請…" }
     @objc func resume() {
         // While a file is moving the same button cancels it: restarting the connection drops the partial copy on both sides.
         if transferring { transferring = false; stopBackend(); startBackend(); status.stringValue = "已取消檔案傳送，正在重新連線…"; return }
@@ -650,7 +954,7 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuD
     }
     func stopLink() {
         closeConsent(); send("QUIT"); let process = link; link = nil; linkOutput?.fileHandleForReading.readabilityHandler = nil; linkOutput = nil; linkInput = nil
-        endProcess(process); computers.removeAll(); nearby.removeAllItems(); updateControls()
+        endProcess(process); computers.removeAll(); updateControls()
     }
     func consume(_ data: Data, discovery: Bool) {
         if discovery {
@@ -664,16 +968,14 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuD
         let f = line.components(separatedBy: "\t")
         if f[0] == "READY" { log("區網搜尋已啟動 · UDP/TCP 24801"); if f.count == 2 { ShareSettings.ownFingerprint = f[1] }; sendTargets(); status.stringValue = options.host ? "正在搜尋接收端…" : "可被搜尋，等待主控端邀請…" }
         else if f[0] == "DEVICE" && f.count == 6 {
-            let index = nearby.indexOfSelectedItem, selected = nearby.indexOfSelectedItem >= 0 && nearby.indexOfSelectedItem < computers.count ? computers[index].fingerprint : ""
-            computers.removeAll { $0.fingerprint == f[1] }; computers.append(NearbyComputer(fingerprint: f[1], name: decoded(f[2]), address: f[3])); computers.sort { $0.name < $1.name }
-            nearby.removeAllItems(); nearby.addItems(withTitles: computers.map { $0.name + "  ·  " + $0.address }); if let item = computers.firstIndex(where: { $0.fingerprint == selected }) { nearby.selectItem(at: item) }
+            computers.removeAll { $0.fingerprint == f[1] }; computers.append(NearbyComputer(fingerprint: f[1], name: decoded(f[2]), address: f[3]))
         } else if f[0] == "PLATFORM" && f.count == 3 {
             guard options.platforms[f[1]] != f[2] else { return }
             options.platforms[f[1]] = f[2]
             do { try ShareSettings.save(options) } catch { showError(error) }
             // The swap is written into the host's screen config, so restart the core to apply it.
             if options.host && core != nil { stopBackend(); startBackend() }
-        } else if f[0] == "GONE" && f.count == 2 { if let index = computers.firstIndex(where: { $0.fingerprint == f[1] }) { computers.remove(at: index); nearby.removeItem(at: index) } }
+        } else if f[0] == "GONE" && f.count == 2 { computers.removeAll { $0.fingerprint == f[1] } }
         else if (f[0] == "SAVED" || f[0] == "PAIRED") && f.count == 3 {
             // A receiver has one host; a host's new receiver needs the core restarted with the new screen list.
             if f[0] == "PAIRED" { stopBackend(); if !options.host { peers.removeAll() } }
@@ -693,19 +995,36 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuD
         else if (f[0] == "ERROR" || f[0] == "FATAL") && f.count == 2 { if f[0] == "FATAL" { stopLink() }; status.stringValue = decoded(f[1]); log(status.stringValue) }
         updateControls()
     }
+    // Pairing dialog: both computers, the 6-digit code in 3+3 boxes, reject (Enter) or accept.
     func showConsent(_ message: [String]) {
-        closeConsent(); showWindow(); let alert = NSAlert(), id = message[1]; consent = alert; consentId = id
-        alert.messageText = message[0] == "REQUEST" ? "收到配對邀請" : "核對配對碼"
-        alert.informativeText = "\(decoded(message[2]))\n請確認另一台顯示相同的 6 位數配對碼。\n\n同意後允許共用鍵盤滑鼠及雙向同步剪貼簿。配對會被記住，之後自動連線。"
-        let code = NSTextField(labelWithString: message[4]); code.textColor = blue; code.font = .monospacedDigitSystemFont(ofSize: 34, weight: .bold); code.alignment = .center; code.frame = NSRect(x: 0, y: 0, width: 320, height: 52); alert.accessoryView = code
-        alert.addButton(withTitle: "拒絕"); alert.addButton(withTitle: "相同，同意"); alert.buttons[1].bezelColor = blue; alert.buttons[1].contentTintColor = .white; updateControls()
-        alert.beginSheetModal(for: window) { [weak self] response in
+        closeConsent(); showWindow(); let id = message[1]; consentId = id
+        let request = message[0] == "REQUEST"
+        let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 440, height: 372), styleMask: [.titled], backing: .buffered, defer: false)
+        let view = FlippedView(frame: NSRect(x: 0, y: 0, width: 440, height: 372)); view.wantsLayer = true; view.layer?.backgroundColor = NSColor.white.cgColor; panel.contentView = view
+        func put(_ v: NSView, _ r: NSRect) { v.frame = r; view.addSubview(v) }
+        func label(_ text: String, _ size: CGFloat, _ weight: NSFont.Weight, _ color: NSColor, _ r: NSRect) {
+            let l = NSTextField(wrappingLabelWithString: text); l.font = .systemFont(ofSize: size, weight: weight); l.textColor = color; l.alignment = .center; put(l, r)
+        }
+        put(ShareComputerMark(), NSRect(x: 150, y: 22, width: 44, height: 44))
+        label("⟷", 18, .regular, ShareStyle.faint, NSRect(x: 198, y: 30, width: 44, height: 26))
+        let other = ShareComputerMark(); other.symbol = "desktopcomputer"; put(other, NSRect(x: 246, y: 22, width: 44, height: 44))
+        label(request ? "收到配對邀請" : "核對配對碼", 19, .bold, ShareStyle.ink, NSRect(x: 24, y: 80, width: 392, height: 26))
+        label("\(decoded(message[2]))\n請確認另一台顯示相同的 6 位數配對碼。", 13, .regular, ShareStyle.muted, NSRect(x: 24, y: 112, width: 392, height: 40))
+        let code = ShareCodeView(); code.code = message[4]; put(code, NSRect(x: 20, y: 162, width: 400, height: 70))
+        label("同意後允許共用鍵盤滑鼠及雙向同步剪貼簿。\n配對會被記住，之後自動連線。", 11, .regular, ShareStyle.faint, NSRect(x: 24, y: 242, width: 392, height: 34))
+        // Enter rejects: agreeing always takes a deliberate click.
+        let reject = NSButton(title: "拒絕", target: self, action: #selector(consentReject)); reject.bezelStyle = .rounded; reject.keyEquivalent = "\r"; put(reject, NSRect(x: 24, y: 304, width: 128, height: 40))
+        let accept = SharePrimaryButton(title: "相同，同意配對", target: self, action: #selector(consentAccept)); put(accept, NSRect(x: 164, y: 304, width: 252, height: 40))
+        consent = panel; updateControls()
+        window.beginSheet(panel) { [weak self] response in
             guard let self = self, self.consentId == id else { return }; self.consent = nil; self.consentId = nil
-            self.send((response == .alertSecondButtonReturn ? "ACCEPT\t" : "REJECT\t") + id)
-            self.status.stringValue = response == .alertSecondButtonReturn ? "已同意，等待對方確認…" : "已拒絕配對。"; self.updateControls()
+            self.send((response == .OK ? "ACCEPT\t" : "REJECT\t") + id)
+            self.status.stringValue = response == .OK ? "已同意，等待對方確認…" : "已拒絕配對。"; self.updateControls()
         }
     }
-    func closeConsent() { let alert = consent; consent = nil; consentId = nil; if let alert = alert { window.endSheet(alert.window, returnCode: .cancel); alert.window.orderOut(nil) } }
+    @objc func consentReject() { if let panel = consent { window.endSheet(panel, returnCode: .cancel) } }
+    @objc func consentAccept() { if let panel = consent { window.endSheet(panel, returnCode: .OK) } }
+    func closeConsent() { let panel = consent; consent = nil; consentId = nil; if let panel = panel { window.endSheet(panel, returnCode: .abort); panel.orderOut(nil) } }
     @objc func forgetPeer() {
         if peers.count > 1 {
             // Several receivers: choose one, or all of them.
@@ -727,27 +1046,69 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuD
     func peersChanged() {
         ShareSettings.receivers = options.host ? peers.map { $0.fingerprint } : []
         let names = peers.map { $0.name }
-        peerLabel.stringValue = names.count == 1 ? "已配對 · \(names[0])\n重新開啟後會自動連線" : names.count > 1 ? "已配對 \(names.count) 台 · " + names.joined(separator: "、") : options.host ? "選擇接收端，按「邀請配對」。" : "等待主控端邀請；首次需要你同意。"
-        // Receivers are placed only through 排列螢幕, also when there is just one, so no second control can disagree with it.
-        position.isHidden = true; arrange.isHidden = !options.host; arrange.isEnabled = !peers.isEmpty; positionHint.isHidden = false
-        positionHint.stringValue = !options.host ? "由主控端設定螢幕的相對位置" : peers.isEmpty ? "配對接收端後，按「排列螢幕」設定位置" : "已配對 \(peers.count) 台；按「排列螢幕」調整位置"
+        if names.count == 1 && options.host {
+            let grid = ShareSettings.cells(options.position, receivers: peers.map { $0.fingerprint }, layout: options.layout)
+            let cell = grid.first { $0.0 == ShareSettings.screenName(peers[0].fingerprint) }?.1
+            let words = [ShareSettings.Cell(x: 1, y: 0): "右", ShareSettings.Cell(x: -1, y: 0): "左", ShareSettings.Cell(x: 0, y: -1): "上", ShareSettings.Cell(x: 0, y: 1): "下"]
+            peerLabel.stringValue = cell.flatMap { words[$0] }.map { "滑鼠往\($0)移到 \(names[0])" } ?? "已配對 · \(names[0])"
+        } else if names.count == 1 { peerLabel.stringValue = "已配對主控端 · \(names[0])" }
+        else if names.count > 1 { peerLabel.stringValue = "已配對 \(names.count) 台 · " + names.joined(separator: "、") }
+        else { peerLabel.stringValue = options.host ? "在下方選擇接收端，按「邀請配對」。" : "等待主控端邀請；首次需要你同意。" }
         updateControls()
     }
-    func buildLayout() -> (NSAlert, ShareLayoutView) {
+    // Arrange screens: coloured tiles on a grid, a list of where each one sits, restore/cancel/save.
+    func buildLayout() -> (NSWindow, ShareLayoutView, () -> Bool) {
         let grid = ShareSettings.cells(options.position, receivers: peers.map { $0.fingerprint }, layout: options.layout)
         var placement: [String: ShareSettings.Cell] = [:]
         for p in peers { if let cell = grid.first(where: { $0.0 == ShareSettings.screenName(p.fingerprint) })?.1 { placement[p.fingerprint] = cell } }
-        let view = ShareLayoutView(names: Dictionary(uniqueKeysWithValues: peers.map { ($0.fingerprint, $0.name) }), placement: placement, blue: blue)
-        let alert = NSAlert(); alert.messageText = "排列螢幕"; alert.informativeText = "拖曳電腦到這台的上下左右；相鄰的邊就是游標可以移過去的地方。"
-        alert.accessoryView = view; alert.addButton(withTitle: "儲存排列"); alert.addButton(withTitle: "取消")
-        view.onChange = { [weak alert, weak view] in alert?.buttons.first?.isEnabled = view?.reachable() ?? false }
-        return (alert, view)
+        let colors = Dictionary(uniqueKeysWithValues: peers.enumerated().map { ($0.element.fingerprint, ShareStyle.peer($0.offset)) })
+        let layoutView = ShareLayoutView(names: Dictionary(uniqueKeysWithValues: peers.map { ($0.fingerprint, $0.name) }), placement: placement, blue: blue); layoutView.colors = colors
+        let width = layoutView.frame.width + 248, height = layoutView.frame.height + 140
+        let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: width, height: height), styleMask: [.titled], backing: .buffered, defer: false); panel.title = "排列螢幕"
+        let view = FlippedView(frame: NSRect(x: 0, y: 0, width: width, height: height)); view.wantsLayer = true; view.layer?.backgroundColor = NSColor.white.cgColor; panel.contentView = view
+        let title = NSTextField(labelWithString: "排列螢幕"); title.font = .systemFont(ofSize: 18, weight: .bold); title.frame = NSRect(x: 24, y: 18, width: 300, height: 24); view.addSubview(title)
+        let hint = NSTextField(labelWithString: "拖曳電腦到這台的上下左右；相鄰的邊就是游標可以移過去的地方。"); hint.textColor = ShareStyle.muted; hint.font = .systemFont(ofSize: 12); hint.frame = NSRect(x: 24, y: 46, width: width - 48, height: 18); view.addSubview(hint)
+        layoutView.frame.origin = NSPoint(x: 24, y: 76); view.addSubview(layoutView)
+        let list = FlippedView(frame: NSRect(x: layoutView.frame.maxX + 20, y: 76, width: 204, height: layoutView.frame.height)); view.addSubview(list)
+        let warning = NSTextField(wrappingLabelWithString: ""); warning.textColor = ShareStyle.danger; warning.font = .systemFont(ofSize: 12); warning.frame = NSRect(x: 24, y: layoutView.frame.maxY + 10, width: width - 48, height: 32); view.addSubview(warning)
+        let buttonsY = height - 56
+        let reset = NSButton(title: "恢復預設", target: nil, action: nil); reset.bezelStyle = .rounded; reset.frame = NSRect(x: 24, y: buttonsY, width: 100, height: 32); view.addSubview(reset)
+        let cancel = NSButton(title: "取消", target: nil, action: nil); cancel.bezelStyle = .rounded; cancel.keyEquivalent = "\u{1b}"; cancel.frame = NSRect(x: width - 248, y: buttonsY, width: 108, height: 32); view.addSubview(cancel)
+        let save = SharePrimaryButton(title: "儲存", target: nil, action: nil); save.frame = NSRect(x: width - 132, y: buttonsY, width: 108, height: 32); view.addSubview(save)
+        let words = [ShareSettings.Cell(x: 1, y: 0): "右", ShareSettings.Cell(x: -1, y: 0): "左", ShareSettings.Cell(x: 0, y: -1): "上", ShareSettings.Cell(x: 0, y: 1): "下"]
+        let refresh = { [weak layoutView, weak list, weak warning, weak save] in
+            guard let layoutView = layoutView, let list = list else { return }
+            list.subviews.forEach { $0.removeFromSuperview() }
+            for (i, p) in self.peers.enumerated() {
+                let y = CGFloat(i) * 46
+                let dot = NSView(frame: NSRect(x: 0, y: y + 8, width: 12, height: 12)); dot.wantsLayer = true; dot.layer?.cornerRadius = 6; dot.layer?.backgroundColor = ShareStyle.peer(i).cgColor; list.addSubview(dot)
+                let name = NSTextField(labelWithString: p.name); name.font = .systemFont(ofSize: 13, weight: .semibold); name.lineBreakMode = .byTruncatingTail; name.frame = NSRect(x: 20, y: y + 4, width: 184, height: 18); list.addSubview(name)
+                let cell = layoutView.placement[p.fingerprint]
+                let place = NSTextField(labelWithString: cell.flatMap { words[$0] }.map { "在這台的\($0)邊" } ?? "經由其他螢幕"); place.font = .systemFont(ofSize: 12); place.textColor = ShareStyle.muted; place.frame = NSRect(x: 20, y: y + 22, width: 184, height: 16); list.addSubview(place)
+            }
+            let ok = layoutView.reachable()
+            warning?.stringValue = ok ? "" : "有螢幕和這台連不上。請讓每台都緊鄰這台或其他螢幕。"; save?.isEnabled = ok
+        }
+        layoutView.onChange = refresh
+        reset.target = layoutView; reset.action = #selector(ShareLayoutView.restoreDefaults)
+        layoutView.defaults = { [weak self] in
+            guard let self = self else { return [:] }
+            let fresh = ShareSettings.cells(self.options.position, receivers: self.peers.map { $0.fingerprint }, layout: [:])
+            var d: [String: ShareSettings.Cell] = [:]; for p in self.peers { if let c = fresh.first(where: { $0.0 == ShareSettings.screenName(p.fingerprint) })?.1 { d[p.fingerprint] = c } }; return d
+        }
+        var saved = false
+        cancel.target = panel; cancel.action = #selector(NSWindow.close)
+        let closer = ShareModalCloser(panel); save.target = closer; save.action = #selector(ShareModalCloser.accept); cancel.target = closer; cancel.action = #selector(ShareModalCloser.cancel)
+        objc_setAssociatedObject(panel, "closer", closer, .OBJC_ASSOCIATION_RETAIN)
+        refresh()
+        return (panel, layoutView, { saved = closer.accepted; return saved })
     }
     @objc func showLayout() {
-        let (alert, view) = buildLayout()
-        guard alert.runModal() == .alertFirstButtonReturn, view.reachable() else { return }
+        let (panel, view, accepted) = buildLayout()
+        panel.center(); NSApp.runModal(for: panel); panel.orderOut(nil)
+        guard accepted(), view.reachable() else { return }
         for (fp, cell) in view.placement { options.layout[fp] = [cell.x, cell.y] }
-        do { try ShareSettings.save(options); if core != nil { stopBackend() }; status.stringValue = "已儲存螢幕排列。" } catch { showError(error) }
+        do { try ShareSettings.save(options); if core != nil { stopBackend() }; status.stringValue = "已儲存螢幕排列。"; peersChanged() } catch { showError(error) }
     }
     func startBackend() {
         guard core == nil && enabled && !test else { return }
@@ -764,10 +1125,11 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuD
             try process.run(); connectedAddress = options.address; status.stringValue = "配對已驗證，正在連線…"; updateControls()
         } catch { stopBackend(); showError(error) }
     }
-    func stopBackend() { let process = core; core = nil; corePipe?.fileHandleForReading.readabilityHandler = nil; corePipe = nil; endProcess(process); updateControls() }
+    func stopBackend() { let process = core; core = nil; connections = 0; corePipe?.fileHandleForReading.readabilityHandler = nil; corePipe = nil; endProcess(process); updateControls() }
     func log(_ line: String) {
         details.string = String((details.string + line + "\n").suffix(20000)); details.scrollToEndOfDocument(nil)
-        if line.contains("connected to server") || line.contains("has connected") { status.stringValue = "已連線 · 雙向複製貼上已啟用" }
+        if line.contains("connected to server") || line.contains("has connected") { status.stringValue = "已連線 · 雙向複製貼上已啟用"; connections += 1; updateCard() }
+        if line.contains("disconnected from server") || line.contains("has disconnected") { connections = max(0, connections - 1); updateCard() }
         let was = transferring
         if line.contains("file clipboard: sending") { status.stringValue = "正在傳送檔案… 可繼續操作滑鼠與鍵盤"; transferring = true; receiving = false; progress.reset() }
         if line.contains("file clipboard: receiving") { status.stringValue = "正在接收檔案… 完成後即可貼上"; transferring = true; receiving = true; autoPaste.target = nil; lastProgress = ""; progress.reset() }
@@ -927,29 +1289,48 @@ func selfTest(_ directory: URL) throws {
     guard app.computers.count == 1 && app.computers[0].address == "192.168.1.3" else { throw ShareError.message("Discovery list update failed") }
     app.linkLine("SAVED\t\(peer)\t\(name)")
     app.linkLine("VERIFY\ttest-request\t\(name)\t\(peer)\t123456")
-    app.consent?.layout()
-    app.consent?.window.displayIfNeeded()
     RunLoop.current.run(until: Date().addingTimeInterval(0.5))
-    guard let sheet = app.consent?.window.contentView, let sheetBitmap = sheet.bitmapImageRepForCachingDisplay(in: sheet.bounds) else { throw ShareError.message("Missing pairing dialog") }
-    sheet.wantsLayer = true; sheet.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
-    sheet.layoutSubtreeIfNeeded(); sheet.displayIfNeeded()
-    sheet.cacheDisplay(in: sheet.bounds, to: sheetBitmap)
-    try sheetBitmap.representation(using: .png, properties: [:])!.write(to: directory.appendingPathComponent("gui-pairing.png"))
+    func snapshot(_ view: NSView?, _ file: String) throws {
+        guard let view = view, let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { throw ShareError.message("Cannot render \(file)") }
+        view.layoutSubtreeIfNeeded(); view.displayIfNeeded(); view.cacheDisplay(in: view.bounds, to: bitmap)
+        try bitmap.representation(using: .png, properties: [:])!.write(to: directory.appendingPathComponent(file))
+    }
+    guard let pairing = app.consent?.contentView, pairing.subviews.contains(where: { ($0 as? ShareCodeView)?.code == "123456" }) else { throw ShareError.message("Missing pairing dialog or code") }
+    try snapshot(pairing, "gui-pairing.png")
     app.linkLine("CLOSED\ttest-request")
     guard app.consent == nil && app.consentId == nil else { throw ShareError.message("Expired pairing dialog remained open") }
     app.linkLine("GONE\t\(peer)"); guard app.computers.isEmpty else { throw ShareError.message("Offline peer remained listed") }
     // Render the available-peer state without starting any input capture or network service.
-    app.link = Process(); app.peers.removeAll(); app.linkLine("DEVICE\t\(peer)\t\(name)\t192.168.1.3\t24801\tR")
-    app.peerLabel.stringValue = "對方同意後，會記住這台電腦。"; app.status.stringValue = "找到附近電腦\n可以發出配對邀請"
+    app.link = Process(); app.peers.removeAll(); app.peersChanged(); app.linkLine("DEVICE\t\(peer)\t\(name)\t192.168.1.3\t24801\tR")
+    for (i, n) in ["客廳電腦", "MacBook Air", "書房 Windows"].enumerated() {
+        let fp = "v2:sha256:" + String(repeating: String(i + 1), count: 64)
+        app.linkLine("DEVICE\t\(fp)\t\(Data(n.utf8).base64EncodedString())\t192.168.1.\(10 + i)\t24801\tR"); app.linkLine("PLATFORM\t\(fp)\t\(i == 1 ? "mac" : "windows")")
+    }
+    app.status.stringValue = "找到附近電腦，可以發出配對邀請"
+    guard app.nearbyList.subviews.count == 4, app.emptyNearby.isHidden, app.nearbyCount.stringValue == "4 台" else { throw ShareError.message("Nearby list did not show four computers") }
+    app.filter.stringValue = "zzz"; app.rebuildNearby()
+    guard app.emptyNearby.stringValue == "找不到符合的電腦" else { throw ShareError.message("Search box did not filter the list") }
+    app.filter.stringValue = ""; app.rebuildNearby()
     RunLoop.current.run(until: Date().addingTimeInterval(0.3)); app.window.displayIfNeeded()
     guard let view = app.window.contentView, let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { throw ShareError.message("Cannot render window") }
     view.cacheDisplay(in: view.bounds, to: bitmap)
     guard let image = bitmap.representation(using: .png, properties: [:]) else { throw ShareError.message("Cannot render PNG") }
     try image.write(to: directory.appendingPathComponent("gui-mac.png"))
-    app.showUpdate(found); RunLoop.current.run(until: Date().addingTimeInterval(0.2)); app.window.displayIfNeeded()
-    guard let updateBitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { throw ShareError.message("Cannot render update notice") }
-    view.cacheDisplay(in: view.bounds, to: updateBitmap)
-    try updateBitmap.representation(using: .png, properties: [:])!.write(to: directory.appendingPathComponent("gui-mac-update.png"))
+    app.showUpdate(found); RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+    guard !app.banner.isHidden, app.bannerText.stringValue.contains("0.3.11") else { throw ShareError.message("Update banner did not show") }
+    try snapshot(app.window.contentView, "gui-mac-update.png")
+    app.dismissUpdate(); app.showUpdate(found)
+    guard app.banner.isHidden else { throw ShareError.message("Dismissed update banner came back for the same version") }
+    // Paired receiver: badge, summary and the arrange editor and advanced settings.
+    app.linkLine("SAVED\t\(peer)\t\(name)"); app.connections = 1; app.updateControls()
+    guard app.peerLabel.stringValue == "滑鼠往右移到 另一台電腦", app.badge.text == "已連線" else { throw ShareError.message("Connection card summary wrong: \(app.peerLabel.stringValue) / \(app.badge.text)") }
+    try snapshot(app.window.contentView, "gui-mac-paired.png")
+    let (layoutPanel, layoutView, _) = app.buildLayout()
+    guard layoutView.reachable(), !layoutView.place(peer, .init(x: 2, y: 2)) || !layoutView.reachable() else { throw ShareError.message("Arrange editor rules failed") }
+    layoutView.restoreDefaults(); try snapshot(layoutPanel.contentView, "gui-arrange.png")
+    let (advancedPanel, readAdvanced, _) = app.buildAdvanced(ShareAdvanced())
+    guard readAdvanced() == ShareAdvanced() else { throw ShareError.message("Advanced settings did not round-trip the defaults") }
+    try snapshot(advancedPanel.contentView, "gui-advanced.png")
     app.window.orderOut(nil); NSStatusBar.system.removeStatusItem(app.tray)
     try "PASS: both pairing roles, saved IP/position, four screen directions, bundled backends, native GUI render, update notice selection, switch hotkeys and transfer progress".write(to: directory.appendingPathComponent("PASS.txt"), atomically: true, encoding: .utf8)
 }
