@@ -16,6 +16,7 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include <chrono>
 #include "server/Server.h"
 #include "barrier/NativeFileProtocol.h"
 #include "barrier/ProtocolUtil.h"
@@ -467,6 +468,8 @@ Server::switchScreen(BaseClientProxy* dst,
 
 	// stop waiting to switch
 	stopSwitch();
+	m_edgeBlock.clear();
+	auto switchStarted = std::chrono::steady_clock::now();
 
 	// record new position
 	m_x       = x;
@@ -516,6 +519,10 @@ Server::switchScreen(BaseClientProxy* dst,
 				m_active->setClipboard(id, &m_clipboards[id].m_clipboard);
 			}
 		}
+
+		// A slow leave (often the clipboard owner answering late) feels like a wall at the edge.
+		auto took = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - switchStarted).count();
+		if (took >= 40) LOG((CLOG_INFO "switch took %d ms (leaving the screen and reading its clipboard)", static_cast<int>(took)));
 
 		Server::SwitchToScreenInfo* info =
 			Server::SwitchToScreenInfo::alloc(m_active->getName());
@@ -809,6 +816,7 @@ Server::isSwitchOkay(BaseClientProxy* newScreen,
 		// there's no neighbor.  we don't want to switch and we don't
 		// want to try to switch later.
 		LOG((CLOG_DEBUG1 "no neighbor %s", Config::dirName(dir)));
+		reportEdgeBlock(std::string("no screen ") + Config::dirName(dir) + " of here", x, y);
 		stopSwitch();
 		return false;
 	}
@@ -832,6 +840,7 @@ Server::isSwitchOkay(BaseClientProxy* newScreen,
 			// tapping a different or new edge or second tap not
 			// fast enough.  prepare for second tap.
 			preventSwitch = true;
+			reportEdgeBlock("waiting for a second tap (switchDoubleTap)", x, y);
 			startSwitchTwoTap();
 		}
 		else {
@@ -846,6 +855,7 @@ Server::isSwitchOkay(BaseClientProxy* newScreen,
 			startSwitchWait(x, y);
 		}
 		preventSwitch = true;
+		reportEdgeBlock("waiting for the switch delay (switchDelay)", x, y);
 	}
 
 	// are we in a locked corner?  first check if screen has the option set
@@ -870,6 +880,7 @@ Server::isSwitchOkay(BaseClientProxy* newScreen,
 		if ((getCorner(m_active, xActive, yActive, size) & corners) != 0) {
 			// yep, no switching
 			LOG((CLOG_DEBUG1 "locked in corner"));
+			reportEdgeBlock("in a corner (switchCorners)", x, y);
 			preventSwitch = true;
 			stopSwitch();
 		}
@@ -878,6 +889,8 @@ Server::isSwitchOkay(BaseClientProxy* newScreen,
 	// ignore if mouse is locked to screen and don't try to switch later
 	if (!preventSwitch && isLockedToScreen()) {
 		LOG((CLOG_DEBUG1 "locked to screen"));
+		reportEdgeBlock(isLockedToScreenServer() ? "cursor locked to this screen (lock key or Scroll Lock)"
+			: "a mouse button or key is held down on this screen", x, y);
 		preventSwitch = true;
 		stopSwitch();
 	}
@@ -891,6 +904,7 @@ Server::isSwitchOkay(BaseClientProxy* newScreen,
 			(this->m_switchNeedsAlt && ((mods & KeyModifierAlt) != KeyModifierAlt))
 		)) {
 		LOG((CLOG_DEBUG1 "need modifiers to switch"));
+		reportEdgeBlock("a modifier key is required to switch", x, y);
 		preventSwitch = true;
 		stopSwitch();
 	}
@@ -898,9 +912,20 @@ Server::isSwitchOkay(BaseClientProxy* newScreen,
 	return !preventSwitch;
 }
 
+// Says once per visit to an edge why the cursor did not cross there, so an
+// occasional "wall" can be explained from the normal log.
+void
+Server::reportEdgeBlock(const std::string& reason, SInt32 x, SInt32 y)
+{
+	if (m_edgeBlock == reason) return;
+	m_edgeBlock = reason;
+	LOG((CLOG_INFO "edge reached at %d,%d but not switching: %s", x, y, reason.c_str()));
+}
+
 void
 Server::noSwitch(SInt32 x, SInt32 y)
 {
+	m_edgeBlock.clear();
 	armSwitchTwoTap(x, y);
 	stopSwitchWait();
 }
