@@ -269,6 +269,11 @@ MSWindowsScreen::disable()
         m_events->deleteTimer(m_fixTimer);
         m_fixTimer = NULL;
     }
+    if (m_entryTimer != nullptr) {
+        m_events->removeHandler(Event::kTimer, m_entryTimer);
+        m_events->deleteTimer(m_entryTimer);
+        m_entryTimer = nullptr;
+    }
 
     m_isOnScreen = m_isPrimary;
     forceShowCursor();
@@ -289,6 +294,16 @@ MSWindowsScreen::enter()
         nextMark();
 
         m_primaryKeyDownList.clear();
+
+        // Safety net for a rare race seen in fast returns: the cursor can end up parked at the
+        // centre (where it waits while away) right after entering. For a short while, put it
+        // back on the entry point unless the user has moved it since.
+        m_xEntry = m_xCursor; m_yEntry = m_yCursor; m_entryChecks = 4;
+        if (m_entryTimer == nullptr) {
+            m_entryTimer = m_events->newTimer(0.05, NULL);
+            m_events->adoptHandler(Event::kTimer, m_entryTimer,
+                new TMethodEventJob<MSWindowsScreen>(this, &MSWindowsScreen::checkEntry));
+        }
     }
     else {
         // Entering a secondary screen. Ensure that no screensaver is active
@@ -1552,6 +1567,23 @@ MSWindowsScreen::warpCursorNoFlush(SInt32 x, SInt32 y)
 
     // send an event that we can recognize after the mouse warp
     PostThreadMessage(GetCurrentThreadId(), BARRIER_MSG_POST_WARP, 0, 0);
+}
+
+void
+MSWindowsScreen::checkEntry(const Event&, void*)
+{
+    if (m_entryChecks <= 0) return;
+    --m_entryChecks;
+    if (!m_isOnScreen || !m_isPrimary) { m_entryChecks = 0; return; }
+    POINT now;
+    if (!GetCursorPos(&now)) return;
+    bool parked = now.x == m_xCenter && now.y == m_yCenter;
+    bool entryIsCentre = m_xEntry == m_xCenter && m_yEntry == m_yCenter;
+    bool untouched = m_xCursor == m_xEntry && m_yCursor == m_yEntry;
+    if (parked && !entryIsCentre && untouched) {
+        LOG((CLOG_INFO "cursor was parked at the centre after entering; restoring entry point %d,%d", m_xEntry, m_yEntry));
+        warpCursor(m_xEntry, m_yEntry);
+    }
 }
 
 void

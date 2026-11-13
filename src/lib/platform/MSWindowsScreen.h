@@ -193,6 +193,8 @@ private: // HACK
 
     // fix timer callback
     void                handleFixes(const Event&, void*);
+    // re-applies the entry point if the cursor was parked at the centre again after entering
+    void                checkEntry(const Event&, void*);
 
     // fix the clipboard viewer chain
     void                fixClipboardViewer();
@@ -287,6 +289,9 @@ private:
 
     // timer for periodically checking stuff that requires polling
     EventQueueTimer*    m_fixTimer;
+    EventQueueTimer*    m_entryTimer = nullptr;
+    SInt32              m_xEntry = 0, m_yEntry = 0;
+    int                 m_entryChecks = 0;
 
     // the keyboard layout to use when off primary screen
     HKL                    m_keyLayout;
