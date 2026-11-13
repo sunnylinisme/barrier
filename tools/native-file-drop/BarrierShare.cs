@@ -1342,39 +1342,32 @@ sealed class ShareWindow : Form
         var targets = new TextBox { Text = String.Join(Environment.NewLine, (a.Targets ?? "").Split(new[] { ',', ' ', ';', '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)), Multiline = true, ScrollBars = ScrollBars.Vertical, Font = new Font("Consolas", 9.5F), Size = new Size(200, 44) };
         row("手動位址", "跨網段或 VPN 時填入對方 IP，一行一個", targets);
         y += 12;
-        var expertToggle = new LinkLabel { Text = "▸ 自訂 Barrier 選項（專家）", LinkColor = ShareStyle.Muted, ActiveLinkColor = ShareStyle.Blue, LinkBehavior = LinkBehavior.HoverUnderline, Bounds = new Rectangle(24, y, W, 24) };
-        dialog.Controls.Add(expertToggle); y += 28;
-        var extra = new TextBox { Text = (a.Extra ?? "").Replace("\r\n", "\n").Replace("\n", "\r\n"), Multiline = true, ScrollBars = ScrollBars.Vertical, Font = new Font("Consolas", 9.5F), Bounds = new Rectangle(24, y, W, 70), AccessibleName = "自訂 Barrier 選項" };
-        dialog.Controls.Add(extra); int expertHeight = 80;
         int buttonsY = y + 8;
         var reset = new ShareButton { Text = "恢復預設", Quiet = true, BackColor = Color.White, Bounds = new Rectangle(24, buttonsY, 100, 38) };
         var cancel = new ShareButton { Text = "取消", BackColor = Color.White, Bounds = new Rectangle(W + 24 - 232, buttonsY, 108, 38), DialogResult = DialogResult.Cancel };
         var ok = new ShareButton { Text = "儲存", Primary = true, BackColor = Color.White, Bounds = new Rectangle(W + 24 - 112, buttonsY, 112, 38) };
         dialog.Controls.AddRange(new Control[] { reset, cancel, ok }); dialog.CancelButton = cancel;
-        // The expert box opens on demand (or when it already holds something) and moves the buttons below it.
-        Action<bool> expert = open => {
-            extra.Visible = open; expertToggle.Text = (open ? "▾" : "▸") + " 自訂 Barrier 選項（專家）";
-            float k = dialog.IsHandleCreated ? dialog.CurrentAutoScaleDimensions.Height / 96F : 1F; int top = buttonsY + (open ? expertHeight : 0);
+        // Short screens get a scrolling dialog instead of one Windows squeezes and cuts off.
+        Action layout = () => {
+            float k = dialog.IsHandleCreated ? dialog.CurrentAutoScaleDimensions.Height / 96F : 1F; int top = buttonsY;
             foreach (var b in new Control[] { reset, cancel, ok }) b.Top = (int)(top * k);
-            // Short screens get a scrolling dialog instead of one Windows squeezes and cuts off.
             int full = (int)((top + 56) * k), room = Screen.FromPoint(Cursor.Position).WorkingArea.Height - (dialog.Height - dialog.ClientSize.Height) - 40;
             dialog.AutoScrollMinSize = new Size(0, full);
             dialog.ClientSize = new Size((int)(568 * k) + (full > room ? SystemInformation.VerticalScrollBarWidth : 0), Math.Min(full, room));
         };
-        expertToggle.LinkClicked += delegate { expert(!extra.Visible); };
         reset.Click += delegate {
             var d = new ShareAdvanced();
             delay.SelectedIndex = ((List<int>)delay.Tag).IndexOf(d.SwitchDelay); tap.SelectedIndex = ((List<int>)tap.Tag).IndexOf(d.DoubleTap);
             corners.Checked = d.Corners; keys.Checked = d.SwitchKeys; swap.Checked = d.SwapModifiers; lockKey.Checked = d.LockKey; relative.Checked = d.RelativeMouse; saver.Checked = d.ScreenSaver;
         };
         read = () => new ShareAdvanced { SwitchDelay = picked(delay), DoubleTap = picked(tap), Corners = corners.Checked, CornerSize = a.CornerSize, SwapModifiers = swap.Checked,
-            RelativeMouse = relative.Checked, ScreenSaver = saver.Checked, SwitchKeys = keys.Checked, LockKey = lockKey.Checked, Targets = String.Join(", ", targets.Lines.Select(l => l.Trim()).Where(l => l.Length > 0)), Extra = extra.Text };
+            RelativeMouse = relative.Checked, ScreenSaver = saver.Checked, SwitchKeys = keys.Checked, LockKey = lockKey.Checked, Targets = String.Join(", ", targets.Lines.Select(l => l.Trim()).Where(l => l.Length > 0)), Extra = a.Extra };
         var reader = read;
         ok.Click += delegate {
-            try { var value = reader(); value.TargetList(); value.ExtraLines().ToList(); dialog.DialogResult = DialogResult.OK; }
+            try { var value = reader(); value.TargetList(); dialog.DialogResult = DialogResult.OK; }
             catch (IOException e) { MessageBox.Show(dialog, e.Message, "進階設定"); }
         };
-        expert(a.Extra.Trim().Length > 0);
+        layout();
         return dialog;
     }
     void ShowAdvanced()
