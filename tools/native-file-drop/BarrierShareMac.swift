@@ -478,7 +478,7 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuD
         window.center()
         // A login-item launch stays in the menu bar; opening the app again shows the window.
         let loginLaunch = NSAppleEventManager.shared().currentAppleEvent?.paramDescriptor(forKeyword: AEKeyword(keyAELaunchedAsLogInItem)) != nil
-        if !loginLaunch || test { window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true) }
+        if !loginLaunch || test { window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true) } else { NSApp.setActivationPolicy(.accessory) }
     }
     @objc func toggleLogin() {
         do { try ShareLogin.set(autostart.state == .on) } catch { showError(error) }
@@ -796,8 +796,9 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuD
             status.stringValue = "已清除接收檔案暫存。"
         } catch { showError(error) }
     }
-    @objc func showWindow() { window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true) }
-    func windowShouldClose(_ sender: NSWindow) -> Bool { sender.orderOut(nil); return false }
+    // While the main window is hidden the app lives only in the menu bar: no Dock icon.
+    @objc func showWindow() { NSApp.setActivationPolicy(.regular); window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true) }
+    func windowShouldClose(_ sender: NSWindow) -> Bool { sender.orderOut(nil); if sender === window { NSApp.setActivationPolicy(.accessory) }; return false }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool { showWindow(); return true }
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply { enabled = false; retry?.invalidate(); updateTimer?.invalidate(); stopLink(); stopBackend(); return .terminateNow }
 }
@@ -890,6 +891,10 @@ func selfTest(_ directory: URL) throws {
     guard ShareUpdate.newer(releases, current: [0, 3, 11]) == nil, ShareUpdate.newer(Data("{\"message\":\"rate limited\"}".utf8), current: [0, 0, 0]) == nil else { throw ShareError.message("Update reported without a newer release") }
     NSApp.finishLaunching()
     let app = ShareApp(test: true); app.buildWindow(); app.options.host = true; app.role.selectItem(at: 0); try app.refreshRole()
+    _ = app.windowShouldClose(app.window)
+    guard NSApp.activationPolicy() == .accessory, !app.window.isVisible else { throw ShareError.message("Closing the window left the Dock icon") }
+    app.showWindow()
+    guard NSApp.activationPolicy() == .regular, app.window.isVisible else { throw ShareError.message("Opening the window did not restore the Dock icon") }
     let trayTest = NSMenu(); app.menuNeedsUpdate(trayTest)
     let trayTitles = trayTest.items.map { $0.title }
     for expected in ["開啟視窗", "排列螢幕…", "進階設定…", "登入時自動啟動", "診斷紀錄", "檢查更新", "結束"] where !trayTitles.contains(expected) { throw ShareError.message("Menu bar item missing: \(expected)") }
