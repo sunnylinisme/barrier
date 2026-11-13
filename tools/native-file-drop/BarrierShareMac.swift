@@ -150,7 +150,8 @@ final class ShareSettings {
         text += " screenSaverSync = \(a.screenSaver ? "true" : "false")\n"
         if a.switchKeys { for d in order where used.contains(d) { text += " keystroke(Control+Alt+\(d.prefix(1).uppercased() + d.dropFirst())) = switchInDirection(\(d))\n" } }
         if a.lockKey { text += " keystroke(Control+Alt+L) = lockCursorToScreen(toggle)\n" }
-        for line in try a.extraLines() { text += " \(line)\n" }
+        // Extra options from the removed expert box: skipped if invalid, so they can never stop the core from starting.
+        for line in (try? a.extraLines()) ?? [] { text += " \(line)\n" }
         return text + "end\n"
     }
     static var receivers: [String] = []
