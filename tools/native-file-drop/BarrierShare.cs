@@ -61,14 +61,15 @@ static class ShareSettings
     {
         Directory.CreateDirectory(Root);
         var document = new XDocument(new XElement("settings", new XAttribute("host", host), new XAttribute("address", address), new XAttribute("position", Position), Advanced.ToXml(),
-            new XElement("layout", Layout.Select(item => new XElement("screen", new XAttribute("fingerprint", item.Key), new XAttribute("x", item.Value.X), new XAttribute("y", item.Value.Y))))));
+            new XElement("layout", Layout.Select(item => new XElement("screen", new XAttribute("fingerprint", item.Key), new XAttribute("x", item.Value.X), new XAttribute("y", item.Value.Y)))),
+            new XElement("platforms", Platforms.Select(item => new XElement("peer", new XAttribute("fingerprint", item.Key), new XAttribute("system", item.Value))))));
         string path = Path.Combine(Root, "settings.xml"), temporary = path + ".new";
         document.Save(temporary);
         if (File.Exists(path)) File.Replace(temporary, path, null); else File.Move(temporary, path);
     }
     public static void Load(out bool host, out string address)
     {
-        host = true; address = ""; Position = "right"; Advanced = new ShareAdvanced(); Layout = new Dictionary<string, Point>();
+        host = true; address = ""; Position = "right"; Advanced = new ShareAdvanced(); Layout = new Dictionary<string, Point>(); Platforms = new Dictionary<string, string>();
         string path = Path.Combine(Root, "settings.xml");
         if (!File.Exists(path)) return;
         var root = XDocument.Load(path).Root;
@@ -76,6 +77,11 @@ static class ShareSettings
         string position = (string)root.Attribute("position");
         Position = Directions.Contains(position) ? position : "right";
         Advanced = ShareAdvanced.FromXml(root.Element("advanced"));
+        var platforms = root.Element("platforms");
+        if (platforms != null) foreach (var peer in platforms.Elements("peer")) {
+            string fp = (string)peer.Attribute("fingerprint"), system = (string)peer.Attribute("system");
+            if (fp != null && (system == "mac" || system == "windows" || system == "linux")) Platforms[fp] = system;
+        }
         var layout = root.Element("layout");
         if (layout != null) foreach (var screen in layout.Elements("screen")) {
             int x, y; string fp = (string)screen.Attribute("fingerprint");
@@ -87,6 +93,16 @@ static class ShareSettings
     // on a 5x5 grid; x grows to the right and y downwards.
     public static List<string> Receivers = new List<string>();
     public static Dictionary<string, Point> Layout = new Dictionary<string, Point>();
+    // System of each paired computer as reported by its discovery reply (0.3.9+); unknown means Windows.
+    public static Dictionary<string, string> Platforms = new Dictionary<string, string>();
+    // Ctrl and Command/Windows are swapped only between a Windows host and a Mac receiver.
+    public static bool SwapFor(string screen)
+    {
+        if (screen == HostName) return false;
+        if (Receivers.Count == 0) return true; // the classic two-screen form without pairing data
+        string fp = Receivers.FirstOrDefault(r => ScreenName(r) == screen), system;
+        return fp != null && Platforms.TryGetValue(fp, out system) && system == "mac";
+    }
     public static string OwnFingerprint;
     public const string HostName = "windows-host";
     // Core screen name of a receiver; unique per computer so several can connect at once.
@@ -162,7 +178,7 @@ static class ShareSettings
         foreach (var screen in cells.Keys) {
             b.Append(" " + screen + ":\n");
             // Swap on the receiving screens: Ctrl acts as Command/Windows there and the other way round.
-            if (a.SwapModifiers && screen != HostName) b.Append("  ctrl = super\n  super = ctrl\n");
+            if (a.SwapModifiers && SwapFor(screen)) b.Append("  ctrl = super\n  super = ctrl\n");
         }
         // The first receiver also answers to "windows", the name receivers used before 0.3.9.
         if (Receivers.Count > 0) b.Append("end\nsection: aliases\n " + ScreenName(Receivers[0]) + ":\n  windows\n");
@@ -717,6 +733,13 @@ sealed class ShareWindow : Form
             device.Name = Decode(f[2]); device.Address = f[3]; nearby.Items.Clear();
             foreach (var value in devices.Values) nearby.Items.Add(value);
             if (devices.ContainsKey(selected)) nearby.SelectedItem = devices[selected]; else if (nearby.Items.Count > 0) nearby.SelectedIndex = 0;
+        } else if (f[0] == "PLATFORM" && f.Length == 3) {
+            // A receiver's system decides the key mapping; restart the host core when it changes.
+            string known;
+            if (!ShareSettings.Platforms.TryGetValue(f[1], out known) || known != f[2]) {
+                ShareSettings.Platforms[f[1]] = f[2]; Save(); LogLine("對方系統：" + f[2] + " · " + f[1].Substring(10, 16));
+                if (Host && peers.ContainsKey(f[1]) && backend != null) StopBackend();
+            }
         } else if (f[0] == "GONE" && f.Length == 2) { NearbyDevice device; if (devices.TryGetValue(f[1], out device)) { nearby.Items.Remove(device); devices.Remove(f[1]); } }
         else if ((f[0] == "SAVED" || f[0] == "PAIRED") && f.Length == 3) {
             // A receiver has one host; a host's new receiver needs the core restarted with the new screen list.
@@ -964,7 +987,7 @@ sealed class ShareWindow : Form
         var tap = number("輕敲兩下邊緣才切換（兩次間隔毫秒，0 = 關閉）", a.DoubleTap, 2000);
         var corners = check("螢幕四個角落不切換", a.Corners);
         var cornerSize = number("　角落範圍（像素）", a.CornerSize, 500); cornerSize.Increment = 4;
-        var swap = check("接收端的 Ctrl 與 Command／Windows 鍵對調（Mac 與 Windows 混用時）", a.SwapModifiers);
+        var swap = check("Mac 接收端的 Ctrl 與 Command 鍵對調（兩台都是 Windows 時不會對調）", a.SwapModifiers);
         var relative = check("相對滑鼠移動（全螢幕遊戲用）", a.RelativeMouse);
         var saver = check("螢幕保護程式同步", a.ScreenSaver);
         var keys = check("Ctrl+Alt+方向鍵切換到另一台", a.SwitchKeys);
@@ -1328,10 +1351,13 @@ static class ShareProgram
             // Three receivers: one in the default spot, one placed on the grid, one placed automatically.
             string fa = "v2:sha256:" + new string('a', 64), fb = "v2:sha256:" + new string('b', 64), fc = "v2:sha256:" + new string('c', 64);
             ShareSettings.Receivers = new List<string> { fa, fb, fc }; ShareSettings.Layout = new Dictionary<string, Point> { { fb, new Point(0, -1) } };
+            ShareSettings.Platforms = new Dictionary<string, string> { { fb, "mac" }, { fa, "windows" } };
             string multi = ShareSettings.Config(true); string na = ShareSettings.ScreenName(fa), nb = ShareSettings.ScreenName(fb), nc = ShareSettings.ScreenName(fc);
             foreach (string expected in new[] { " windows-host:\n  right = " + na + "\n  left = " + nc + "\n  up = " + nb + "\n", " " + na + ":\n  left = windows-host\n", " " + nb + ":\n  down = windows-host\n",
                 "section: aliases\n " + na + ":\n  windows\nend\n", " " + nb + ":\n  ctrl = super\n  super = ctrl\n", "switchInDirection(up)", "switchInDirection(down)" })
                 if (!multi.Contains(expected)) throw new Exception("Multi-screen config missing: " + expected + "\n" + multi);
+            // A Windows receiver (fa) and one of unknown system (fc) keep their keys.
+            if (multi.Contains(" " + na + ":\n  ctrl = super") || multi.Contains(" " + nc + ":\n  ctrl = super")) throw new Exception("Ctrl/Command swapped for a Windows receiver\n" + multi);
             ShareSettings.Save(true, ""); ShareSettings.Load(out host, out address);
             if (ShareSettings.Layout.Count != 1 || ShareSettings.Layout[fb] != new Point(0, -1)) throw new Exception("Screen layout roundtrip failed");
             ShareSettings.OwnFingerprint = fc;

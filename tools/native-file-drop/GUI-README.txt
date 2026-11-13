@@ -34,7 +34,7 @@ Barrier Share — Windows／Mac 雙向複製通用測試版
 傳送或接收檔案時，狀態會顯示已傳大小及速度；「恢復連線」按鈕會變成「取消傳送」。
 主控端可按 Ctrl+Alt+方向鍵（朝接收端的方向）直接切到另一台，按反方向切回。
 更新時安裝程式會自動關閉執行中的舊版並在裝完後重新開啟，不必先從系統匣選「結束」。
-Ctrl 與 Command／Windows 鍵對調改為預設開啟：用 Mac 鍵盤在 Windows 上可直接按 ⌘C／⌘V，Windows 鍵盤在 Mac 上可按 Ctrl+C／Ctrl+V。兩台都是 Windows 時，請在「進階設定」取消勾選。已存過進階設定的電腦維持原本選擇。
+Ctrl 與 Command／Windows 鍵對調改為預設開啟：用 Mac 鍵盤在 Windows 上可直接按 ⌘C／⌘V，Windows 鍵盤在 Mac 上可按 Ctrl+C／Ctrl+V。Windows 主控端只對 Mac 接收端對調，兩台都是 Windows 時不會對調（雙方都要 0.3.9 以上才能辨識；無法辨識的當作 Windows）。已存過進階設定的電腦維持原本選擇。
 新增「進階設定」：切換延遲、輕敲兩下邊緣才切換、角落不切換、接收端 Ctrl 與 Command／Windows 鍵對調、相對滑鼠移動、螢幕保護程式同步、Ctrl+Alt+L 鎖定游標，以及自訂快捷鍵等額外設定。
 不在同一區網（其他網段或 VPN）時，可在「進階設定」輸入對方的 IP 或電腦名稱，就能搜尋、配對並自動重連。
 

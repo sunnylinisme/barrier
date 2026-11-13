@@ -72,6 +72,12 @@ def run():
             host=Agent(hp,'host',a,b); receiver=Agent(rp,'receiver',b,a)
             assert host.wait('DEVICE')[1] == rf
             assert receiver.wait('DEVICE')[1] == hf
+            # Newer peers also report their system (BSEARCH2/BHERE2) so the host can map Ctrl/Command.
+            expected_system = 'windows' if sys.platform == 'win32' else 'mac' if sys.platform == 'darwin' else 'linux'
+            end = time.monotonic() + 8
+            while not any(e[0] == 'PLATFORM' and e[1:] == [rf, expected_system] for e in list(host.history)) and time.monotonic() < end: time.sleep(.2)
+            assert any(e[0] == 'PLATFORM' and e[1:] == [rf, expected_system] for e in list(host.history)), 'Host did not learn the receiver system: %r' % host.history[-8:]
+
             hi,ri=invitation(host,receiver,rf)
             assert not (hp/'Peer.txt').exists() and not (rp/'Peer.txt').exists()
             host.send('ACCEPT',hi); time.sleep(.3)

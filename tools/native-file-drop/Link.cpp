@@ -46,6 +46,13 @@ static void closeSocket(Socket s) { close(s); }
 static void nonblocking(Socket s) { if (fcntl(s, F_SETFL, O_NONBLOCK) < 0) throw std::runtime_error("Cannot configure socket"); }
 #endif
 using Clock = std::chrono::steady_clock;
+#if defined(__APPLE__)
+static const char* kPlatform = "mac";
+#elif SYSAPI_WIN32
+static const char* kPlatform = "windows";
+#else
+static const char* kPlatform = "linux";
+#endif
 namespace fs = barrier::fs;
 static void require(bool ok, const char* reason) { if (!ok) throw std::runtime_error(reason); }
 static std::mutex outputMutex;
@@ -99,6 +106,7 @@ struct State {
     bool request = false; std::string approvalId; int decision = 0; unsigned generation = 0;
     // Addresses or names outside the local broadcast domain (other subnets, VPN) that are searched directly.
     std::vector<std::string> targets; bool targetsChanged = false;
+    std::map<std::string, std::string> platforms;
     fs::path trustPath() const { return profile / "SSL" / "Fingerprints" / (host ? "TrustedClients.txt" : "TrustedServers.txt"); }
 };
 static void atomicWrite(const fs::path& path, const std::string& value) {
@@ -331,7 +339,13 @@ static void network(State& state, const std::string& testTarget) {
                   if (changed || now - lastResolve > std::chrono::seconds(30)) { lastResolve = now; direct = resolveTargets(names); } }
                 if (testTarget.empty()) targets.insert(targets.end(), direct.begin(), direct.end());
                 unsigned port = testTarget.empty() ? 24801 : static_cast<unsigned>(std::stoul(testTarget));
-                for (const auto& ip : targets) { auto target = endpoint(ip, port); sendto(udp.value, message.data(), static_cast<int>(message.size()), 0, reinterpret_cast<sockaddr*>(&target), sizeof(target)); }
+                // BSEARCH2 asks newer peers for their system as well; older ones only answer BSEARCH1.
+                auto platformQuery = "BSEARCH2\t" + query;
+                for (const auto& ip : targets) {
+                    auto target = endpoint(ip, port);
+                    sendto(udp.value, message.data(), static_cast<int>(message.size()), 0, reinterpret_cast<sockaddr*>(&target), sizeof(target));
+                    sendto(udp.value, platformQuery.data(), static_cast<int>(platformQuery.size()), 0, reinterpret_cast<sockaddr*>(&target), sizeof(target));
+                }
             }
             fd_set read; FD_ZERO(&read); FD_SET(udp.value, &read); FD_SET(listener.value, &read); timeval timeout{0, 100000};
             select(static_cast<int>(std::max(udp.value, listener.value)) + 1, &read, nullptr, nullptr, &timeout);
@@ -345,9 +359,16 @@ static void network(State& state, const std::string& testTarget) {
                 int count = recvfrom(udp.value, bytes, sizeof(bytes), 0, reinterpret_cast<sockaddr*>(&from), &length);
                 if (count > 0 && count < 512) {
                     auto f = fields(std::string(bytes, count));
-                    if (f.size() == 2 && f[0] == "BSEARCH1" && f[1].size() == 32 && std::all_of(f[1].begin(), f[1].end(), [](char c){ return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'); })) {
-                        auto reply = "BHERE1\t" + std::string(state.host ? "H" : "R") + '\t' + state.name + '\t' + state.fingerprint + '\t' + f[1];
+                    if (f.size() == 2 && (f[0] == "BSEARCH1" || f[0] == "BSEARCH2") && f[1].size() == 32 && std::all_of(f[1].begin(), f[1].end(), [](char c){ return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'); })) {
+                        auto reply = (f[0] == "BSEARCH1" ? "BHERE1\t" : "BHERE2\t") + std::string(state.host ? "H" : "R") + '\t' + state.name + '\t' + state.fingerprint + '\t' + f[1];
+                        if (f[0] == "BSEARCH2") reply += '\t' + std::string(kPlatform);
                         sendto(udp.value, reply.data(), static_cast<int>(reply.size()), 0, reinterpret_cast<sockaddr*>(&from), length);
+                    } else if (f.size() == 6 && f[0] == "BHERE2" && f[1] == (state.host ? "R" : "H") && validName(f[2]) && validFingerprint(f[3]) && f[3] != state.fingerprint && f[4] == query
+                               && (f[5] == "mac" || f[5] == "windows" || f[5] == "linux")) {
+                        // The GUI decides key mapping from this, e.g. Ctrl/Command only between Mac and Windows.
+                        bool changed;
+                        { std::lock_guard<std::mutex> lock(state.mutex); auto& known = state.platforms[f[3]]; changed = known != f[5]; known = f[5]; }
+                        if (changed) emit("PLATFORM\t" + f[3] + '\t' + f[5]);
                     } else if (f.size() == 5 && f[0] == "BHERE1" && f[1] == (state.host ? "R" : "H") && validName(f[2]) && validFingerprint(f[3]) && f[3] != state.fingerprint && f[4] == query) {
                         Peer p{f[3], f[2], addressOf(from), ntohs(from.sin_port), f[1][0], now};
                         { std::lock_guard<std::mutex> lock(state.mutex);
