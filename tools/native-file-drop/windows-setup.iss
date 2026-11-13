@@ -178,11 +178,39 @@ begin
   Result := '';
 end;
 
+procedure Netsh(Params: String);
+var
+  Code: Integer;
+begin
+  Exec(ExpandConstant('{sys}\netsh.exe'), Params, '', SW_HIDE, ewWaitUntilTerminated, Code);
+  Log('netsh ' + Params + ' -> ' + IntToStr(Code));
+end;
+
+procedure RemoveFirewallRules();
+begin
+  Netsh('advfirewall firewall delete rule name="Barrier Share"');
+end;
+
+{ Without rules Windows asks on first use, and a core the service starts gets no prompt at all,
+  so a fresh install stayed blocked until the app was restarted. Allow the programs on the LAN only. }
+procedure AddFirewallRules();
+var
+  Names: TArrayOfString;
+  I: Integer;
+begin
+  RemoveFirewallRules();
+  SetArrayLength(Names, 3);
+  Names[0] := 'barriers.exe'; Names[1] := 'barrierc.exe'; Names[2] := 'barrier-link.exe';
+  for I := 0 to 2 do
+    Netsh('advfirewall firewall add rule name="Barrier Share" dir=in action=allow profile=any remoteip=localsubnet program="' + ExpandConstant('{app}\') + Names[I] + '"');
+end;
+
 procedure CurStepChanged(CurStep: TSetupStep);
 var
   Binary: String;
 begin
   if CurStep <> ssPostInstall then exit;
+  AddFirewallRules();
   { sc takes binPath= as one argument; the quotes the service manager needs around a path with
     spaces are escaped inside it. }
   Binary := '\"' + ExpandConstant('{app}\barrier-service.exe') + '\"';
@@ -204,4 +232,5 @@ begin
   if CurUninstallStep <> usUninstall then exit;
   StopService();
   Sc('delete BarrierShare');
+  RemoveFirewallRules();
 end;

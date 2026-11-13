@@ -134,6 +134,8 @@ function Invoke-Service([string]$Line) {
         return [Text.Encoding]::UTF8.GetString($reply.ToArray()).Split("`t")
     } finally { $pipe.Dispose() }
 }
+function Get-FirewallPrograms { @(Get-NetFirewallRule -DisplayName 'Barrier Share' -ErrorAction SilentlyContinue | Get-NetFirewallApplicationFilter | ForEach-Object { [IO.Path]::GetFileName($_.Program) } | Sort-Object) }
+if ((Get-FirewallPrograms) -join ',' -ne 'barrier-link.exe,barrierc.exe,barriers.exe') { throw "Installer did not allow the programs through the firewall: $((Get-FirewallPrograms) -join ',')" }
 function Get-ServiceCore { @(Get-CimInstance Win32_Process -Filter "Name='barriers.exe'" | Where-Object { $_.ExecutablePath -ieq (Join-Path $installDir 'barriers.exe') }) }
 $serviceProfile = Join-Path $TestRoot 'service-identity'
 & (Join-Path $installDir 'barrier-pair.exe') init $serviceProfile | Out-Null
@@ -202,6 +204,7 @@ foreach ($file in Get-ChildItem -LiteralPath $PackageDir -File -Recurse) {
     if (Test-Path -LiteralPath (Join-Path $installDir ([IO.Path]::GetRelativePath($PackageDir, $file.FullName)))) { throw "Uninstall left packaged file: $($file.Name)" }
 }
 if (Get-Service BarrierShare -ErrorAction SilentlyContinue) { throw 'Uninstall left the Barrier Share service.' }
+if ((Get-FirewallPrograms).Count -ne 0) { throw 'Uninstall left the firewall rules.' }
 if (Test-Path -LiteralPath (Join-Path $installDir 'state')) { throw 'Uninstall left the service state folder.' }
 foreach ($path in @($uninstallKey, $machineKey) + $shortcuts) {
     if (Test-Path -LiteralPath $path) { throw "Uninstall left registration or shortcut: $path" }
