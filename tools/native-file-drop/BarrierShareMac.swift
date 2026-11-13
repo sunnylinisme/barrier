@@ -429,7 +429,12 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuD
     }
     func buildWindow() {
         let menu = NSMenu(), appMenu = NSMenu(), appItem = NSMenuItem()
-        appMenu.addItem(withTitle: "關於 Barrier Share", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: ""); appMenu.addItem(.separator()); appMenu.addItem(withTitle: "結束 Barrier Share", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"); appItem.submenu = appMenu; menu.addItem(appItem); NSApp.mainMenu = menu
+        appMenu.addItem(withTitle: "關於 Barrier Share", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: ""); appMenu.addItem(.separator()); appMenu.addItem(withTitle: "結束 Barrier Share", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"); appItem.submenu = appMenu; menu.addItem(appItem)
+        // Edit menu so ⌘A / ⌘C work in the diagnostics log (and other text) as in any Mac app.
+        let editItem = NSMenuItem(), editMenu = NSMenu(title: "編輯")
+        editMenu.addItem(withTitle: "拷貝", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+        editMenu.addItem(withTitle: "全選", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+        editItem.submenu = editMenu; menu.addItem(editItem); NSApp.mainMenu = menu
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 840, height: 710), styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
         window.title = "Barrier Share " + ShareApp.versionLabel; window.delegate = self; window.isReleasedWhenClosed = false
         window.contentView = FlippedView(frame: NSRect(x: 0, y: 0, width: 840, height: 710)); window.contentView!.wantsLayer = true
@@ -525,6 +530,10 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuD
         item("檢查更新", #selector(checkUpdateFromMenu))
         menu.addItem(.separator())
         menu.addItem(withTitle: "結束", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "")
+    }
+    @objc func copyDiagnostics() {
+        NSPasteboard.general.clearContents(); NSPasteboard.general.setString(details.string, forType: .string)
+        status.stringValue = "已複製診斷紀錄"
     }
     @objc func showLayoutFromMenu() { showWindow(); showLayout() }
     @objc func showAdvancedFromMenu() { showWindow(); showAdvanced() }
@@ -788,7 +797,10 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuD
         }
         if diagnostics == nil {
             let panel = NSWindow(contentRect:NSRect(x:0,y:0,width:760,height:400),styleMask:[.titled,.closable,.resizable],backing:.buffered,defer:false); panel.title="Barrier Share · 診斷紀錄"; panel.delegate=self; panel.isReleasedWhenClosed=false
-            let scroll=NSScrollView(frame:panel.contentView!.bounds.insetBy(dx:18,dy:18)); scroll.autoresizingMask=[.width,.height]; scroll.hasVerticalScroller=true; scroll.documentView=details; details.frame=scroll.bounds; panel.contentView!.addSubview(scroll); diagnostics=panel; panel.center()
+            let copyAll = NSButton(title: "全部複製", target: self, action: #selector(copyDiagnostics)); copyAll.bezelStyle = .rounded
+            copyAll.frame = NSRect(x: panel.contentView!.bounds.width - 138, y: 12, width: 120, height: 32); copyAll.autoresizingMask = [.minXMargin, .maxYMargin]; panel.contentView!.addSubview(copyAll)
+            var area = panel.contentView!.bounds.insetBy(dx:18,dy:18); area.origin.y += 36; area.size.height -= 36
+            let scroll=NSScrollView(frame:area); scroll.autoresizingMask=[.width,.height]; scroll.hasVerticalScroller=true; scroll.documentView=details; details.frame=scroll.bounds; panel.contentView!.addSubview(scroll); diagnostics=panel; panel.center()
         }
         diagnostics?.makeKeyAndOrderFront(nil)
     }
@@ -903,6 +915,9 @@ func selfTest(_ directory: URL) throws {
     guard NSApp.activationPolicy() == .accessory, !app.window.isVisible else { throw ShareError.message("Closing the window left the Dock icon") }
     app.showWindow()
     guard NSApp.activationPolicy() == .regular, app.window.isVisible else { throw ShareError.message("Opening the window did not restore the Dock icon") }
+    guard let edit = NSApp.mainMenu?.items.compactMap({ $0.submenu }).first(where: { $0.title == "編輯" }),
+          edit.items.contains(where: { $0.keyEquivalent == "a" && $0.action == #selector(NSText.selectAll(_:)) }),
+          edit.items.contains(where: { $0.keyEquivalent == "c" && $0.action == #selector(NSText.copy(_:)) }) else { throw ShareError.message("Edit menu lacks ⌘A / ⌘C") }
     let trayTest = NSMenu(); app.menuNeedsUpdate(trayTest)
     let trayTitles = trayTest.items.map { $0.title }
     for expected in ["開啟視窗", "排列螢幕…", "進階設定…", "登入時自動啟動", "診斷紀錄", "檢查更新", "結束"] where !trayTitles.contains(expected) { throw ShareError.message("Menu bar item missing: \(expected)") }
