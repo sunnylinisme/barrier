@@ -1296,7 +1296,7 @@ sealed class ShareWindow : Form
     // Grouped rows: a name and a short explanation on the left, the control on the right.
     internal Form BuildAdvanced(ShareAdvanced a, out Func<ShareAdvanced> read)
     {
-        var dialog = new Form { Text = "進階設定", ClientSize = new Size(568, 600), BackColor = Color.White, ForeColor = ShareStyle.Ink, Font = new Font(Font.FontFamily, 10F), FormBorderStyle = FormBorderStyle.FixedDialog, StartPosition = FormStartPosition.CenterParent, MaximizeBox = false, MinimizeBox = false, AutoScaleDimensions = new SizeF(96F, 96F), AutoScaleMode = AutoScaleMode.Dpi };
+        var dialog = new Form { Text = "進階設定", ClientSize = new Size(568, 600), AutoScroll = true, BackColor = Color.White, ForeColor = ShareStyle.Ink, Font = new Font(Font.FontFamily, 10F), FormBorderStyle = FormBorderStyle.FixedDialog, StartPosition = FormStartPosition.CenterParent, MaximizeBox = false, MinimizeBox = false, AutoScaleDimensions = new SizeF(96F, 96F), AutoScaleMode = AutoScaleMode.Dpi };
         const int W = 520; int y = 16;
         dialog.Controls.Add(new Label { Text = "進階設定", Font = new Font(Font.FontFamily, 13F, FontStyle.Bold), Bounds = new Rectangle(24, y, W, 28) }); y += 30;
         dialog.Controls.Add(new Label { Text = Host ? "由這台（主控端）套用到所有螢幕；儲存後自動重新連線。" : "切換設定只在主控端生效；這台目前是接收端。", ForeColor = ShareStyle.Muted, Bounds = new Rectangle(24, y, W, 22) }); y += 32;
@@ -1350,7 +1350,10 @@ sealed class ShareWindow : Form
             extra.Visible = open; expertToggle.Text = (open ? "▾" : "▸") + " 自訂 Barrier 選項（專家）";
             float k = dialog.IsHandleCreated ? dialog.CurrentAutoScaleDimensions.Height / 96F : 1F; int top = buttonsY + (open ? expertHeight : 0);
             foreach (var b in new Control[] { reset, cancel, ok }) b.Top = (int)(top * k);
-            dialog.ClientSize = new Size(dialog.ClientSize.Width, (int)((top + 56) * k));
+            // Short screens get a scrolling dialog instead of one Windows squeezes and cuts off.
+            int full = (int)((top + 56) * k), room = Screen.FromPoint(Cursor.Position).WorkingArea.Height - (dialog.Height - dialog.ClientSize.Height) - 40;
+            dialog.AutoScrollMinSize = new Size(0, full);
+            dialog.ClientSize = new Size((int)(568 * k) + (full > room ? SystemInformation.VerticalScrollBarWidth : 0), Math.Min(full, room));
         };
         expertToggle.LinkClicked += delegate { expert(!extra.Visible); };
         reset.Click += delegate {
@@ -1800,7 +1803,7 @@ static class ShareProgram
                     advanced.Show(); Application.DoEvents();
                     var shown = advanced.Controls.Cast<Control>().Where(c => c.Visible).ToArray();
                     for (int i = 0; i < shown.Length; ++i) {
-                        if (!advanced.ClientRectangle.Contains(shown[i].Bounds)) throw new Exception("Advanced dialog clips: " + shown[i].Text);
+                        if (!advanced.DisplayRectangle.Contains(shown[i].Bounds)) throw new Exception("Advanced dialog clips: " + shown[i].Text);
                         for (int j = i + 1; j < shown.Length; ++j) if (shown[i].Bounds.IntersectsWith(shown[j].Bounds)) throw new Exception("Advanced dialog overlaps: " + shown[i].Text + " / " + shown[j].Text);
                     }
                     if (readAdvanced().SwitchDelay != 250 || !readAdvanced().SwapModifiers) throw new Exception("Advanced dialog lost values");
