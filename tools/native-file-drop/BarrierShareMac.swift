@@ -954,7 +954,8 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuD
             guard closer.accepted else { return }
             let value = read()
             do {
-                _ = try value.targetList(); _ = try value.extraLines()
+                // Only the visible fields are checked; a hidden value from the removed expert box must not block saving.
+                _ = try value.targetList()
                 options.advanced = value; try ShareSettings.save(options); sendTargets()
                 // The host core reads options at start; the saved pairing reconnects it right away.
                 if options.host && core != nil { stopBackend() }
