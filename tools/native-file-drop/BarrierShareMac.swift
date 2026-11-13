@@ -584,7 +584,7 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuD
     let badge = ShareBadge(), map = ShareScreenMap(), filter = NSSearchField(), nearbyCount = NSTextField(labelWithString: ""), nearbyScroll = NSScrollView(), nearbyList = FlippedView()
     let body = FlippedView(), banner = NSView(), bannerText = NSTextField(labelWithString: "")
     // connections: core sessions currently up; dismissedUpdate: version whose banner was closed; announcedUpdate: version already notified.
-    var connections = 0, dismissedUpdate = "", announcedUpdate = ""
+    var connections = 0, dismissedUpdate = "", announcedUpdate = "", nearbySignature = ""
     let details = NSTextView()
     var tray: NSStatusItem!, core: Process?, corePipe: Pipe?, link: Process?, linkOutput: Pipe?, linkInput: Pipe?, pendingCore = Data(), pendingLink = Data(), retry: Timer?
     // Paired computers in pairing order: every receiver for a host, the one host for a receiver.
@@ -729,6 +729,19 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuD
         let paired = peers.map { p in computers.first { $0.fingerprint == p.fingerprint }.map { ($0, false) } ?? (NearbyComputer(fingerprint: p.fingerprint, name: p.name, address: ""), true) }.filter { match($0.0) }
         let others = computers.filter { c in !peers.contains { $0.fingerprint == c.fingerprint } }.filter(match).sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
         let width = nearbyScroll.contentSize.width
+        // Discovery repeats every few seconds and every status change lands here; rebuild the rows only
+        // when what they show changes, or the list visibly flickers.
+        let canInvite = options.host && link != nil && consent == nil
+        let signature = ([String(describing: width), String(canInvite), String(options.host)] + paired.map { "P\($0.0.fingerprint)|\($0.0.name)|\($0.0.address)|\($0.1)|\(options.platforms[$0.0.fingerprint] ?? "")" }
+            + others.map { "O\($0.fingerprint)|\($0.name)|\($0.address)|\(options.platforms[$0.fingerprint] ?? "")" }).joined(separator: "\n")
+        defer {
+            emptyNearby.isHidden = !(paired.isEmpty && others.isEmpty)
+            emptyNearby.stringValue = !query.isEmpty && !computers.isEmpty ? "找不到符合的電腦" : !enabled ? "搜尋已暫停\n繼續共用後，會重新尋找附近電腦。" : options.host ? "正在尋找接收端…\n請在另一台選擇「接收端」，保持程式開啟。" : "尚未找到主控端…\n請在另一台選擇「主控端」，保持程式開啟。"
+            nearbyCount.stringValue = computers.isEmpty ? "" : "\(computers.count) 台"
+            filter.isHidden = computers.count <= 6 && filter.stringValue.isEmpty
+        }
+        guard signature != nearbySignature else { return }
+        nearbySignature = signature
         nearbyList.subviews.forEach { $0.removeFromSuperview() }
         var y: CGFloat = 0
         func add(_ view: NSView) { view.frame.origin = NSPoint(x: 0, y: y); nearbyList.addSubview(view); y += view.frame.height }
@@ -740,17 +753,12 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuD
                 var button: NSButton? = nil
                 if options.host {
                     let invite = SharePrimaryButton(title: "邀請配對", target: self, action: #selector(inviteRow(_:))); invite.identifier = NSUserInterfaceItemIdentifier(c.fingerprint)
-                    invite.isEnabled = link != nil && consent == nil; button = invite
+                    invite.isEnabled = canInvite; button = invite
                 }
                 add(ShareDeviceRow(width: width, name: c.name, detail: "\(system(c.fingerprint)) · \(c.address)", offline: false, paired: false, mac: options.platforms[c.fingerprint] == "mac", invite: button))
             }
         }
         nearbyList.frame = NSRect(x: 0, y: 0, width: width, height: max(y, nearbyScroll.contentSize.height))
-        let empty = paired.isEmpty && others.isEmpty
-        emptyNearby.isHidden = !empty
-        emptyNearby.stringValue = !query.isEmpty && !computers.isEmpty ? "找不到符合的電腦" : !enabled ? "搜尋已暫停\n繼續共用後，會重新尋找附近電腦。" : options.host ? "正在尋找接收端…\n請在另一台選擇「接收端」，保持程式開啟。" : "尚未找到主控端…\n請在另一台選擇「主控端」，保持程式開啟。"
-        nearbyCount.stringValue = computers.isEmpty ? "" : "\(computers.count) 台"
-        filter.isHidden = computers.count <= 6 && filter.stringValue.isEmpty
     }
     @objc func inviteRow(_ sender: NSButton) {
         guard let fp = sender.identifier?.rawValue, options.host, link != nil, consent == nil, !peers.contains(where: { $0.fingerprint == fp }) else { return }
@@ -1353,6 +1361,9 @@ func selfTest(_ directory: URL) throws {
     }
     app.status.stringValue = "找到附近電腦，可以發出配對邀請"
     guard app.nearbyList.subviews.count == 4, app.emptyNearby.isHidden, app.nearbyCount.stringValue == "4 台" else { throw ShareError.message("Nearby list did not show four computers") }
+    let firstRow = app.nearbyList.subviews.first
+    app.linkLine("DEVICE\t\(peer)\t\(name)\t192.168.1.3\t24801\tR"); app.status.stringValue = "狀態更新"; app.updateControls()
+    guard app.nearbyList.subviews.first === firstRow else { throw ShareError.message("Unchanged discovery rebuilt the nearby list (flicker)") }
     app.filter.stringValue = "zzz"; app.rebuildNearby()
     guard app.emptyNearby.stringValue == "找不到符合的電腦" else { throw ShareError.message("Search box did not filter the list") }
     app.filter.stringValue = ""; app.rebuildNearby()
