@@ -80,6 +80,9 @@ jobs:
           -DBARRIER_USE_SYSTEM_OPENSSL=ON -DBARRIER_NATIVE_DROP_TESTS=ON
       - name: Build desktop launcher
         shell: pwsh
+        env:
+          # A pull_request run checks out a temporary merge commit; name the branch commit instead.
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           New-Item -ItemType Directory -Force build/bin/Release | Out-Null
           # Test builds (not vX.Y.Z tags) carry the CI run number as the fourth version part,
@@ -87,7 +90,7 @@ jobs:
           $source = "$PWD\tools\native-file-drop\BarrierShare.cs"
           $stamp = "$PWD\build\BarrierShare.stamp.cs"
           $build = if ($env:GITHUB_REF -like 'refs/tags/*') { '0' } else { $env:GITHUB_RUN_NUMBER }
-          $commit = $env:GITHUB_SHA.Substring(0, 8)
+          $commit = $env:HEAD_SHA.Substring(0, 8)
           $text = [IO.File]::ReadAllText($source, [Text.Encoding]::UTF8)
           $text = [Text.RegularExpressions.Regex]::Replace($text, '(Assembly(File)?Version\("\d+\.\d+\.\d+)\.0"\)', ('$1.' + $build + '")'))
           $text = $text.Replace('static readonly string BuildCommit = "";', "static readonly string BuildCommit = `"$commit`";")

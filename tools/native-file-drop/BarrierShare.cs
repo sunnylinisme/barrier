@@ -485,6 +485,7 @@ sealed class ShareWindow : Form
     // Set while the service runs the core; its log file is followed instead of the process output.
     // While the service runs the core: its log as the signed-in user (own profile), as SYSTEM
     // (service state folder) and the service's notes on which one runs; all three are followed.
+    DateTime serviceSince;
     string serviceLog; readonly Dictionary<string, long> serviceOffsets = new Dictionary<string, long>();
     readonly System.Windows.Forms.Timer serviceTail = new System.Windows.Forms.Timer { Interval = 500 };
     Form consent, diagnostics;
@@ -787,11 +788,14 @@ sealed class ShareWindow : Form
         if (!testing && ShareService.Installed) {
             try {
                 ShareSettings.Backend(Host, address.Text); // validates the address and settings
+                serviceSince = DateTime.Now.AddSeconds(-1);
                 var reply = ShareService.Request(ShareService.StartCommand(Host, address.Text), 5000);
                 backend = new Process(); serviceLog = reply[2]; serviceOffsets.Clear();
                 foreach (string path in new[] { Path.Combine(ShareSettings.Profile(Host), Host ? "server.log" : "windows.log"), serviceLog, Path.Combine(Path.GetDirectoryName(serviceLog), "service.log") }) {
                     long length = 0; try { length = new FileInfo(path).Length; } catch (Exception) { }
-                    serviceOffsets[path] = length;
+                    // The service notes which account runs the core as it starts it, before this reply;
+                    // read its notes from the start and skip only those older than this request.
+                    serviceOffsets[path] = path.EndsWith("service.log", StringComparison.OrdinalIgnoreCase) ? 0 : length;
                 }
                 serviceTail.Start(); LogLine("背景服務已啟動核心：平常以你的身分執行，登入、鎖定、UAC 畫面時改用系統身分 · " + Path.GetDirectoryName(serviceLog));
                 connectedAddress = address.Text; status.Text = "配對已驗證，正在連線…"; UpdateControls();
@@ -941,6 +945,8 @@ sealed class ShareWindow : Form
                     bool notes = path.EndsWith("service.log", StringComparison.OrdinalIgnoreCase);
                     foreach (string line in Encoding.UTF8.GetString(bytes, 0, end + 1).Split('\n')) {
                         string text = line.TrimEnd('\r');
+                        DateTime stamp;
+                        if (notes && text.Length > 21 && DateTime.TryParseExact(text.Substring(1, 19), "yyyy-MM-ddTHH:mm:ss", null, System.Globalization.DateTimeStyles.None, out stamp) && stamp < serviceSince) continue;
                         if (text.Length > 0) { if (notes) Diagnose("背景服務：" + text); else LogLine(text); }
                     }
                 }
