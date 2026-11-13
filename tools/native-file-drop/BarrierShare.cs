@@ -726,7 +726,7 @@ sealed class ShareWindow : Form
     DateTime serviceSince;
     string serviceLog; readonly Dictionary<string, long> serviceOffsets = new Dictionary<string, long>();
     readonly System.Windows.Forms.Timer serviceTail = new System.Windows.Forms.Timer { Interval = 500 };
-    Form consent, diagnostics;
+    Form consent; internal Form diagnostics;
     string consentId, connectedAddress = "";
     // Paired computers: every receiver for a host, the one host for a receiver (fingerprint -> name).
     readonly Dictionary<string, string> peers = new Dictionary<string, string>();
@@ -1218,15 +1218,18 @@ sealed class ShareWindow : Form
     }
     // Diagnostic note that is not parsed for status, unlike core log lines.
     void Diagnose(string text) { if (details.TextLength > 24000) details.Text = details.Text.Substring(details.TextLength - 12000); details.AppendText("[" + DateTime.Now.ToString("HH:mm:ss") + "] " + text + Environment.NewLine); }
-    void ShowDiagnostics()
+    internal void ShowDiagnostics()
     {
         if (diagnostics == null) {
-            diagnostics = new Form { Text="Barrier Share · 診斷紀錄", ClientSize=new Size(760,400), Font=Font, StartPosition=FormStartPosition.CenterParent, Padding=new Padding(18), BackColor=Color.White, AutoScaleDimensions=new SizeF(96F,96F), AutoScaleMode=AutoScaleMode.Dpi };
+            diagnostics = new Form { Text="Barrier Share · 診斷紀錄", ClientSize=new Size(760,400), Font=Font, StartPosition=FormStartPosition.CenterParent, Padding=new Padding(18, 18, 18, 22), BackColor=Color.White, AutoScaleDimensions=new SizeF(96F,96F), AutoScaleMode=AutoScaleMode.Dpi };
             details.Dock=DockStyle.Fill; diagnostics.Controls.Add(details);
-            var copyAll = new ShareButton { Text="全部複製", BackColor=Color.White, Font=new Font(Font.FontFamily,10F), Dock=DockStyle.Bottom, Height=36 };
+            // A gap above the button and the window padding below it keep it off the log and the window edge.
+            var bar = new Panel { Dock=DockStyle.Bottom, Height=50, BackColor=Color.White };
+            var copyAll = new ShareButton { Text="全部複製", BackColor=Color.White, Font=new Font(Font.FontFamily,10F), Bounds=new Rectangle(bar.Width - 120, 14, 120, 36), Anchor=AnchorStyles.Top | AnchorStyles.Right };
+            bar.Controls.Add(copyAll);
             copyAll.Click += delegate { if (details.TextLength > 0) { Clipboard.SetText(details.Text); copyAll.Text = "已複製"; } };
             details.TextChanged += delegate { copyAll.Text = "全部複製"; };
-            diagnostics.Controls.Add(copyAll);
+            diagnostics.Controls.Add(bar);
             diagnostics.FormClosing += delegate(object sender, FormClosingEventArgs e) { if (!closing) { e.Cancel=true; diagnostics.Hide(); } };
         }
         diagnostics.Show(this); diagnostics.Activate();
@@ -1422,7 +1425,7 @@ sealed class ShareWindow : Form
         Action layout = () => {
             float k = dialog.IsHandleCreated ? dialog.CurrentAutoScaleDimensions.Height / 96F : 1F; int top = buttonsY;
             foreach (var b in new Control[] { reset, cancel, ok }) b.Top = (int)(top * k);
-            int full = (int)((top + 56) * k), room = Screen.FromPoint(Cursor.Position).WorkingArea.Height - (dialog.Height - dialog.ClientSize.Height) - 40;
+            int full = (int)((top + 38 + 22) * k), room = Screen.FromPoint(Cursor.Position).WorkingArea.Height - (dialog.Height - dialog.ClientSize.Height) - 40;
             dialog.AutoScrollMinSize = new Size(0, full);
             dialog.ClientSize = new Size((int)(568 * k) + (full > room ? SystemInformation.VerticalScrollBarWidth : 0), Math.Min(full, room));
         };
@@ -1640,7 +1643,7 @@ sealed class ShareLayoutEditor : Form
         FormBorderStyle = FormBorderStyle.FixedDialog; StartPosition = FormStartPosition.CenterParent; MaximizeBox = MinimizeBox = false;
         AutoScaleDimensions = new SizeF(96F, 96F); AutoScaleMode = AutoScaleMode.Dpi;
         int width = Cell * (Span * 2 + 1), height = Tall * (Span * 2 + 1);
-        ClientSize = new Size(width + 248 + SystemInformation.VerticalScrollBarWidth, height + 160);
+        ClientSize = new Size(width + 248 + SystemInformation.VerticalScrollBarWidth, height + 168);
         Controls.Add(new Label { Text = "排列螢幕", Font = new Font(Font.FontFamily, 13F, FontStyle.Bold), Bounds = new Rectangle(24, 14, width, 28) });
         Controls.Add(new Label { Text = "拖曳接收端到這台的上下左右；滑鼠從相鄰的邊移過去。", Bounds = new Rectangle(24, 42, width + 200, 22), ForeColor = ShareStyle.Muted });
         canvas.Bounds = new Rectangle(24, 74, width, height); canvas.BackColor = ShareStyle.Background;
@@ -1651,8 +1654,8 @@ sealed class ShareLayoutEditor : Form
         Controls.Add(legend);
         warning.Bounds = new Rectangle(24, 80 + height, width + 200, 24); warning.ForeColor = ShareStyle.Danger; Controls.Add(warning);
         var reset = new ShareButton { Text = "恢復預設", Quiet = true, BackColor = Color.White, Bounds = new Rectangle(24, 110 + height, 100, 36) };
-        var cancel = new ShareButton { Text = "取消", BackColor = Color.White, Bounds = new Rectangle(width + 224 + SystemInformation.VerticalScrollBarWidth - 224, 110 + height, 108, 36), DialogResult = DialogResult.Cancel };
-        save.BackColor = Color.White; save.Bounds = new Rectangle(width + 224 + SystemInformation.VerticalScrollBarWidth - 104, 110 + height, 128, 36); save.DialogResult = DialogResult.OK;
+        var cancel = new ShareButton { Text = "取消", BackColor = Color.White, Bounds = new Rectangle(width + 224 + SystemInformation.VerticalScrollBarWidth - 244, 110 + height, 108, 36), DialogResult = DialogResult.Cancel };
+        save.BackColor = Color.White; save.Bounds = new Rectangle(width + 224 + SystemInformation.VerticalScrollBarWidth - 128, 110 + height, 128, 36); save.DialogResult = DialogResult.OK;
         Controls.Add(reset); Controls.Add(cancel); Controls.Add(save); CancelButton = cancel;
         var cells = ShareSettings.Cells();
         foreach (var peer in peers) {
@@ -1980,6 +1983,16 @@ static class ShareProgram
             using (var window = new ShareWindow(true)) {
                 window.Show(); Application.DoEvents(); window.TestDiscovery(directory);
                 window.ShowUpdate(found); Application.DoEvents();
+                // Buttons keep at least 20 px (at 96 dpi) from the bottom edge of every dialog.
+                Action<Form, string> margin = (form, name) => {
+                    float k = form.CurrentAutoScaleDimensions.Height / 96F; var size = form.AutoScrollMinSize.Height > form.ClientSize.Height ? form.AutoScrollMinSize.Height : form.ClientSize.Height;
+                    var lowest = form.Controls.Cast<Control>().SelectMany(c => c is ShareButton ? new[] { c } : c.Controls.OfType<ShareButton>().Select(b => (Control)b))
+                        .Max(b => b.Parent == form ? b.Bottom - form.AutoScrollPosition.Y : b.Parent.Top + b.Bottom);
+                    if (size - lowest < 20 * k) throw new Exception(name + " buttons sit " + (size - lowest) + " px from the bottom edge");
+                };
+                window.ShowDiagnostics(); Application.DoEvents(); margin(window.diagnostics, "Diagnostics");
+                using (var bitmap = new Bitmap(window.diagnostics.Width, window.diagnostics.Height)) { window.diagnostics.DrawToBitmap(bitmap, new Rectangle(Point.Empty, window.diagnostics.Size)); bitmap.Save(Path.Combine(directory, "gui-diagnostics.png")); }
+                window.diagnostics.Hide();
                 using (var bitmap = new Bitmap(window.Width, window.Height)) { window.DrawToBitmap(bitmap, new Rectangle(Point.Empty, window.Size)); bitmap.Save(Path.Combine(directory, "gui-update.png")); }
                 Func<ShareAdvanced> readAdvanced;
                 using (var advanced = window.BuildAdvanced(ShareSettings.Advanced, out readAdvanced)) {
@@ -1989,6 +2002,7 @@ static class ShareProgram
                         if (!advanced.DisplayRectangle.Contains(shown[i].Bounds)) throw new Exception("Advanced dialog clips: " + shown[i].Text);
                         for (int j = i + 1; j < shown.Length; ++j) if (shown[i].Bounds.IntersectsWith(shown[j].Bounds)) throw new Exception("Advanced dialog overlaps: " + shown[i].Text + " / " + shown[j].Text);
                     }
+                    margin(advanced, "Advanced settings");
                     if (readAdvanced().SwitchDelay != 250 || !readAdvanced().SwapModifiers) throw new Exception("Advanced dialog lost values: " + readAdvanced().SwitchDelay + " " + readAdvanced().SwapModifiers + " " + ShareSettings.Advanced.SwitchDelay);
                     using (var bitmap = new Bitmap(advanced.Width, advanced.Height)) { advanced.DrawToBitmap(bitmap, new Rectangle(Point.Empty, advanced.Size)); bitmap.Save(Path.Combine(directory, "gui-advanced.png")); }
                     advanced.Close();
@@ -2000,6 +2014,7 @@ static class ShareProgram
                     if (!layout.Reachable() || layout.Placement[fb] != new Point(0, -1)) throw new Exception("Layout editor did not start from the saved arrangement");
                     if (layout.Place(fc, new Point(1, 0)) || !layout.Place(fc, new Point(2, 2)) || layout.Reachable()) throw new Exception("Layout editor accepted an occupied cell or a detached screen");
                     if (!layout.Place(fc, new Point(-1, 0)) || !layout.Reachable()) throw new Exception("Layout editor rejected a valid arrangement");
+                    margin(layout, "Arrange screens");
                     if (layout.Ranges[fa] != "first" || layout.Ranges[fb] != "all") throw new Exception("Layout editor lost the edge ranges");
                     using (var bitmap = new Bitmap(layout.Width, layout.Height)) { layout.DrawToBitmap(bitmap, new Rectangle(Point.Empty, layout.Size)); bitmap.Save(Path.Combine(directory, "gui-layout.png")); }
                     layout.Close();
