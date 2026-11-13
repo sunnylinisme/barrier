@@ -661,7 +661,7 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuD
         editMenu.addItem(withTitle: "拷貝", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
         editMenu.addItem(withTitle: "全選", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
         editItem.submenu = editMenu; menu.addItem(editItem); NSApp.mainMenu = menu
-        let W: CGFloat = 720, H: CGFloat = 608
+        let W: CGFloat = 720, H: CGFloat = 624
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: W, height: H), styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
         window.title = "Barrier Share " + ShareApp.versionLabel; window.delegate = self; window.isReleasedWhenClosed = false
         let root = FlippedView(frame: NSRect(x: 0, y: 0, width: W, height: H)); root.wantsLayer = true; root.layer?.backgroundColor = ShareStyle.background.cgColor
@@ -701,10 +701,10 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuD
         emptyNearby.alignment = .center; text(emptyNearby, 13, .regular, ShareStyle.muted); emptyNearby.maximumNumberOfLines = 3; emptyNearby.frame = NSRect(x: 40, y: 88, width: 592, height: 60); listCard.addSubview(emptyNearby)
         // Footer: everyday switches; the rarely used actions sit under 更多.
         let rule = NSBox(); rule.boxType = .custom; rule.borderWidth = 0; rule.fillColor = ShareStyle.border; at(rule, 0, 556, W, 1)
-        autostart.target = self; autostart.action = #selector(toggleLogin); autostart.state = !test && ShareLogin.enabled ? .on : .off; autostart.font = .systemFont(ofSize: 13); at(autostart, 24, 572, 200, 22)
-        at(ShareQuietButton("進階設定", self, #selector(showAdvanced)), 404, 568, 100, 30)
-        at(ShareQuietButton("診斷紀錄", self, #selector(showDiagnostics)), 508, 568, 100, 30)
-        at(ShareQuietButton("更多  ▾", self, #selector(showMore(_:))), 612, 568, 84, 30)
+        autostart.target = self; autostart.action = #selector(toggleLogin); autostart.state = !test && ShareLogin.enabled ? .on : .off; autostart.font = .systemFont(ofSize: 13); at(autostart, 24, 579, 200, 22)
+        at(ShareQuietButton("進階設定", self, #selector(showAdvanced)), 404, 574, 100, 30)
+        at(ShareQuietButton("診斷紀錄", self, #selector(showDiagnostics)), 508, 574, 100, 30)
+        at(ShareQuietButton("更多  ▾", self, #selector(showMore(_:))), 612, 574, 84, 30)
         details.isEditable=false; details.font = .monospacedSystemFont(ofSize:12,weight:.regular); details.isVerticallyResizable=true; details.autoresizingMask = [.width]
         tray = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         // The app icon itself (same as the Dock and the Windows tray). It is a full-colour tile with
@@ -979,11 +979,12 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuD
         let closer = ShareModalCloser(panel); save.target = closer; save.action = #selector(ShareModalCloser.accept); cancel.target = closer; cancel.action = #selector(ShareModalCloser.cancel)
         // Rows scroll; the buttons stay fixed underneath.
         let rowsHeight = buttonsY, visible = min(rowsHeight, 600)
-        let root = FlippedView(frame: NSRect(x: 0, y: 0, width: width, height: visible + 56)); root.wantsLayer = true; root.layer?.backgroundColor = NSColor.white.cgColor
+        let root = FlippedView(frame: NSRect(x: 0, y: 0, width: width, height: visible + 76)); root.wantsLayer = true; root.layer?.backgroundColor = NSColor.white.cgColor
         let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: width, height: visible)); scroll.hasVerticalScroller = true; scroll.autohidesScrollers = true; scroll.drawsBackground = false
         view.frame.size = NSSize(width: width, height: rowsHeight); scroll.documentView = view; root.addSubview(scroll)
-        for b in [reset, cancel, save] { b.removeFromSuperview(); b.frame.origin.y = visible + 12; root.addSubview(b) }
-        panel.contentView = root; panel.setContentSize(root.frame.size)
+        let footerRule = NSBox(frame: NSRect(x: 0, y: visible, width: width, height: 1)); footerRule.boxType = .custom; footerRule.borderWidth = 0; footerRule.fillColor = ShareStyle.border; root.addSubview(footerRule)
+        for b in [reset, cancel, save] { b.removeFromSuperview(); b.frame.origin.y = visible + 22; root.addSubview(b) }
+        panel.setContentSize(root.frame.size); panel.contentView = root; root.frame = NSRect(origin: .zero, size: panel.contentRect(forFrameRect: panel.frame).size)
         let resetter = ShareBlockTarget { _ in
             let d = ShareAdvanced()
             delay.selectItem(withTag: d.switchDelay); tap.selectItem(withTag: d.doubleTap)
@@ -1278,8 +1279,8 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuD
         if diagnostics == nil {
             let panel = NSWindow(contentRect:NSRect(x:0,y:0,width:760,height:400),styleMask:[.titled,.closable,.resizable],backing:.buffered,defer:false); panel.title="Barrier Share · 診斷紀錄"; panel.delegate=self; panel.isReleasedWhenClosed=false
             let copyAll = NSButton(title: "全部複製", target: self, action: #selector(copyDiagnostics)); copyAll.bezelStyle = .rounded
-            copyAll.frame = NSRect(x: panel.contentView!.bounds.width - 138, y: 12, width: 120, height: 32); copyAll.autoresizingMask = [.minXMargin, .maxYMargin]; panel.contentView!.addSubview(copyAll)
-            var area = panel.contentView!.bounds.insetBy(dx:18,dy:18); area.origin.y += 36; area.size.height -= 36
+            copyAll.frame = NSRect(x: panel.contentView!.bounds.width - 142, y: 18, width: 120, height: 32); copyAll.autoresizingMask = [.minXMargin, .maxYMargin]; panel.contentView!.addSubview(copyAll)
+            var area = panel.contentView!.bounds.insetBy(dx:18,dy:18); area.origin.y += 42; area.size.height -= 42
             let scroll=NSScrollView(frame:area); scroll.autoresizingMask=[.width,.height]; scroll.hasVerticalScroller=true; scroll.documentView=details; details.frame=scroll.bounds; panel.contentView!.addSubview(scroll); diagnostics=panel; panel.center()
         }
         diagnostics?.makeKeyAndOrderFront(nil)
