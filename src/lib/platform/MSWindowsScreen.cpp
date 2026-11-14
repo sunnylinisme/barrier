@@ -17,6 +17,7 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include "platform/MSWindowsNativeSource.h"
 #include "platform/MSWindowsScreen.h"
 
 #include "platform/MSWindowsDropTarget.h"
@@ -238,6 +239,7 @@ MSWindowsScreen::enable()
 void
 MSWindowsScreen::disable()
 {
+    m_nativeDrag.cancel();
     // stop tracking the active desk
     m_desks->disable();
 
@@ -267,6 +269,11 @@ MSWindowsScreen::disable()
         m_events->deleteTimer(m_fixTimer);
         m_fixTimer = NULL;
     }
+    if (m_entryTimer != nullptr) {
+        m_events->removeHandler(Event::kTimer, m_entryTimer);
+        m_events->deleteTimer(m_entryTimer);
+        m_entryTimer = nullptr;
+    }
 
     m_isOnScreen = m_isPrimary;
     forceShowCursor();
@@ -287,6 +294,16 @@ MSWindowsScreen::enter()
         nextMark();
 
         m_primaryKeyDownList.clear();
+
+        // Safety net for a rare race seen in fast returns: the cursor can end up parked at the
+        // centre (where it waits while away) right after entering. For a short while, put it
+        // back on the entry point unless the user has moved it since.
+        m_xEntry = m_xCursor; m_yEntry = m_yCursor; m_entryChecks = 4;
+        if (m_entryTimer == nullptr) {
+            m_entryTimer = m_events->newTimer(0.05, NULL);
+            m_events->adoptHandler(Event::kTimer, m_entryTimer,
+                new TMethodEventJob<MSWindowsScreen>(this, &MSWindowsScreen::checkEntry));
+        }
     }
     else {
         // Entering a secondary screen. Ensure that no screensaver is active
@@ -308,6 +325,7 @@ MSWindowsScreen::enter()
 bool
 MSWindowsScreen::leave()
 {
+    m_nativeDrag.cancel();
     // get keyboard layout of foreground window.  we'll use this
     // keyboard layout for translating keys sent to clients.
     HWND window  = GetForegroundWindow();
@@ -351,7 +369,7 @@ MSWindowsScreen::leave()
     m_isOnScreen = false;
     forceShowCursor();
 
-    if (isDraggingStarted() && !m_isPrimary) {
+    if (isDraggingStarted() && !m_isPrimary && !App::instance().argsBase().m_nativeFileDrop) {
         m_sendDragThread = new Thread([this](){ send_drag_thread(); });
     }
 
@@ -377,9 +395,10 @@ void MSWindowsScreen::send_drag_thread()
 }
 
 bool
-MSWindowsScreen::setClipboard(ClipboardID, const IClipboard* src)
+MSWindowsScreen::setClipboard(ClipboardID id, const IClipboard* src)
 {
-    MSWindowsClipboard dst(m_window);
+    if (App::instance().argsBase().m_fileClipboard && id != kClipboardClipboard) return true;
+    MSWindowsClipboard dst(m_window, App::instance().argsBase().m_fileClipboard);
     if (src != NULL) {
         // save clipboard data
         return Clipboard::copy(&dst, src);
@@ -490,9 +509,10 @@ MSWindowsScreen::getEventTarget() const
 }
 
 bool
-MSWindowsScreen::getClipboard(ClipboardID, IClipboard* dst) const
+MSWindowsScreen::getClipboard(ClipboardID id, IClipboard* dst) const
 {
-    MSWindowsClipboard src(m_window);
+    if (App::instance().argsBase().m_fileClipboard && id != kClipboardClipboard) return false;
+    MSWindowsClipboard src(m_window, App::instance().argsBase().m_fileClipboard);
     Clipboard::copy(dst, &src);
     return true;
 }
@@ -715,6 +735,7 @@ MSWindowsScreen::getCursorCenter(SInt32& x, SInt32& y) const
 void
 MSWindowsScreen::fakeMouseButton(ButtonID id, bool press)
 {
+    if (id == kButtonLeft && !press && m_nativeDrag.release()) return;
     m_desks->fakeMouseButton(id, press);
 
     if (id == kButtonLeft) {
@@ -760,6 +781,7 @@ void
 MSWindowsScreen::fakeKeyDown(KeyID id, KeyModifierMask mask,
                 KeyButton button)
 {
+    if (id == kKeyEscape) m_nativeDrag.cancel();
     PlatformScreen::fakeKeyDown(id, mask, button);
     updateForceShowCursor();
 }
@@ -1279,6 +1301,8 @@ MSWindowsScreen::onMouseButton(WPARAM wParam, LPARAM lParam)
         if (pressed) {
             m_buttons[button] = true;
             if (button == kButtonLeft) {
+                m_nativeCaptureAttempted = false;
+                m_nativeSourcePath.clear();
                 m_draggingFilename.clear();
                 LOG((CLOG_DEBUG2 "dragging filename is cleared"));
             }
@@ -1543,6 +1567,23 @@ MSWindowsScreen::warpCursorNoFlush(SInt32 x, SInt32 y)
 
     // send an event that we can recognize after the mouse warp
     PostThreadMessage(GetCurrentThreadId(), BARRIER_MSG_POST_WARP, 0, 0);
+}
+
+void
+MSWindowsScreen::checkEntry(const Event&, void*)
+{
+    if (m_entryChecks <= 0) return;
+    --m_entryChecks;
+    if (!m_isOnScreen || !m_isPrimary) { m_entryChecks = 0; return; }
+    POINT now;
+    if (!GetCursorPos(&now)) return;
+    bool parked = now.x == m_xCenter && now.y == m_yCenter;
+    bool entryIsCentre = m_xEntry == m_xCenter && m_yEntry == m_yCenter;
+    bool untouched = m_xCursor == m_xEntry && m_yCursor == m_yEntry;
+    if (parked && !entryIsCentre && untouched) {
+        LOG((CLOG_INFO "cursor was parked at the centre after entering; restoring entry point %d,%d", m_xEntry, m_yEntry));
+        warpCursor(m_xEntry, m_yEntry);
+    }
 }
 
 void
@@ -1954,4 +1995,34 @@ MSWindowsScreen::isModifierRepeat(KeyModifierMask oldState, KeyModifierMask stat
     }
 
     return result;
+}
+
+void MSWindowsScreen::startNativeFile(std::shared_ptr<const barrier::NativeFile> file)
+{
+    m_draggingStarted = false;
+    m_nativeDrag.start(file);
+}
+
+bool MSWindowsScreen::isDraggingStarted()
+{
+    if (m_isPrimary && m_isOnScreen && App::instance().argsBase().m_nativeFileDrop &&
+        !(GetAsyncKeyState(VK_LBUTTON) & 0x8000)) return false;
+    return PlatformScreen::isDraggingStarted();
+}
+std::string MSWindowsScreen::nativeDraggingPath()
+{
+    if (!m_isPrimary || !isDraggingStarted()) return {};
+    if (!m_nativeCaptureAttempted) {
+        m_nativeCaptureAttempted = true;
+        m_nativeSourcePath = barrier::captureWindowsNativeDrag();
+        LOG((CLOG_INFO "native drop: %s", m_nativeSourcePath.empty() ?
+             "no single file drag at boundary" : "captured Windows source file"));
+    }
+    return m_nativeSourcePath;
+}
+bool MSWindowsScreen::cancelNativeSourceDrag()
+{
+    if (!barrier::cancelWindowsNativeDrag()) return false;
+    m_draggingStarted = false;
+    return true;
 }

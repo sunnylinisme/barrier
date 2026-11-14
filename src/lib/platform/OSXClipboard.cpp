@@ -17,6 +17,7 @@
  */
 
 #include "platform/OSXClipboard.h"
+#include "platform/OSXFileClipboard.h"
 
 #include "barrier/Clipboard.h"
 #include "platform/OSXClipboardUTF16Converter.h"
@@ -30,9 +31,9 @@
 // OSXClipboard
 //
 
-OSXClipboard::OSXClipboard() :
+OSXClipboard::OSXClipboard(bool fileClipboard, const std::string& name) :
     m_time(0),
-    m_pboard(NULL)
+    m_pboard(NULL), m_fileClipboard(fileClipboard)
 {
     m_converters.push_back(new OSXClipboardHTMLConverter);
     m_converters.push_back(new OSXClipboardBMPConverter);
@@ -41,7 +42,9 @@ OSXClipboard::OSXClipboard() :
 
 
 
-    OSStatus createErr = PasteboardCreate(kPasteboardClipboard, &m_pboard);
+    CFStringRef named = name.empty() ? nullptr : CFStringCreateWithCString(nullptr, name.c_str(), kCFStringEncodingUTF8);
+    OSStatus createErr = PasteboardCreate(named ? named : kPasteboardClipboard, &m_pboard);
+    if (named) CFRelease(named);
     if (createErr != noErr) {
         LOG((CLOG_DEBUG "failed to create clipboard reference: error %i", createErr));
         LOG((CLOG_ERR "unable to connect to pasteboard, clipboard sharing disabled", createErr));
@@ -59,6 +62,7 @@ OSXClipboard::OSXClipboard() :
 OSXClipboard::~OSXClipboard()
 {
     clearConverters();
+    if (m_pboard) CFRelease(m_pboard);
 }
 
     bool
@@ -96,6 +100,11 @@ void OSXClipboard::add(EFormat format, const std::string& data)
 {
     if (m_pboard == NULL)
         return;
+    if (format == IClipboard::kFile && m_fileClipboard) {
+        try { osxClipboardPutFiles(m_pboard, data); }
+        catch (const std::exception& e) { LOG((CLOG_WARN "file clipboard: %s", e.what())); }
+        return;
+    }
 
     LOG((CLOG_DEBUG "add %d bytes to clipboard format: %d", data.size(), format));
     if (format == IClipboard::kText) {
@@ -162,6 +171,7 @@ OSXClipboard::has(EFormat format) const
 {
     if (m_pboard == NULL)
         return false;
+    if (format == IClipboard::kFile) return m_fileClipboard && osxClipboardHasFiles(m_pboard);
 
     PasteboardItemID item;
     PasteboardGetItemIdentifier(m_pboard, (CFIndex) 1, &item);
@@ -186,6 +196,10 @@ OSXClipboard::has(EFormat format) const
 
 std::string OSXClipboard::get(EFormat format) const
 {
+    if (format == IClipboard::kFile && m_fileClipboard && m_pboard) {
+        try { return osxClipboardGetFiles(m_pboard); }
+        catch (const std::exception& e) { LOG((CLOG_WARN "file clipboard: %s", e.what())); return {}; }
+    }
     CFStringRef type;
     PasteboardItemID item;
     std::string result;

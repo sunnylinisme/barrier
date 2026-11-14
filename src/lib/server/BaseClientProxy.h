@@ -54,6 +54,7 @@ public:
     /*!
     Return if this proxy is for client or primary.
     */
+    bool nativeFileDrop = false;
     virtual bool        isPrimary() const { return false; }
 
     //@}

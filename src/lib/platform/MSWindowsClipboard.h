@@ -31,7 +31,7 @@ class IMSWindowsClipboardFacade;
 //! Microsoft windows clipboard implementation
 class MSWindowsClipboard : public IClipboard {
 public:
-    MSWindowsClipboard(HWND window);
+    MSWindowsClipboard(HWND window, bool fileClipboard = false);
     MSWindowsClipboard(HWND window, IMSWindowsClipboardFacade &facade);
     virtual ~MSWindowsClipboard();
 

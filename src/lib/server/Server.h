@@ -248,6 +248,7 @@ private:
     // update switch state due to a mouse move at \p x, \p y that
     // doesn't switch screens.
     void                noSwitch(SInt32 x, SInt32 y);
+    void                reportEdgeBlock(const std::string& reason, SInt32 x, SInt32 y);
 
     // stop switch timers
     void                stopSwitch();
@@ -481,4 +482,6 @@ private:
 
     ClientListener*        m_clientListener;
     ServerArgs            m_args;
+    // reason last reported for not crossing the current edge; cleared away from it
+    std::string         m_edgeBlock;
 };

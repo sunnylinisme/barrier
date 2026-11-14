@@ -182,7 +182,11 @@ SecureSocket::doRead()
             m_inputBuffer.write(buffer, bytesRead);
 
             if (m_inputBuffer.getSize() > MAX_INPUT_BUFFER_SIZE) {
-                break;
+                // Finish the decrypted TLS record before yielding. Otherwise its
+                // tail can remain inside OpenSSL with no socket-read event to wake us.
+                std::lock_guard<std::mutex> ssl_lock{ssl_mutex_};
+                if (m_ssl->m_ssl == nullptr || SSL_pending(m_ssl->m_ssl) == 0) break;
+                LOG((CLOG_DEBUG1 "draining buffered TLS record before input limit"));
             }
 
             status = secureRead(buffer, sizeof(buffer), bytesRead);

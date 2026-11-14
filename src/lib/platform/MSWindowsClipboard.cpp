@@ -22,9 +22,12 @@
 #include "platform/MSWindowsClipboardUTF16Converter.h"
 #include "platform/MSWindowsClipboardBitmapConverter.h"
 #include "platform/MSWindowsClipboardHTMLConverter.h"
+#include "platform/MSWindowsClipboardFileConverter.h"
 #include "platform/MSWindowsClipboardFacade.h"
 #include "arch/win32/ArchMiscWindows.h"
 #include "base/Log.h"
+#include <cstdio>
+#include <string>
 
 //
 // MSWindowsClipboard
@@ -32,7 +35,7 @@
 
 UINT                    MSWindowsClipboard::s_ownershipFormat = 0;
 
-MSWindowsClipboard::MSWindowsClipboard(HWND window) :
+MSWindowsClipboard::MSWindowsClipboard(HWND window, bool fileClipboard) :
     m_window(window),
     m_time(0),
     m_facade(new MSWindowsClipboardFacade()),
@@ -42,6 +45,7 @@ MSWindowsClipboard::MSWindowsClipboard(HWND window) :
     m_converters.push_back(new MSWindowsClipboardUTF16Converter);
     m_converters.push_back(new MSWindowsClipboardBitmapConverter);
     m_converters.push_back(new MSWindowsClipboardHTMLConverter);
+    if (fileClipboard) m_converters.push_back(new MSWindowsClipboardFileConverter);
 }
 
 MSWindowsClipboard::~MSWindowsClipboard()
@@ -113,6 +117,15 @@ MSWindowsClipboard::add(EFormat format, const std::string& data)
             if (win32Data != NULL) {
                 UINT win32Format = converter->getWin32Format();
                 m_facade->write(win32Data, win32Format);
+                if (format == kFile) {
+                    HGLOBAL effect = GlobalAlloc(GMEM_MOVEABLE, sizeof(DWORD));
+                    auto value = static_cast<DWORD*>(effect ? GlobalLock(effect) : nullptr);
+                    if (value) {
+                        *value = 1; // DROPEFFECT_COPY: never remove the sender's original.
+                        GlobalUnlock(effect);
+                        m_facade->write(effect, RegisterClipboardFormatW(L"Preferred DropEffect"));
+                    } else if (effect) GlobalFree(effect);
+                }
             }
         }
     }
@@ -159,6 +172,18 @@ MSWindowsClipboard::has(EFormat format) const
         if (converter->getFormat() == format) {
             if (IsClipboardFormatAvailable(converter->getWin32Format())) {
                 return true;
+            }
+            if (format == kFile) {
+                // Diagnose copies that should carry files: list what the clipboard really
+                // offers and which process owns it (the clipboard is open here).
+                std::string formats; int count = 0;
+                for (UINT id = EnumClipboardFormats(0); id != 0 && count < 24; id = EnumClipboardFormats(id), ++count) {
+                    char name[96] = {};
+                    if (!GetClipboardFormatNameA(id, name, sizeof(name))) snprintf(name, sizeof(name), "#%u", id);
+                    formats += (formats.empty() ? "" : ", ") + std::string(name);
+                }
+                DWORD owner = 0; HWND window = GetClipboardOwner(); if (window) GetWindowThreadProcessId(window, &owner);
+                if (count) LOG((CLOG_INFO "file clipboard: no file list on the clipboard (owner pid %lu; formats: %s)", owner, formats.c_str()));
             }
         }
     }

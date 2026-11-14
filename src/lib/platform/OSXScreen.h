@@ -17,6 +17,8 @@
  */
 
 #pragma once
+#include <mutex>
+#include <atomic>
 
 #include "platform/OSXClipboard.h"
 #include "barrier/PlatformScreen.h"
@@ -98,6 +100,8 @@ public:
     virtual bool        isPrimary() const;
     virtual void        fakeDraggingFiles(DragFileList fileList);
     virtual std::string& getDraggingFilename();
+    std::string nativeDraggingPath() override;
+    bool cancelNativeSourceDrag() override;
 
     const std::string& getDropTarget() const { return m_dropTarget; }
     void                waitForCarbonLoop() const;
@@ -250,6 +254,12 @@ private:
 
     // true if mouse has entered the screen
     bool                m_isOnScreen;
+    // Serialises "warp back to the centre while away" (event tap thread) with entering this
+    // screen (event queue thread). Without it a fast mouse could warp the cursor to the
+    // centre just after it was placed at the entry edge, so it reappeared mid-screen.
+    std::mutex          m_warpMutex;
+    SInt32              m_xEnter = 0, m_yEnter = 0;
+    bool                m_enterValid = false;
 
     // the display
     CGDirectDisplayID    m_displayID;
@@ -274,6 +284,7 @@ private:
     std::vector<MouseButtonEventMapType> MouseButtonEventMap;
 
     bool                m_cursorHidden;
+    std::atomic<long> m_nativePasteboardGeneration{-1};
     SInt32                m_dragNumButtonsDown;
     Point                m_dragLastPoint;
     EventQueueTimer*    m_dragTimer;

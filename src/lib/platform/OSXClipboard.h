@@ -29,7 +29,7 @@ class IOSXClipboardConverter;
 //! OS X clipboard implementation
 class OSXClipboard : public IClipboard {
 public:
-    OSXClipboard();
+    OSXClipboard(bool fileClipboard = false, const std::string& name = {});
     virtual ~OSXClipboard();
 
     //! Test if clipboard is owned by barrier
@@ -54,6 +54,7 @@ private:
     mutable Time        m_time;
     ConverterList        m_converters;
     PasteboardRef        m_pboard;
+    bool m_fileClipboard;
 };
 
 //! Clipboard format converter interface

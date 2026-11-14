@@ -31,6 +31,8 @@ runCocoaApp()
 {
 	NSAutoreleasePool* pool = [[NSAutoreleasePool alloc] init];
 
+    // SDK 26+ display-synchronized updates can stall the Carbon input queue.
+    [[NSUserDefaults standardUserDefaults] registerDefaults:@{@"NSApplicationUpdateCycleEnabled": @NO}];
 	[NSApplication sharedApplication];
 
     NSWindow* window = [[NSWindow alloc]

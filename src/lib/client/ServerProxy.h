@@ -19,6 +19,8 @@
 #pragma once
 
 #include "barrier/clipboard_types.h"
+#include "barrier/NativeFileTransfer.h"
+#include "barrier/AsyncFileClipboardTransfer.h"
 #include "barrier/key_types.h"
 #include "base/Event.h"
 #include "base/Stopwatch.h"
@@ -110,6 +112,10 @@ private:
 private:
     typedef EResult (ServerProxy::*MessageParser)(const UInt8*);
 
+    barrier::NativeFileReceiver m_nativeReceiver;
+    bool m_nativeAllowed = false;
+    std::unique_ptr<barrier::AsyncFileClipboardTransfer> m_files;
+    bool m_filesEnabled = false, m_filesReady = false;
     Client*            m_client;
     barrier::IStream*    m_stream;
 

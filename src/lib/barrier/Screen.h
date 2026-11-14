@@ -18,6 +18,7 @@
 
 #pragma once
 
+#include "barrier/NativeFileTransfer.h"
 #include "barrier/DragInformation.h"
 #include "barrier/clipboard_types.h"
 #include "barrier/IScreen.h"
@@ -39,6 +40,10 @@ primary or secondary screen.
 */
 class Screen : public IScreen {
 public:
+    std::string nativeDraggingPath();
+    bool cancelNativeSourceDrag();
+    void startNativeFile(std::shared_ptr<const NativeFile> file);
+
     Screen(IPlatformScreen* platformScreen, IEventQueue* events);
     virtual ~Screen();
 

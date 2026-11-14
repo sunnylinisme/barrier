@@ -18,6 +18,7 @@
 #pragma once
 
 #include "server/ClientProxy1_5.h"
+#include "barrier/AsyncFileClipboardTransfer.h"
 
 class Server;
 class IEventQueue;
@@ -31,10 +32,15 @@ public:
 
     virtual void        setClipboard(ClipboardID id, const IClipboard* clipboard);
     virtual bool        recvClipboard();
+    void grabClipboard(ClipboardID) override;
+protected:
+    bool parseMessage(const UInt8*) override;
 
 private:
     void                handleClipboardSendingEvent(const Event&, void*);
 
 private:
     IEventQueue*        m_events;
+    std::unique_ptr<barrier::AsyncFileClipboardTransfer> m_files;
+    bool m_filesEnabled = false, m_filesReady = false;
 };

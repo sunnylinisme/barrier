@@ -1,0 +1,277 @@
+name: Barrier Share desktop
+on:
+  pull_request:
+    paths: ['src/**', 'tools/native-file-drop/**', 'CMakeLists.txt', '.github/workflows/native-file-drop.yml']
+  workflow_dispatch:
+  push:
+    # A vX.Y.Z tag (pushed by release-macos.sh with a draft release holding the signed
+    # Mac ZIP) builds and tests both platforms, attaches the Windows files and publishes.
+    tags: ['v*']
+permissions:
+  contents: read
+concurrency:
+  group: cross-drop-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  macos:
+    runs-on: macos-15
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          persist-credentials: false
+      - name: Configure
+        run: >-
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+          -DBARRIER_BUILD_GUI=OFF -DBARRIER_BUILD_INSTALLER=OFF -DBARRIER_BUILD_TESTS=OFF
+          -DBARRIER_USE_SYSTEM_OPENSSL=ON -DBARRIER_NATIVE_DROP_TESTS=ON
+          -DCMAKE_OSX_DEPLOYMENT_TARGET=15.0 -DOPENSSL_ROOT_DIR="$(brew --prefix openssl@3)" -DCMAKE_OSX_SYSROOT="$(xcrun --show-sdk-path)"
+      - name: Build and test
+        run: |
+          cmake --build build --parallel 3
+          ctest --test-dir build --output-on-failure
+      - name: LAN discovery, consent and automatic reconnection
+        run: python3 tools/native-file-drop/link-network-test.py build/bin
+      - name: Package and test native Mac app
+        env:
+          BARRIER_CODESIGN_IDENTITY: '-' # Disposable CI test artifact, not a stable signed release.
+        run: sh tools/native-file-drop/package-macos.sh build
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mac-desktop-test
+          path: build/gui-test/*
+          if-no-files-found: ignore
+          retention-days: 7
+      - uses: actions/upload-artifact@v4
+        with:
+          name: barrier-cross-drop-macos-arm64
+          path: build/barrier-cross-drop-macos-arm64.zip
+          if-no-files-found: error
+          retention-days: 30
+  windows:
+    runs-on: windows-2022
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          persist-credentials: false
+      - uses: actions/cache/restore@v4
+        with:
+          path: C:/Users/runneradmin/AppData/Local/vcpkg/archives
+          key: native-drop-openssl-static-win2022-v1
+      - name: OpenSSL
+        run: vcpkg install openssl:x64-windows-static
+      - uses: actions/cache/save@v4
+        with:
+          path: C:/Users/runneradmin/AppData/Local/vcpkg/archives
+          key: native-drop-openssl-static-win2022-v1
+      - name: Configure
+        run: >-
+          cmake -S . -B build -A x64
+          -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+          -DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake
+          -DVCPKG_TARGET_TRIPLET=x64-windows-static
+          -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
+          -DBARRIER_BUILD_GUI=OFF -DBARRIER_BUILD_INSTALLER=OFF -DBARRIER_BUILD_TESTS=OFF
+          -DBARRIER_USE_SYSTEM_OPENSSL=ON -DBARRIER_NATIVE_DROP_TESTS=ON
+      - name: Build desktop launcher
+        shell: pwsh
+        env:
+          # A pull_request run checks out a temporary merge commit; name the branch commit instead.
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          New-Item -ItemType Directory -Force build/bin/Release | Out-Null
+          # Test builds (not vX.Y.Z tags) carry the CI run number as the fourth version part,
+          # e.g. 0.3.9.123, and the commit; releases keep the plain X.Y.Z.0.
+          $source = "$PWD\tools\native-file-drop\BarrierShare.cs"
+          $stamp = "$PWD\build\BarrierShare.stamp.cs"
+          $build = if ($env:GITHUB_REF -like 'refs/tags/*') { '0' } else { $env:GITHUB_RUN_NUMBER }
+          $commit = $env:HEAD_SHA.Substring(0, 8)
+          $text = [IO.File]::ReadAllText($source, [Text.Encoding]::UTF8)
+          $text = [Text.RegularExpressions.Regex]::Replace($text, '(Assembly(File)?Version\("\d+\.\d+\.\d+)\.0"\)', ('$1.' + $build + '")'))
+          $text = $text.Replace('static readonly string BuildCommit = "";', "static readonly string BuildCommit = `"$commit`";")
+          [IO.File]::WriteAllText($stamp, $text, [Text.UTF8Encoding]::new($false))
+          & "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe" /nologo "/win32icon:$PWD\tools\native-file-drop\icons\BarrierShare.ico" /target:winexe /platform:x64 /codepage:65001 /reference:System.Windows.Forms.dll /reference:System.Drawing.dll /reference:System.Xml.Linq.dll /reference:System.Web.Extensions.dll "/win32manifest:$PWD\tools\native-file-drop\desktop.manifest" "/out:$PWD\build\bin\Release\BarrierShare.exe" $stamp
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Build
+        run: cmake --build build --config Release --parallel 3
+      - name: Protocol and actual OLE tests
+        run: ctest --test-dir build -C Release --verbose
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: explorer-failure-screens
+          path: build/tools/native-file-drop/explorer-*.bmp
+          if-no-files-found: ignore
+          retention-days: 7
+      - name: Windows client TLS-to-native-drop integration
+        run: python tools/native-file-drop/windows-cli-network-test.py build/bin/Release
+      - name: Windows server Explorer-to-TLS integration
+        run: python tools/native-file-drop/windows-server-network-test.py build/bin/Release
+      - name: Bidirectional file clipboard and actual Explorer paste
+        run: python tools/native-file-drop/windows-clipboard-network-test.py build/bin/Release
+      - name: LAN discovery, consent and automatic reconnection
+        shell: pwsh
+        run: |
+          # Earlier steps must leave nothing on the discovery port; name any process that does.
+          $owners = @(Get-NetUDPEndpoint -LocalPort 24801 -ErrorAction SilentlyContinue) + @(Get-NetTCPConnection -LocalPort 24801 -ErrorAction SilentlyContinue)
+          foreach ($owner in $owners) {
+            $process = Get-CimInstance Win32_Process -Filter "ProcessId=$($owner.OwningProcess)"
+            Write-Output "::warning title=Port 24801 in use::pid $($owner.OwningProcess) $($process.Name) $($process.CommandLine)"
+          }
+          python tools/native-file-drop/link-network-test.py build/bin/Release
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Desktop settings and pairing migration
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory build/gui-test | Out-Null
+          $test = Start-Process build/bin/Release/BarrierShare.exe -ArgumentList '--self-test', "$PWD/build/gui-test" -PassThru
+          if (-not $test.WaitForExit(60000)) { $test.Kill(); throw 'Desktop self-test timed out' }
+          if ($test.ExitCode -ne 0) { $reason = (Get-Content build/gui-test/FAIL.txt -Raw) -replace "`r?`n", '%0A'; Write-Output "::error title=Desktop self-test::$reason"; throw 'Desktop self-test failed' }
+          Get-Content build/gui-test/PASS.txt
+      - name: Normal desktop startup and live discovery in both roles
+        shell: pwsh
+        run: |
+          $test = Start-Process build/bin/Release/BarrierShare.exe -ArgumentList '--startup-test', "$PWD/build/gui-test" -PassThru
+          if (-not $test.WaitForExit(45000)) { $test.Kill(); throw 'Production startup test timed out' }
+          if ($test.ExitCode -ne 0 -or -not (Test-Path build/gui-test/STARTUP-PASS.txt)) {
+            Get-Content build/gui-test/STARTUP-FAIL.txt -ErrorAction SilentlyContinue
+            throw 'Production startup test failed'
+          }
+          Get-Content build/gui-test/STARTUP-PASS.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: clipboard-gui-test
+          path: |
+            build/gui-test/*.png
+            build/gui-test/*.txt
+            explorer-*.bmp
+            cursor-*.bmp
+          if-no-files-found: ignore
+          retention-days: 7
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory build/package | Out-Null
+          Copy-Item build/bin/Release/barrierc.exe, build/bin/Release/barriers.exe, build/bin/Release/barrier-pair.exe, build/bin/Release/barrier-link.exe, build/bin/Release/barrier-service.exe, build/bin/Release/BarrierShare.exe build/package/
+          Copy-Item tools/native-file-drop/GUI-README.txt build/package/
+          Copy-Item LICENSE build/package/
+          Copy-Item -Recurse tools/native-file-drop/licenses build/package/
+          Copy-Item C:/vcpkg/installed/x64-windows-static/share/openssl/copyright build/package/licenses/OpenSSL.txt
+          git rev-parse HEAD | Out-File build/package/COMMIT.txt
+          Compress-Archive -Path build/package/* -DestinationPath build/barrier-cross-drop-windows-x64.zip
+      - name: Build and verify Windows installer
+        shell: pwsh
+        run: |
+          $compiler = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $compiler)) { throw 'Inno Setup compiler is missing from the Windows image' }
+          & $compiler /Qp "/DPackageDir=$PWD\build\package" "/DOutputDir=$PWD\build" "$PWD\tools\native-file-drop\windows-setup.iss"
+          if ($LASTEXITCODE -ne 0) { Write-Output "::error title=Installer compile::ISCC exited with $LASTEXITCODE"; exit $LASTEXITCODE }
+          try {
+            & tools/native-file-drop/windows-installer-test.ps1 -InstallerPath "$PWD/build/BarrierShare-Setup-0.3.15-x64.exe" -PackageDir "$PWD/build/package" -TestRoot "$PWD/build/installer-test"
+          } catch {
+            # Annotations are readable on the checks page without signing in; logs and artifacts are not.
+            $reason = ("$($_.Exception.Message) (line $($_.InvocationInfo.ScriptLineNumber))" -replace "`r?`n", ' ')
+            Write-Output "::error title=Installer test::$reason"
+            Write-Output "::notice title=Installer failure::$reason"
+            foreach ($log in Get-ChildItem build/installer-test -Filter *.log -ErrorAction SilentlyContinue) {
+              $tail = (Get-Content -LiteralPath $log.FullName -Tail 12) -join '%0A'
+              Write-Output "::notice title=$($log.Name)::$tail"
+            }
+            throw
+          }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-installer-test
+          path: |
+            build/installer-test/*.txt
+            build/installer-test/*.log
+            build/installer-test/**/STARTUP-*.txt
+          if-no-files-found: ignore
+          retention-days: 7
+      - uses: actions/upload-artifact@v4
+        with:
+          name: barriershare-windows-setup
+          path: build/BarrierShare-Setup-0.3.15-x64.exe
+          if-no-files-found: error
+          retention-days: 30
+      - uses: actions/upload-artifact@v4
+        with:
+          name: barrier-cross-drop-windows-x64
+          path: build/barrier-cross-drop-windows-x64.zip
+          if-no-files-found: error
+          retention-days: 30
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [macos, windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          path: release
+          pattern: '{barriershare-windows-setup,barrier-cross-drop-windows-x64}'
+          merge-multiple: true
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          version="${TAG#v}"
+          grep -q "#define AppVersion \"$version\"" tools/native-file-drop/windows-setup.iss || { echo "Tag $TAG does not match windows-setup.iss"; exit 1; }
+          grep -q "CFBundleShortVersionString='$version'" tools/native-file-drop/package-macos.sh || { echo "Tag $TAG does not match package-macos.sh"; exit 1; }
+          test -f "release/BarrierShare-Setup-$version-x64.exe"
+          mv release/barrier-cross-drop-windows-x64.zip "release/BarrierShare-$version-x64-portable.zip"
+          # release-macos.sh creates the draft with the signed Mac ZIP right after pushing the tag.
+          for attempt in $(seq 1 20); do
+            draft=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft -q .isDraft 2>/dev/null || true)
+            [ -n "$draft" ] && break
+            sleep 30
+          done
+          [ "$draft" = "true" ] || { echo "No draft release for $TAG; run release-macos.sh on the Mac first"; exit 1; }
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets -q '.assets[].name' | grep -qx "BarrierShare-$version-macos-arm64.zip" || { echo "Draft $TAG has no Mac ZIP"; exit 1; }
+          gh release upload "$TAG" "release/BarrierShare-Setup-$version-x64.exe" "release/BarrierShare-$version-x64-portable.zip" --repo "$GITHUB_REPOSITORY" --clobber
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest
+  test-build:
+    # Every passing Windows build of this repository's PR branch replaces the files of the
+    # "test-build" pre-release, so testers download the installer as an EXE instead of a ZIP
+    # artifact. Pre-releases are skipped by the apps' update notice, so nobody is prompted.
+    if: (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) || (github.event_name == 'workflow_dispatch' && !startsWith(github.ref, 'refs/tags/'))
+    needs: [windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          path: release
+          pattern: '{barriershare-windows-setup,barrier-cross-drop-windows-x64}'
+          merge-multiple: true
+      - name: Replace the test-build pre-release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          version=$(sed -n 's/^#define AppVersion "\(.*\)"/\1/p' tools/native-file-drop/windows-setup.iss)
+          test -f "release/BarrierShare-Setup-$version-x64.exe"
+          mv release/barrier-cross-drop-windows-x64.zip "release/BarrierShare-$version-x64-portable.zip"
+          printf '測試版，不是正式發布：%s（commit %s）。\n\n只給驗收用，程式的新版通知不會提示這個版本。\n- Windows：下載 BarrierShare-Setup-%s-x64.exe 直接執行（安裝版），或可攜 ZIP。\n- Mac 測試版在 Mac 本機用固定簽章建置，不放在這裡。\n\nCI：%s\n' \
+            "$version" "${SHA:0:8}" "$version" "$RUN" > notes.txt
+          gh release delete test-build --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes 2>/dev/null || true
+          gh release create test-build "release/BarrierShare-Setup-$version-x64.exe" "release/BarrierShare-$version-x64-portable.zip" \
+            --repo "$GITHUB_REPOSITORY" --target "$SHA" --prerelease --latest=false \
+            --title "Barrier Share $version 測試版（${SHA:0:8}）" --notes-file notes.txt

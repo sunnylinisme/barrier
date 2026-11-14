@@ -16,7 +16,10 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include <chrono>
 #include "server/Server.h"
+#include "barrier/NativeFileProtocol.h"
+#include "barrier/ProtocolUtil.h"
 
 #include "server/ClientProxy.h"
 #include "server/ClientProxyUnknown.h"
@@ -465,6 +468,8 @@ Server::switchScreen(BaseClientProxy* dst,
 
 	// stop waiting to switch
 	stopSwitch();
+	m_edgeBlock.clear();
+	auto switchStarted = std::chrono::steady_clock::now();
 
 	// record new position
 	m_x       = x;
@@ -514,6 +519,10 @@ Server::switchScreen(BaseClientProxy* dst,
 				m_active->setClipboard(id, &m_clipboards[id].m_clipboard);
 			}
 		}
+
+		// A slow leave (often the clipboard owner answering late) feels like a wall at the edge.
+		auto took = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - switchStarted).count();
+		if (took >= 40) LOG((CLOG_INFO "switch took %d ms (leaving the screen and reading its clipboard)", static_cast<int>(took)));
 
 		Server::SwitchToScreenInfo* info =
 			Server::SwitchToScreenInfo::alloc(m_active->getName());
@@ -807,6 +816,7 @@ Server::isSwitchOkay(BaseClientProxy* newScreen,
 		// there's no neighbor.  we don't want to switch and we don't
 		// want to try to switch later.
 		LOG((CLOG_DEBUG1 "no neighbor %s", Config::dirName(dir)));
+		reportEdgeBlock(std::string("no screen ") + Config::dirName(dir) + " of here", x, y);
 		stopSwitch();
 		return false;
 	}
@@ -830,6 +840,7 @@ Server::isSwitchOkay(BaseClientProxy* newScreen,
 			// tapping a different or new edge or second tap not
 			// fast enough.  prepare for second tap.
 			preventSwitch = true;
+			reportEdgeBlock("waiting for a second tap (switchDoubleTap)", x, y);
 			startSwitchTwoTap();
 		}
 		else {
@@ -844,6 +855,7 @@ Server::isSwitchOkay(BaseClientProxy* newScreen,
 			startSwitchWait(x, y);
 		}
 		preventSwitch = true;
+		reportEdgeBlock("waiting for the switch delay (switchDelay)", x, y);
 	}
 
 	// are we in a locked corner?  first check if screen has the option set
@@ -868,6 +880,7 @@ Server::isSwitchOkay(BaseClientProxy* newScreen,
 		if ((getCorner(m_active, xActive, yActive, size) & corners) != 0) {
 			// yep, no switching
 			LOG((CLOG_DEBUG1 "locked in corner"));
+			reportEdgeBlock("in a corner (switchCorners)", x, y);
 			preventSwitch = true;
 			stopSwitch();
 		}
@@ -876,6 +889,8 @@ Server::isSwitchOkay(BaseClientProxy* newScreen,
 	// ignore if mouse is locked to screen and don't try to switch later
 	if (!preventSwitch && isLockedToScreen()) {
 		LOG((CLOG_DEBUG1 "locked to screen"));
+		reportEdgeBlock(isLockedToScreenServer() ? "cursor locked to this screen (lock key or Scroll Lock)"
+			: "a mouse button or key is held down on this screen", x, y);
 		preventSwitch = true;
 		stopSwitch();
 	}
@@ -889,6 +904,7 @@ Server::isSwitchOkay(BaseClientProxy* newScreen,
 			(this->m_switchNeedsAlt && ((mods & KeyModifierAlt) != KeyModifierAlt))
 		)) {
 		LOG((CLOG_DEBUG1 "need modifiers to switch"));
+		reportEdgeBlock("a modifier key is required to switch", x, y);
 		preventSwitch = true;
 		stopSwitch();
 	}
@@ -896,9 +912,20 @@ Server::isSwitchOkay(BaseClientProxy* newScreen,
 	return !preventSwitch;
 }
 
+// Says once per visit to an edge why the cursor did not cross there, so an
+// occasional "wall" can be explained from the normal log.
+void
+Server::reportEdgeBlock(const std::string& reason, SInt32 x, SInt32 y)
+{
+	if (m_edgeBlock == reason) return;
+	m_edgeBlock = reason;
+	LOG((CLOG_INFO "edge reached at %d,%d but not switching: %s", x, y, reason.c_str()));
+}
+
 void
 Server::noSwitch(SInt32 x, SInt32 y)
 {
+	m_edgeBlock.clear();
 	armSwitchTwoTap(x, y);
 	stopSwitchWait();
 }
@@ -1715,6 +1742,8 @@ Server::onMouseUp(ButtonID id)
 	// relay
 	m_active->mouseUp(id);
 
+	if (m_args.m_nativeFileDrop) return;
+
 	if (m_ignoreFileTransfer) {
 		m_ignoreFileTransfer = false;
 		return;
@@ -1731,6 +1760,22 @@ Server::onMouseUp(ButtonID id)
 		// always clear dragging filename
 		m_screen->clearDraggingFilename();
 	}
+}
+
+// Place an entering cursor a little inside the new screen so a small hand
+// movement back towards the shared edge does not switch straight back, which
+// looks like the cursor bouncing between the two screens.
+static void
+insetEntry(BaseClientProxy* dst, EDirection dir, SInt32& x, SInt32& y)
+{
+	SInt32 nx, ny, nw, nh;
+	dst->getShape(nx, ny, nw, nh);
+	const SInt32 insetX = std::min(SInt32(16), (nw - 1) / 2);
+	const SInt32 insetY = std::min(SInt32(16), (nh - 1) / 2);
+	if (dir == kRight) x = std::max(x, nx + insetX);
+	else if (dir == kLeft) x = std::min(x, nx + nw - 1 - insetX);
+	else if (dir == kBottom) y = std::max(y, ny + insetY);
+	else if (dir == kTop) y = std::min(y, ny + nh - 1 - insetY);
 }
 
 bool
@@ -1818,7 +1863,28 @@ Server::onMouseMovePrimary(SInt32 x, SInt32 y)
 
 		// should we switch or not?
 		if (isSwitchOkay(newScreen, dir, x, y, xc, yc)) {
-			if (m_args.m_enableDragDrop
+            if (m_args.m_nativeFileDrop && m_screen->isDraggingStarted() && m_active != newScreen) {
+                if (!m_args.m_enableCrypto || !newScreen->nativeFileDrop) return false;
+                std::shared_ptr<const barrier::NativeFile> file;
+                try {
+                    auto path = m_screen->nativeDraggingPath();
+                    if (path.empty()) return false;
+                    file = barrier::readNativeFile(path);
+                }
+                catch (const std::exception& e) {
+                    LOG((CLOG_WARN "native drop: %s", e.what()));
+                    return false;
+                }
+                if (!m_screen->isDraggingStarted()) return false;
+                if (!m_screen->cancelNativeSourceDrag()) return false;
+                insetEntry(newScreen, dir, x, y);
+                switchScreen(newScreen, x, y, false);
+                if (m_active != newScreen) return false;
+                barrier::sendNativeFile(newScreen->getStream(), m_seqNum, *file);
+                LOG((CLOG_INFO "native drop: sent %u bytes to %s", static_cast<UInt32>(file->bytes.size()), newScreen->getName().c_str()));
+                return true;
+            }
+			if (m_args.m_enableDragDrop && !m_args.m_nativeFileDrop
 				&& m_screen->isDraggingStarted()
 				&& m_active != newScreen
 				&& m_waitDragInfoThread) {
@@ -1831,6 +1897,7 @@ Server::onMouseMovePrimary(SInt32 x, SInt32 y)
 			}
 
 			// switch screen
+			insetEntry(newScreen, dir, x, y);
 			switchScreen(newScreen, x, y, false);
 			m_waitDragInfoThread = true;
 			return true;
@@ -1932,6 +1999,7 @@ Server::onMouseMoveSecondary(SInt32 dx, SInt32 dy)
 
 	// find direction of neighbor and get the neighbor
 	bool jump = true;
+	EDirection entryDir = kNoDirection;
 	BaseClientProxy* newScreen;
 	do {
 		// clamp position to screen
@@ -2006,6 +2074,7 @@ Server::onMouseMoveSecondary(SInt32 dx, SInt32 dy)
 
 		// try to switch screen.  get the neighbor.
 		newScreen = mapToNeighbor(m_active, dir, m_x, m_y);
+		entryDir  = dir;
 
 		// see if we should switch
 		if (!isSwitchOkay(newScreen, dir, m_x, m_y, xc, yc)) {
@@ -2022,6 +2091,7 @@ Server::onMouseMoveSecondary(SInt32 dx, SInt32 dy)
 
 		SInt32 newX = m_x;
 		SInt32 newY = m_y;
+		insetEntry(newScreen, entryDir, newX, newY);
 
 		// switch screens
 		switchScreen(newScreen, newX, newY, false);

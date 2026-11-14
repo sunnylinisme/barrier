@@ -18,6 +18,7 @@
 #include "server/ClientProxy1_5.h"
 
 #include "server/Server.h"
+#include "barrier/NativeFileTransfer.h"
 #include "barrier/FileChunk.h"
 #include "barrier/StreamChunker.h"
 #include "barrier/ProtocolUtil.h"
@@ -65,7 +66,13 @@ ClientProxy1_5::fileChunkSending(UInt8 mark, char* data, size_t dataSize)
 bool
 ClientProxy1_5::parseMessage(const UInt8* code)
 {
-    if (memcmp(code, kMsgDFileTransfer, 4) == 0) {
+    if (memcmp(code, barrier::nativeCapability, 4) == 0) {
+        UInt32 version = 0;
+        ProtocolUtil::readf(getStream(), barrier::nativeCapability + 4, &version);
+        nativeFileDrop = version == 1;
+        LOG((CLOG_INFO "native file drop receiver: %s", nativeFileDrop ? "ready" : "unsupported"));
+    }
+    else if (memcmp(code, kMsgDFileTransfer, 4) == 0) {
         fileChunkReceived();
     }
     else if (memcmp(code, kMsgDDragInfo, 4) == 0) {

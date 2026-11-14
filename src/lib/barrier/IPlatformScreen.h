@@ -18,6 +18,7 @@
 
 #pragma once
 
+#include "barrier/NativeFileTransfer.h"
 #include "barrier/DragInformation.h"
 #include "barrier/clipboard_types.h"
 #include "barrier/IScreen.h"
@@ -38,6 +39,10 @@ class IPlatformScreen : public IScreen,
                 public IPrimaryScreen, public ISecondaryScreen,
                 public IKeyState {
 public:
+    virtual std::string nativeDraggingPath() { return {}; }
+    virtual bool cancelNativeSourceDrag() { return false; }
+    virtual void startNativeFile(std::shared_ptr<const barrier::NativeFile>) {}
+
     //! @name manipulators
     //@{
 

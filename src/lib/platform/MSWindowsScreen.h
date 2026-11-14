@@ -18,6 +18,7 @@
  */
 
 #pragma once
+#include "platform/MSWindowsNativeDrag.h"
 
 #include "platform/MSWindowsHook.h"
 #include "barrier/PlatformScreen.h"
@@ -119,6 +120,10 @@ public:
     virtual bool        isPrimary() const;
     virtual void        fakeDraggingFiles(DragFileList fileList);
     virtual std::string& getDraggingFilename();
+    std::string nativeDraggingPath() override;
+    bool cancelNativeSourceDrag() override;
+    bool isDraggingStarted() override;
+    void startNativeFile(std::shared_ptr<const barrier::NativeFile> file) override;
     virtual const std::string& getDropTarget() const;
     virtual void        setDropTarget(const std::string&);
 
@@ -132,6 +137,9 @@ protected:
     void                fakeLocalKey(KeyButton button, bool press) const;
 
 private:
+    MSWindowsNativeDrag m_nativeDrag;
+    bool m_nativeCaptureAttempted = false;
+    std::string m_nativeSourcePath;
     // initialization and shutdown operations
     HCURSOR                createBlankCursor() const;
     void                destroyCursor(HCURSOR cursor) const;
@@ -185,6 +193,8 @@ private: // HACK
 
     // fix timer callback
     void                handleFixes(const Event&, void*);
+    // re-applies the entry point if the cursor was parked at the centre again after entering
+    void                checkEntry(const Event&, void*);
 
     // fix the clipboard viewer chain
     void                fixClipboardViewer();
@@ -279,6 +289,9 @@ private:
 
     // timer for periodically checking stuff that requires polling
     EventQueueTimer*    m_fixTimer;
+    EventQueueTimer*    m_entryTimer = nullptr;
+    SInt32              m_xEntry = 0, m_yEntry = 0;
+    int                 m_entryChecks = 0;
 
     // the keyboard layout to use when off primary screen
     HKL                    m_keyLayout;

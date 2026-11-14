@@ -44,6 +44,10 @@
 #include <AvailabilityMacros.h>
 #include <IOKit/hidsystem/event_status_driver.h>
 #include <AppKit/NSEvent.h>
+#include <AppKit/NSPasteboard.h>
+#include "barrier/XScreen.h"
+
+static constexpr int64_t nativeCancelEventTag = 0x4241524E4446;
 
 // This isn't in any Apple SDK that I know of as of yet.
 enum {
@@ -84,6 +88,7 @@ OSXScreen::OSXScreen(IEventQueue* events, bool isPrimary, bool autoShowHideCurso
 	m_screensaverNotify(false),
 	m_ownClipboard(false),
 	m_clipboardTimer(NULL),
+	m_pasteboard(App::instance().argsBase().m_fileClipboard),
 	m_hiddenWindow(NULL),
 	m_userInputWindow(NULL),
 	m_switchEventHandlerRef(0),
@@ -229,8 +234,9 @@ OSXScreen::getEventTarget() const
 }
 
 bool
-OSXScreen::getClipboard(ClipboardID, IClipboard* dst) const
+OSXScreen::getClipboard(ClipboardID id, IClipboard* dst) const
 {
+    if (App::instance().argsBase().m_fileClipboard && id != kClipboardClipboard) return false;
 	Clipboard::copy(dst, &m_pasteboard);
 	return true;
 }
@@ -266,6 +272,10 @@ OSXScreen::reconfigure(UInt32)
 void
 OSXScreen::warpCursor(SInt32 x, SInt32 y)
 {
+	std::lock_guard<std::mutex> lock(m_warpMutex);
+	// Remember where the server placed the cursor (the tap only warps to the centre).
+	if (x != m_xCenter || y != m_yCenter) { m_xEnter = x; m_yEnter = y; m_enterValid = true; }
+
 	// move cursor without generating events
 	CGPoint pos;
 	pos.x = x;
@@ -777,7 +787,8 @@ OSXScreen::enable()
 	}
 
 	if (!m_eventTapPort) {
-		LOG((CLOG_ERR "failed to create quartz event tap"));
+		LOG((CLOG_ERR "failed to create quartz event tap; enable Accessibility and Input Monitoring"));
+        throw XScreenOpenFailure();
 	}
 
 	m_eventTapRLSR = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, m_eventTapPort, 0);
@@ -851,8 +862,14 @@ OSXScreen::enter()
 		avoidSupression();
 	}
 
-	// now on screen
+	// now on screen. On the primary, put the cursor back where the server entered it in
+	// case the tap warped it to the centre after PrimaryClient::enter() placed it.
+	std::lock_guard<std::mutex> lock(m_warpMutex);
 	m_isOnScreen = true;
+	if (m_isPrimary && m_enterValid) {
+		CGWarpMouseCursorPosition(CGPointMake(m_xEnter, m_yEnter));
+		m_xCursor = m_xEnter; m_yCursor = m_yEnter; m_cursorPosValid = true;
+	}
 }
 
 bool
@@ -860,7 +877,7 @@ OSXScreen::leave()
 {
     hideCursor();
 
-	if (isDraggingStarted()) {
+	if (isDraggingStarted() && !App::instance().argsBase().m_nativeFileDrop) {
 		String& fileList = getDraggingFilename();
 
 		if (!m_isPrimary) {
@@ -891,15 +908,20 @@ OSXScreen::leave()
 
 	}
 
-	// now off screen
-	m_isOnScreen = false;
+	// now off screen; only a warp made after this counts as the next entry point
+	{
+		std::lock_guard<std::mutex> lock(m_warpMutex);
+		m_isOnScreen = false;
+		m_enterValid = false;
+	}
 
 	return true;
 }
 
 bool
-OSXScreen::setClipboard(ClipboardID, const IClipboard* src)
+OSXScreen::setClipboard(ClipboardID id, const IClipboard* src)
 {
+    if (App::instance().argsBase().m_fileClipboard && id != kClipboardClipboard) return true;
 	if (src != NULL) {
 		LOG((CLOG_DEBUG "setting clipboard"));
 		Clipboard::copy(&m_pasteboard, src);
@@ -1098,8 +1120,14 @@ OSXScreen::onMouseMove(CGFloat mx, CGFloat my)
 	}
 	else {
 		// motion on secondary screen.  warp mouse back to
-		// center.
-		warpCursor(m_xCenter, m_yCenter);
+		// center, unless this screen was entered meanwhile (then the
+		// event is stale and the cursor must stay at the entry edge).
+		{
+			std::lock_guard<std::mutex> lock(m_warpMutex);
+			if (m_isOnScreen) return true;
+			CGWarpMouseCursorPosition(CGPointMake(m_xCenter, m_yCenter));
+			m_xCursor = m_xCenter; m_yCursor = m_yCenter; m_cursorPosValid = true;
+		}
 
 		// examine the motion.  if it's about the distance
 		// from the center of the screen to an edge then
@@ -1139,6 +1167,11 @@ OSXScreen::onMouseMove(CGFloat mx, CGFloat my)
 bool
 OSXScreen::onMouseButton(bool pressed, UInt16 macButton)
 {
+    if (pressed && macButton == kButtonLeft && m_isOnScreen && App::instance().argsBase().m_nativeFileDrop) {
+        @autoreleasepool {
+            m_nativePasteboardGeneration = [[NSPasteboard pasteboardWithName:NSPasteboardNameDrag] changeCount];
+        }
+    }
 	// Buttons 2 and 3 are inverted on the mac
 	ButtonID button = mapMacButtonToBarrier(macButton);
 
@@ -1915,6 +1948,8 @@ OSXScreen::handleCGInputEvent(CGEventTapProxy proxy,
 							   CGEventRef event,
 							   void* refcon)
 {
+    // These events cancel Finder locally and must never become remote mouse-up/escape.
+    if (event && CGEventGetIntegerValueField(event, kCGEventSourceUserData) == nativeCancelEventTag) return event;
 	OSXScreen* screen = (OSXScreen*)refcon;
 	CGPoint pos;
 
@@ -2156,3 +2191,35 @@ avoidHesitatingCursor()
 }
 
 #pragma GCC diagnostic error "-Wdeprecated-declarations"
+
+std::string OSXScreen::nativeDraggingPath()
+{
+    @autoreleasepool {
+        NSPasteboard* pasteboard = [NSPasteboard pasteboardWithName:NSPasteboardNameDrag];
+        if (!m_draggingStarted || pasteboard.changeCount == m_nativePasteboardGeneration.load()) return {};
+        NSArray* urls = [pasteboard readObjectsForClasses:@[[NSURL class]]
+                      options:@{NSPasteboardURLReadingFileURLsOnlyKey: @YES}];
+        if (urls.count != 1) return {};
+        NSURL* url = urls[0];
+        return url.fileURL && url.path.UTF8String ? std::string(url.path.UTF8String) : std::string();
+    }
+}
+
+bool OSXScreen::cancelNativeSourceDrag()
+{
+    CGEventRef position = CGEventCreate(nullptr);
+    CGPoint point = CGEventGetLocation(position);
+    CFRelease(position);
+    CGEventRef events[] = {CGEventCreateKeyboardEvent(nullptr, 53, true),
+                          CGEventCreateKeyboardEvent(nullptr, 53, false),
+                          CGEventCreateMouseEvent(nullptr, kCGEventLeftMouseUp, point, kCGMouseButtonLeft)};
+    for (CGEventRef event : events) {
+        if (event) {
+            CGEventSetIntegerValueField(event, kCGEventSourceUserData, nativeCancelEventTag);
+            CGEventPost(kCGHIDEventTap, event);
+            CFRelease(event);
+        }
+    }
+    m_draggingStarted = false;
+    return true;
+}

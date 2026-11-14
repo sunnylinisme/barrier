@@ -27,4 +27,7 @@ public:
 
 public:
     int                    m_yscroll;
+    // Receiver-side wheel: percentage applied to incoming scroll deltas, and reversed direction.
+    int                    m_wheelScale = 100;
+    bool                   m_wheelInvert = false;
 };
