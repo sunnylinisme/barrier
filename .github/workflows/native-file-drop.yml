@@ -242,22 +242,6 @@ jobs:
           gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets -q '.assets[].name' | grep -qx "BarrierShare-$version-macos-arm64.zip" || { echo "Draft $TAG has no Mac ZIP"; exit 1; }
           gh release upload "$TAG" "release/BarrierShare-Setup-$version-x64.exe" "release/BarrierShare-$version-x64-portable.zip" --repo "$GITHUB_REPOSITORY" --clobber
           gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest
-          # Apps up to 0.3.8 only look for windows-v*/mac-v* tags. Mirror each platform's files under
-          # its own tag so they still get the update notice; drop this once all clients are >= 0.3.9.
-          url=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json url -q .url)
-          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern "BarrierShare-$version-macos-arm64.zip" --dir release
-          for platform in windows mac; do
-            mirror="$platform-v$version"
-            if gh release view "$mirror" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then continue; fi
-            if [ "$platform" = windows ]; then
-              files="release/BarrierShare-Setup-$version-x64.exe release/BarrierShare-$version-x64-portable.zip"
-            else
-              files="release/BarrierShare-$version-macos-arm64.zip"
-            fi
-            # $files is intentionally split into separate paths.
-            gh release create "$mirror" $files --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --latest=false \
-              --title "Barrier Share $version（${platform}）" --notes "與 $TAG 相同的版本，供 0.3.8 以前的程式偵測新版。完整說明：$url"
-          done
   test-build:
     # Every passing Windows build of this repository's PR branch replaces the files of the
     # "test-build" pre-release, so testers download the installer as an EXE instead of a ZIP
