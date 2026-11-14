@@ -11,7 +11,7 @@ permissions:
   contents: read
 concurrency:
   group: cross-drop-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 jobs:
   macos:
     runs-on: macos-15
